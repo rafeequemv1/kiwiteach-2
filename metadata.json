@@ -1,0 +1,7 @@
+{
+  "name": "KiwiTeach",
+  "description": "An elegant, colorful, and AI-powered multiple choice testing application that generates quizzes on any topic.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
