@@ -1,7 +1,6 @@
-
 import '../../types';
 import React, { useState, useEffect, useRef } from 'react';
-import { supabase } from '../../supabase/client';
+import { supabase } from '../supabase/client';
 // @ts-ignore
 import * as pdfjs from 'pdfjs-dist';
 
