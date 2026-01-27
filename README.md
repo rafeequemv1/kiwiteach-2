@@ -1,20 +1,16 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
 
-# Run and deploy your AI Studio app
+# 🥝 KiwiTeach Deployment Guide
 
-This contains everything you need to run your app locally.
+This application is ready to be hosted on **Vercel**.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1eYmig3_hUynX8AyKCYnFkS9aCacKTAxK
+## Steps to Deploy
 
-## Run Locally
+1. **Push to GitHub**: Upload this directory to a new GitHub repository.
+2. **Import to Vercel**: Connect your GitHub account to Vercel and import the repository.
+3. **Environment Variables**:
+   In the Vercel project settings, add the following Environment Variable:
+   - `API_KEY`: Your Google Gemini API Key (obtained from [Google AI Studio](https://aistudio.google.com/)).
+4. **Deploy**: Click "Deploy". Vercel will automatically run the build script and host your site.
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Database Note
+The Supabase connection is currently hardcoded in `supabase/client.ts`. For production environments, it is recommended to move `SUPABASE_URL` and `SUPABASE_ANON_KEY` to Vercel Environment Variables as well.
