@@ -1,41 +1,27 @@
-
 import { GoogleGenAI, Type, GenerateContentParameters } from "@google/genai";
 import { Question, QuestionType } from "../Quiz/types";
+import { supabase } from "../supabase/client";
 
-// --- SYSTEM PROMPT DEFAULTS ---
-// These match the keys in Admin/Prompts/PromptsHome.tsx
 const SYSTEM_PROMPTS: Record<string, string> = {
-    'General': `TASK: Generate specific, high-quality questions for a competitive entrance exam (NEET/JEE level).
-    - Tone: Formal, academic, and clinically precise. No conversational filler.
-    - Context: Questions must be STANDALONE. Do not refer to "the text provided" unless analyzing a specific passage included in the question itself.
-    - Citations: If source material is provided, identify the specific page number in 'pageNumber'.`,
+    'General': `TASK: Generate elite-tier questions for NEET UG entrance exams.
+    - Context: You are provided with TEXT and potentially IMAGE references.
+    - Consistency: Focus on NCERT core concepts.
+    - Identification: Return page numbers if found in "--- Page X ---" headers.`,
 
     'Difficulty': `STRICT DIFFICULTY STANDARDS:
-    1. **EASY (Foundation)**: Tests core recall and direct definitions. Must use formal phrasing (e.g. "Which property primarily determines..." vs "What is...").
-    2. **MEDIUM (Standard)**: Requires linking two distinct concepts, multi-step calculation, or condition analysis.
-    3. **HARD (Ranker)**: Advanced application, interdisciplinary synthesis (e.g., Physics logic in Chemistry), or exceptions to rules.`,
+    1. EASY: Direct NCERT recall.
+    2. MEDIUM: Concept application or multi-step logic.
+    3. HARD: Complex linkage, exceptions, or high-order analysis.`,
 
-    'Distractors': `CHOICE & DISTRACTOR LOGIC (CRITICAL):
-    1. **Loosely Related Distractors**: Wrong options must be scientifically plausible and related to the topic. Use terminology that sounds correct to a novice but is clearly wrong to an expert.
-    2. **Hard Choice**: Avoid obvious outliers. Distractors should represent common misconceptions or calculation errors.
-    3. **Special Options**: In 25-30% of questions, YOU MUST use options like:
-       - "All of the above"
-       - "None of the above"
-       - "Both A and B"
-       - "Data insufficient"
-    4. **Balance**: When special options are used, ensure they are the CORRECT answer roughly 40% of the time. Do not make them always correct or always wrong.`,
-
-    'Figure': `VISUAL CONTENT RULES:
-    - **Figure Mode**: For questions requiring a diagram, provide a detailed 'figurePrompt'.
-    - **Edit Instructions**: If 'sourceImageIndex' is valid, write the prompt as an instruction to an illustrator to MODIFY the source image (e.g., "Label the mitochondria", "Show cross-section").
-    - **New Figures**: If generating from scratch, describe the diagram in high-contrast scientific line-art style.`,
-    
-    'Chemistry': `CHEMISTRY FORMATTING:
-    - Include SMILES strings for chemical structures in [SMILES:xyz] format.
-    - Ensure stereochemistry and aromaticity are accurate.`
+    'Figure': `FIGURE GENERATION LOGIC:
+    - Describe the diagram in 'figurePrompt' using NEET UG textbook standards.
+    - SUBJECT INTEGRITY: The diagram MUST match the question topic exactly.
+    - BACKGROUND: MUST BE PURE WHITE (#FFFFFF). NO notebook lines, NO paper textures, NO grid.
+    - ANNOTATIONS: ALLOW full scientific labels and anatomical names. Labels must be sharp and legible.
+    - META-TEXT BAN: DO NOT include text like "Figure 1", "NEET Exam", "Diagram", or captions inside the image.
+    - Style: Professional high-contrast black-and-white line art.`,
 };
 
-// Helper to get prompt (local storage override or default)
 const getPrompt = (key: string): string => {
     if (typeof window !== 'undefined') {
         try {
@@ -44,287 +30,46 @@ const getPrompt = (key: string): string => {
                 const parsed = JSON.parse(saved);
                 if (parsed[key]) return parsed[key];
             }
-        } catch (e) {
-            console.warn("Failed to load prompt overrides", e);
-        }
+        } catch (e) {}
     }
     return SYSTEM_PROMPTS[key] || '';
 };
 
-// Helper function for embedding generation
-export const generateEmbedding = async (text: string): Promise<number[]> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  try {
-    const result = await ai.models.embedContent({
-      model: "text-embedding-004",
-      content: { parts: [{ text }] },
-    });
-    return result.embedding.values;
-  } catch (error) {
-    console.error("Embedding generation failed:", error);
-    return [];
-  }
-};
-
-/**
- * Utility to ensure the user has selected an API key for high-quality models.
- */
 export const ensureApiKey = async () => {
   if (typeof window !== 'undefined' && (window as any).aistudio) {
     const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-    if (!hasKey) {
-      await (window as any).aistudio.openSelectKey();
-    }
+    if (!hasKey) await (window as any).aistudio.openSelectKey();
   }
 };
 
-/**
- * Generates a stylistic variation of a provided base image.
- */
-export const generateStyleVariant = async (base64Image: string, prompt: string): Promise<string> => {
-  await ensureApiKey();
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  const editPrompt = `
-  Acting as a professional scientific illustrator, create a new version of the provided image based on these instructions:
-  "${prompt}"
-  
-  CRITICAL REQUIREMENTS:
-  - **Transformation**: Do NOT just copy the image. You MUST apply the requested style changes.
-  - **Clarity**: Use high-contrast black lines on a white background (NEET/JEE style).
-  - **Output**: Return a single high-quality image.
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview', // Capable of image-to-image
-      contents: {
-        parts: [
-          { text: editPrompt },
-          { inlineData: { mimeType: 'image/png', data: base64Image } }
-        ]
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "16:9", 
-          imageSize: "2K"
-        }
-      }
+export const downsampleImage = (base64Data: string, mimeType: string, maxDim = 1024): Promise<{ data: string, mimeType: string }> => {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            let width = img.width;
+            let height = img.height;
+            if (width <= maxDim && height <= maxDim && (mimeType === 'image/jpeg' || mimeType === 'image/png')) {
+                resolve({ data: base64Data, mimeType });
+                return;
+            }
+            if (width > height) { height *= maxDim / width; width = maxDim; } else { width *= maxDim / height; height = maxDim; }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx?.drawImage(img, 0, 0, width, height);
+            const newData = canvas.toDataURL('image/jpeg', 0.85);
+            const [header, data] = newData.split(',');
+            resolve({ data: data.trim(), mimeType: 'image/jpeg' });
+        };
+        img.onerror = () => resolve({ data: '', mimeType: 'image/jpeg' });
+        img.src = `data:${mimeType};base64,${base64Data}`;
     });
-
-    let resultData = "";
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        resultData = part.inlineData.data;
-        break;
-      }
-    }
-    return resultData;
-  } catch (error: any) {
-    console.error("Style variant generation failed:", error);
-    return "";
-  }
 };
-
-/**
- * Generates a batch of stylistic variations from a single source image in a grid.
- */
-export const generateCompositeStyleVariants = async (base64Image: string, prompts: string[]): Promise<string[]> => {
-  if (prompts.length === 0) return [];
-  await ensureApiKey();
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  const GRID_ROWS = 2;
-  const GRID_COLS = 3;
-  const TOTAL_SLOTS = GRID_ROWS * GRID_COLS;
-
-  const fullPrompts = [...prompts];
-  while (fullPrompts.length < TOTAL_SLOTS) {
-    fullPrompts.push("Leave this space completely empty white.");
-  }
-
-  const gridInstruction = fullPrompts.map((p, i) => `Slot ${i + 1}: ${p}`).join("\n");
-
-  const mainPrompt = `
-  Acting as a scientific illustrator, create a composite 2x3 grid image (6 slots) based on the PROVIDED SOURCE IMAGE.
-  
-  INPUT: Use the attached image as the base reference for ALL slots.
-  
-  LAYOUT:
-  - 2 Rows, 3 Columns (Total 6 distinct panels).
-  - Clean white background. No grid lines.
-  
-  INSTRUCTIONS PER SLOT (Apply these specific edits to the source image):
-  ${gridInstruction}
-  
-  STYLE: High-contrast black line art (exam paper style).
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
-      contents: {
-        parts: [
-          { text: mainPrompt },
-          { inlineData: { mimeType: 'image/png', data: base64Image } }
-        ]
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "4:3", 
-          imageSize: "4K"
-        }
-      }
-    });
-
-    let resultData = "";
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        resultData = part.inlineData.data;
-        break;
-      }
-    }
-
-    if (!resultData) return [];
-    return await sliceCompositeImage(resultData, GRID_ROWS, GRID_COLS, prompts.length);
-  } catch (error: any) {
-    console.error("Composite variant generation failed:", error);
-    return [];
-  }
-};
-
-/**
- * Generates a composite grid of diagrams in a single call to reduce costs.
- */
-export const generateCompositeFigures = async (prompts: string[]): Promise<string[]> => {
-  if (prompts.length === 0) return [];
-  await ensureApiKey();
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const GRID_ROWS = 2;
-  const GRID_COLS = 3;
-  const TOTAL_SLOTS = GRID_ROWS * GRID_COLS;
-  
-  const fullPrompts = [...prompts];
-  while (fullPrompts.length < TOTAL_SLOTS) {
-    fullPrompts.push("Leave this space completely empty white.");
-  }
-
-  const gridInstruction = fullPrompts.map((p, i) => `Slot ${i + 1}: ${p}`).join("\n");
-  
-  const mainPrompt = `Generate a single 4K resolution image containing a grid of ${TOTAL_SLOTS} distinct scientific diagrams arranged in 2 rows and 3 columns.
-  
-  CRITICAL STYLE REQUIREMENTS (NEET/JEE EXAM STANDARD):
-  - **Mode**: Professional high-contrast BLACK LINE ART on a pure WHITE background. No shading, no gray-scale, no 3D rendering.
-  - **Line Weight**: Use thin, crisp uniform lines (like a printed textbook).
-  - **Layout**: The image must be divided into a 2x3 grid implicitly. 
-  - **NO BORDERS**: Do NOT draw grid lines or boxes around the slots.
-  
-  SCIENTIFIC DOMAIN RULES:
-  1. **COMPOSITE / MULTI-VIEW FIGURES**:
-     - If a slot request asks for "Style A vs Style B" or "Cross-section and External", draw BOTH views side-by-side within that single slot.
-  
-  GRID ASSIGNMENTS:
-  ${gridInstruction}
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
-      contents: { parts: [{ text: mainPrompt }] },
-      config: {
-        imageConfig: {
-          aspectRatio: "4:3", 
-          imageSize: "4K"
-        }
-      }
-    });
-
-    let base64Data = "";
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        base64Data = part.inlineData.data;
-        break;
-      }
-    }
-
-    if (!base64Data) return [];
-    return await sliceCompositeImage(base64Data, GRID_ROWS, GRID_COLS, prompts.length);
-  } catch (error: any) {
-    console.error("Composite figure generation failed:", error);
-    if (error?.message?.includes("Requested entity was not found") && typeof window !== 'undefined' && (window as any).aistudio) {
-      await (window as any).aistudio.openSelectKey();
-    }
-    return [];
-  }
-};
-
-const sliceCompositeImage = (base64: string, rows: number, cols: number, originalCount: number): Promise<string[]> => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const results: string[] = [];
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { resolve([]); return; }
-      const slotWidth = img.width / cols;
-      const slotHeight = img.height / rows;
-      canvas.width = slotWidth;
-      canvas.height = slotHeight;
-      
-      let count = 0;
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          if (count >= originalCount) break;
-          ctx.clearRect(0, 0, slotWidth, slotHeight);
-          ctx.drawImage(img, c * slotWidth, r * slotHeight, slotWidth, slotHeight, 0, 0, slotWidth, slotHeight);
-          results.push(canvas.toDataURL('image/png').split(',')[1]);
-          count++;
-        }
-        if (count >= originalCount) break;
-      }
-      resolve(results);
-    };
-    img.src = `data:image/png;base64,${base64}`;
-  });
-};
-
-export const refineSystemPrompt = async (currentPrompt: string, instruction: string): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `
-    You are an expert prompt engineer. 
-    Your task is to refine the following system prompt based on the user's instruction.
-    
-    CURRENT PROMPT:
-    "${currentPrompt}"
-    
-    INSTRUCTION:
-    ${instruction}
-    
-    Return ONLY the refined prompt text.
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-    });
-    return response.text?.trim() || currentPrompt;
-  } catch (error: any) {
-    console.error("Prompt refinement failed:", error);
-    throw new Error("Failed to refine prompt.");
-  }
-};
-
-interface DifficultyMix {
-  easy: number;
-  medium: number;
-  hard: number;
-}
 
 export const generateQuizQuestions = async (
   topic: string,
-  difficulty: 'Easy' | 'Medium' | 'Hard' | DifficultyMix,
+  difficulty: any,
   count: number,
   sourceContext?: { text: string; images?: { data: string; mimeType: string; }[] },
   qType: QuestionType = 'mcq',
@@ -332,103 +77,139 @@ export const generateQuizQuestions = async (
   figureCount: number = 0,
   useSmiles: boolean = false
 ): Promise<Question[]> => {
+  await ensureApiKey();
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
   try {
-    onProgress?.("Structuring prompt...");
     let difficultyInstruction = typeof difficulty === 'string' 
-      ? `All questions must be of '${difficulty}' difficulty.`
-      : `Difficulty mix: ${difficulty.easy}% Easy, ${difficulty.medium}% Medium, ${difficulty.hard}% Hard.`;
-
-    const smilesInstruction = useSmiles ? getPrompt('Chemistry') : "";
-
-    // Load sub-prompts dynamically from storage or defaults
-    const generalPrompt = getPrompt('General');
-    const difficultyContext = getPrompt('Difficulty');
-    const distractorContext = getPrompt('Distractors');
-    const figureContext = getPrompt('Figure');
+        ? `ALL questions must be of '${difficulty}' difficulty.`
+        : `DISTRIBUTE DIFFICULTY RATIO: ${difficulty.easy}% Easy, ${difficulty.medium}% Medium, ${difficulty.hard}% Hard.`;
 
     const mainPrompt = `
-    ${generalPrompt}
+    ${getPrompt('General')}
     TOPIC: "${topic}"
-    QUANTITY: Exactly ${count} questions.
-    TYPE: ${qType.toUpperCase()}
-    
+    QUANTITY: ${count} questions.
+    ${figureCount > 0 ? `FIGURES: Exactly ${figureCount} questions MUST include a 'figurePrompt' for a diagram. If you base it on a specific source image, put its index (0-indexed) in 'sourceImageIndex'.` : ''}
+    TYPE: ${qType.toUpperCase()}.
     ${difficultyInstruction}
-    
-    ${difficultyContext}
-    
-    ${distractorContext}
-    
-    ${smilesInstruction}
+    ${getPrompt('Difficulty')}
+    ${getPrompt('Figure')}
+    EXPLANATION RULES: ALWAYS start with "Correct Answer: (Option Letter)" followed by a full detailed scientific explanation.
+    Return as JSON array with properties: text, options, correctIndex, difficulty, explanation, pageNumber, figurePrompt, sourceImageIndex.`;
 
-    ${figureContext}
-    
-    FIGURE INTEGRATION:
-    For exactly ${figureCount} questions, you MUST provide a "figurePrompt" and set "sourceImageIndex".
-    - If context images exist, refer to them by index (0 to ${sourceContext?.images?.length ? sourceContext.images.length - 1 : 0}).
-    - If no context images, set 'sourceImageIndex' to -1 and describe the figure.
-    - For the other ${Math.max(0, count - figureCount)} questions, leave "figurePrompt" empty.
-
-    Output as a JSON Array of objects.`;
-
-    const properties: any = {
-        text: { type: Type.STRING },
-        difficulty: { type: Type.STRING },
-        explanation: { type: Type.STRING },
-        pageNumber: { type: Type.INTEGER, description: "The specific page number from the provided context text where this concept is located." },
-        figurePrompt: { type: Type.STRING, description: "Detailed visual description. If referencing a source image, request a COMPOSITE EDIT (e.g., Schematic + Detailed)." },
-        sourceImageIndex: { type: Type.INTEGER, description: "Index of the source image to use as a base. -1 if generating from scratch." },
-        options: { type: Type.ARRAY, items: { type: Type.STRING } },
-        correctIndex: { type: Type.INTEGER }
-    };
-
-    if (qType === 'matching') {
-        properties.columnA = { type: Type.ARRAY, items: { type: Type.STRING } };
-        properties.columnB = { type: Type.ARRAY, items: { type: Type.STRING } };
-        properties.correctMatches = { type: Type.ARRAY, items: { type: Type.INTEGER } };
-    }
-
-    onProgress?.(`Generating ${count} questions...`);
-    
-    // Construct the parts array
-    const parts: any[] = [{ text: mainPrompt }];
-    
-    if (sourceContext) {
-        if (sourceContext.text) {
-            parts.push({ text: `SOURCE MATERIAL TEXT:\n${sourceContext.text}` });
-        }
-        if (sourceContext.images && sourceContext.images.length > 0) {
-            parts.push({ text: `SOURCE MATERIAL FIGURES (Reference these by index 0 to ${sourceContext.images.length - 1}):` });
-            sourceContext.images.forEach(img => {
-                parts.push({ inlineData: img });
-            });
-        }
+    const contents: any[] = [{ role: 'user', parts: [{ text: mainPrompt }] }];
+    if (sourceContext?.text) contents[0].parts.push({ text: `TEXT SOURCE: ${sourceContext.text.substring(0, 100000)}` });
+    if (sourceContext?.images && sourceContext.images.length > 0) {
+        sourceContext.images.forEach((img, idx) => {
+            contents[0].parts.push({ text: `REFERENCE IMAGE ${idx}:` });
+            contents[0].parts.push({ inlineData: img });
+        });
     }
 
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: { parts },
+      contents,
       config: {
-        temperature: 0.7,
+        temperature: 0.4,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
           items: {
             type: Type.OBJECT,
-            properties,
-            required: ["text", "difficulty", "explanation", "options", "correctIndex", "figurePrompt"],
+            properties: {
+                text: { type: Type.STRING },
+                difficulty: { type: Type.STRING },
+                explanation: { type: Type.STRING },
+                pageNumber: { type: Type.INTEGER },
+                options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                correctIndex: { type: Type.NUMBER },
+                figurePrompt: { type: Type.STRING },
+                sourceImageIndex: { type: Type.NUMBER }
+            },
+            required: ["text", "difficulty", "explanation", "options", "correctIndex"],
           }
         }
       }
     });
 
-    const parsedData = JSON.parse(response.text || "[]");
-    return parsedData.map((q: any, index: number) => ({
-      id: `q-${Date.now()}-${index}`,
-      type: qType,
-      ...q
-    }));
-  } catch (error: any) {
-    throw new Error(`Generation failed: ${error.message}`);
-  }
+    return JSON.parse(response.text || "[]").map((q: any, index: number) => {
+        return { id: `forge-${Date.now()}-${index}`, type: qType, ...q };
+    });
+  } catch (error: any) { throw new Error(`Forge failed: ${error.message}`); }
 };
+
+export const generateCompositeFigures = async (prompts: string[]): Promise<string[]> => {
+    await ensureApiKey();
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const results: string[] = [];
+    
+    for (const prompt of prompts) {
+        try {
+            const cleanPrompt = `Subject: ${prompt}. Professional NEET line art. Background: PURE WHITE (#FFFFFF). NO notebook lines, NO paper texture. ALLOW scientific labels and anatomical names. NO meta-text or titles. ENSURE THE CONTENT MATCHES THE TOPIC DESCRIPTION.`;
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-pro-image-preview',
+                contents: { parts: [{ text: cleanPrompt }] },
+                config: {
+                    imageConfig: { aspectRatio: "1:1", imageSize: "1K" }
+                }
+            });
+            const candidates = (response as any).candidates;
+            if (candidates?.[0]?.content?.parts) {
+                for (const part of candidates[0].content.parts) { 
+                    if (part.inlineData?.data) { 
+                        results.push(part.inlineData.data); 
+                        break; 
+                    } 
+                }
+            } else { results.push(""); }
+        } catch (e) { results.push(""); }
+    }
+    return results;
+};
+
+export const generateCompositeStyleVariants = async (sourceImageBase64: string, prompts: string[]): Promise<string[]> => {
+    await ensureApiKey();
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const results: string[] = [];
+    
+    for (const prompt of prompts) {
+        try {
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-pro-image-preview',
+                contents: {
+                    parts: [
+                        { inlineData: { data: sourceImageBase64, mimeType: 'image/jpeg' } },
+                        { text: `REDRAW THIS EXACT DIAGRAM. DO NOT CHANGE THE SUBJECT MATTER. IF IT IS PHYSICS, KEEP IT PHYSICS. Style: Clean black ink line art on PURE WHITE background (#FFFFFF). NO notebook texture or lines. Preserve all scientific annotations and labels: ${prompt}` }
+                    ]
+                },
+                config: { imageConfig: { aspectRatio: "1:1" } }
+            });
+            const candidates = (response as any).candidates;
+            if (candidates?.[0]?.content?.parts) {
+                for (const part of candidates[0].content.parts) { 
+                    if (part.inlineData?.data) { 
+                        results.push(part.inlineData.data); 
+                        break; 
+                    } 
+                }
+            } else { results.push(""); }
+        } catch (e) { results.push(""); }
+    }
+    return results;
+};
+
+export const forgeSequentialQuestions = async (
+    topic: string,
+    difficulty: any,
+    count: number,
+    sourceContext: { text: string; images?: { data: string; mimeType: string; }[] },
+    qType: QuestionType = 'mcq',
+    onProgress?: (status: string) => void,
+    figureCount: number = 0,
+    options?: any,
+    specificImageIndex?: number
+): Promise<Question[]> => {
+    return generateQuizQuestions(topic, difficulty, count, sourceContext, qType, onProgress, figureCount);
+};
+
+export const refineSystemPrompt = async (c:string, i:string) => c;

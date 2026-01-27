@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -11,15 +10,16 @@
     <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
     <script src="https://docs.opencv.org/4.8.0/opencv.js" async></script>
     <script type="text/javascript" src="https://unpkg.com/smiles-drawer@2.0.1/dist/smiles-drawer.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
     <script>
       tailwind.config = {
         theme: {
           extend: {
             colors: {
-              primary: '#ffffff', // White
-              secondary: '#f9fafb', // Off-white/light gray
-              accent: '#4f46e5',  // Indigo
-              highlight: '#f59e0b', // Amber
+              primary: '#ffffff',
+              secondary: '#f9fafb',
+              accent: '#4f46e5',
+              highlight: '#f59e0b',
               'text-primary': '#1f2937',
               'text-secondary': '#6b7280',
             },
@@ -55,7 +55,6 @@
         overflow-x: hidden;
       }
       
-      /* Elegant Minimal Scrollbar */
       .custom-scrollbar::-webkit-scrollbar {
         width: 5px;
         height: 5px;
@@ -64,18 +63,81 @@
         background: transparent;
       }
       .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: #e2e8f0; /* slate-200 */
+        background: #e2e8f0;
         border-radius: 10px;
         transition: background 0.2s ease;
       }
       .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: #cbd5e1; /* slate-300 */
+        background: #cbd5e1;
       }
       
-      /* Firefox support */
       .custom-scrollbar {
         scrollbar-width: thin;
         scrollbar-color: #e2e8f0 transparent;
+      }
+
+      /* --- NATIVE BROWSER PRINT ENGINE --- */
+      @media print {
+        @page {
+          size: A4;
+          margin: 0;
+        }
+        
+        body {
+          background: white !important;
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
+
+        .no-print {
+          display: none !important;
+        }
+
+        /* --- CORE FIX FOR MULTI-PAGE PDF EXPORT --- */
+
+        /* 1. Un-clip all parent containers */
+        /* This is the most important rule. It allows content to flow beyond the screen viewport. */
+        body, #root, .overflow-hidden {
+          overflow: visible !important;
+        }
+
+        /* 2. Let containers grow with the content */
+        .h-full, .flex-1 {
+          height: auto !important;
+        }
+
+        /* 3. Reset the main scrolling area to be a simple block container */
+        .overflow-y-auto {
+          overflow: visible !important;
+          padding: 0 !important;
+          margin: 0 !important;
+        }
+        
+        /* 4. Remove on-screen backgrounds and spacing that interfere with printing */
+        .bg-slate-300\/50 {
+           background: none !important;
+        }
+        .space-y-12 > :not([hidden]) ~ :not([hidden]) {
+           margin-top: 0 !important;
+        }
+        .pb-24 {
+           padding-bottom: 0 !important;
+        }
+
+        /* 5. Ensure each virtual page is treated as a real page */
+        .printable-quiz-page {
+          margin: 0 auto !important;
+          box-shadow: none !important;
+          page-break-after: always !important; /* This forces a new page in the PDF */
+          break-after: page !important;
+          break-inside: avoid !important; /* Prevent the browser from splitting our virtual page block */
+          overflow: hidden !important;   /* Clip any minor overflow from JS pagination logic. This is the key to preventing blank pages. */
+        }
+
+        /* 6. Prevent question content from splitting across a page break */
+        .group.text-black {
+          break-inside: avoid;
+        }
       }
     </style>
   <script type="importmap">
@@ -87,11 +149,10 @@
     "react": "https://esm.sh/react@^19.2.3",
     "katex": "https://esm.sh/katex@0.16.9",
     "katex/": "https://esm.sh/katex@0.16.9/",
-    "jspdf": "https://esm.sh/jspdf@2.5.1",
-    "html2canvas": "https://esm.sh/html2canvas@1.4.1",
     "pdfjs-dist": "https://esm.sh/pdfjs-dist@4.0.379",
     "pdfjs-dist/": "https://esm.sh/pdfjs-dist@4.0.379/",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.45.1"
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.45.1",
+    "jspdf": "https://esm.sh/jspdf@^4.0.0"
   }
 }
 </script>

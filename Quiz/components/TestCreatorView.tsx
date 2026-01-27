@@ -48,6 +48,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
   const [selectedChapters, setSelectedChapters] = useState<SelectedChapter[]>(initialChapters || []);
   const [topic, setTopic] = useState(initialTopic || 'New Comprehensive Assessment');
   
+  // NEW: Global Mix Controls
   const [globalDifficultyMix, setGlobalDifficultyMix] = useState({ easy: 30, medium: 50, hard: 20 });
   const [globalTypeMix, setGlobalTypeMix] = useState<TypeDistribution>({ mcq: 100, reasoning: 0, matching: 0, statements: 0 });
   const [useSmiles, setUseSmiles] = useState(false);
@@ -82,7 +83,6 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
 
       setIsSearching(true);
       try {
-        // OPTIMIZATION: Only select lightweight fields. Exclude 'raw_text'.
         const { data, error } = await supabase
           .from('chapters')
           .select('id, name, subject_id, subject_name, class_id, class_name, kb_id')
@@ -169,7 +169,6 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
       const fetchChapterData = async () => {
           setIsChaptersLoading(true);
           try {
-              // OPTIMIZATION: Only select lightweight fields. Exclude 'raw_text'.
               const [chapsRes, statsRes] = await Promise.all([
                   supabase.from('chapters')
                     .select('id, name, chapter_number, subject_id, subject_name, class_id, class_name')
@@ -204,6 +203,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
       fetchChapterData();
   }, [selectedSubjectId]);
 
+  // NEW: Handler for global mix controls
   const handleDiffChange = (key: 'easy' | 'medium' | 'hard', value: string) => {
       const val = Math.min(100, Math.max(0, parseInt(value) || 0));
       setGlobalDifficultyMix(prev => ({ ...prev, [key]: val }));
@@ -250,17 +250,9 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
       const reader = new FileReader();
       reader.onload = (event) => {
           const content = event.target?.result as string;
-          
-          // Auto-detect number of images in the content
           const imgMatches = content.match(/data:image\/[^;]+;base64/g);
           const imgCount = imgMatches ? imgMatches.length : 0;
-          
-          // Strategy: For uploads, we prioritize figure questions if images exist.
-          // STRICT RULE: Multiples of 6.
-          // Start with 6 if any images found, else 0 (text only mode, though unlikely for this use case)
           const initialFigures = imgCount > 0 ? 6 : 0;
-          
-          // For uploads, total questions = figure questions initially
           const totalQs = initialFigures > 0 ? initialFigures : 20;
 
           const virtualId = `upload-${Date.now()}`;
@@ -270,31 +262,26 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
               subjectName: 'Uploaded Content',
               className: 'File Source',
               count: totalQs, 
-              figureCount: initialFigures, // Auto-set based on content
+              figureCount: initialFigures,
               difficulty: 'Global',
               source: 'upload',
               content: content,
               styleCounts: { mcq: totalQs },
               selectionMode: 'count'
           };
-          
           setSelectedChapters(prev => [...prev, newChapter]);
           if (fileInputRef.current) fileInputRef.current.value = '';
       };
-      
       reader.readAsText(file);
   };
 
   const updateUploadFigures = (id: string, delta: number) => {
       setSelectedChapters(prev => prev.map(sc => {
           if (sc.id !== id) return sc;
-          // Step by 6, min 6 (if originally had figures) or 0
           const current = sc.figureCount || 0;
           let newCount = current + delta;
           if (newCount < 6) newCount = 6; 
-          if (newCount > 60) newCount = 60; // Reasonable cap
-          
-          // Sync total count with figure count for uploads
+          if (newCount > 60) newCount = 60;
           return { ...sc, count: newCount, figureCount: newCount };
       }));
   };
@@ -321,7 +308,6 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
   const updateChapterFigures = (id: string, delta: number) => {
       setSelectedChapters(prev => prev.map(sc => {
           if (sc.id !== id) return sc;
-          // Cannot exceed total questions count
           const newCount = Math.min(sc.count, Math.max(0, (sc.figureCount || 0) + delta));
           return { ...sc, figureCount: newCount };
       }));
@@ -336,32 +322,22 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
       }));
   };
 
-  // Bulk update all chapters' figure counts when global control changes
   const handleGlobalFigureChange = (value: string) => {
       const val = Math.max(0, parseInt(value) || 0);
       if (selectedChapters.length === 0) return;
-      
       const figsPerChap = Math.floor(val / selectedChapters.length);
       const remainder = val % selectedChapters.length;
-      
       setSelectedChapters(prev => prev.map((c, idx) => {
-          // If upload, ignore global distribution logic to respect multiples of 6 constraint strictly
           if (c.source === 'upload') return c; 
-          return {
-            ...c,
-            figureCount: Math.min(c.count, figsPerChap + (idx < remainder ? 1 : 0))
-          };
+          return { ...c, figureCount: Math.min(c.count, figsPerChap + (idx < remainder ? 1 : 0)) };
       }));
   };
 
   const handleCreateTest = () => {
     if (selectedChapters.length === 0) return alert("Please add at least one chapter or file.");
-    
-    // We now use the figureCount already set on each chapter (either manually or via global distribution)
     const chaptersWithStrategy = selectedChapters.map(c => ({
         ...c,
         difficulty: 'Global' as const,
-        // figureCount is already set on 'c'
         source: c.source === 'upload' ? 'ai' : c.source 
     }));
 
@@ -372,7 +348,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
         useGlobalDifficulty: true, 
         globalDifficultyMix, 
         globalTypeMix, 
-        globalFigureCount: totalFigures, // Pass aggregate for reference
+        globalFigureCount: totalFigures,
         totalQuestions: selectedChapters.reduce((s, c) => s + c.count, 0),
         useSmiles 
     });
@@ -413,7 +389,6 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
           <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex flex-col gap-5 flex-1 min-h-0">
             <div className="flex items-center justify-between gap-3 shrink-0">
               <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.25em]">1. Select Content</h2>
-              
               <div className="flex bg-slate-100 p-1 rounded-lg">
                   <button onClick={() => setSourceMode('database')} className={`px-3 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all ${sourceMode === 'database' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>Database</button>
                   <button onClick={() => setSourceMode('upload')} className={`px-3 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all ${sourceMode === 'upload' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>Upload</button>
@@ -423,15 +398,12 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
             {sourceMode === 'database' ? (
                 <>
                     <div className="flex justify-between items-center gap-2">
-                        {isKBLoading ? (
-                            <div className="w-24 h-6 bg-slate-100 animate-pulse rounded-lg" />
-                        ) : (
+                        {isKBLoading ? <div className="w-24 h-6 bg-slate-100 animate-pulse rounded-lg" /> : (
                             <select value={selectedKbId || ''} onChange={e => setSelectedKbId(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[9px] font-black text-slate-600 outline-none focus:border-indigo-500 appearance-none cursor-pointer">
                                 {kbList.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
                             </select>
                         )}
                     </div>
-
                     <div className={`shrink-0 transition-all duration-300 ${searchQuery.trim().length >= 2 ? 'opacity-30 pointer-events-none scale-95 blur-[1px]' : ''}`}>
                     <div className="border-b border-slate-100">
                         <div className="flex items-center gap-8 overflow-x-auto scrollbar-hide py-1">
@@ -459,32 +431,16 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
                         )}
                     </div>
                     </div>
-
                     <div className="flex-1 flex flex-col min-h-0">
                     <div className="relative mb-4 shrink-0">
                             <div className={`absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 flex items-center justify-center ${isSearching ? 'animate-spin' : ''}`}>
                                 <iconify-icon icon={isSearching ? "mdi:loading" : "mdi:magnify"} />
                             </div>
-                            <input 
-                                type="text" 
-                                placeholder="Search chapters across entire base..." 
-                                value={searchQuery} 
-                                onChange={e => setSearchQuery(e.target.value)} 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-11 pr-12 py-3 text-xs font-bold outline-none focus:border-indigo-500 shadow-inner" 
-                            />
-                            {searchQuery && (
-                                <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 transition-colors">
-                                    <iconify-icon icon="mdi:close-circle" />
-                                </button>
-                            )}
+                            <input type="text" placeholder="Search chapters..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-11 pr-12 py-3 text-xs font-bold outline-none focus:border-indigo-500 shadow-inner" />
+                            {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 transition-colors"><iconify-icon icon="mdi:close-circle" /></button>}
                     </div>
-                    
                     <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-3">
-                        {isChaptersLoading || isSearching ? (
-                            <div className="space-y-4">
-                                {[1,2,3].map(i => <div key={i} className="h-20 bg-slate-50 rounded-3xl animate-pulse"/>)}
-                            </div>
-                        ) : displayChapters.length > 0 ? (
+                        {isChaptersLoading || isSearching ? <div className="space-y-4">{[1,2,3].map(i => <div key={i} className="h-20 bg-slate-50 rounded-3xl animate-pulse"/>)}</div> : displayChapters.length > 0 ? (
                             displayChapters.map(c => {
                                 const selected = selectedChapters.find(sc => sc.id === c.id);
                                 const stats = chapterStats[c.id] || { total: 0, easy: 0, medium: 0, hard: 0, figures: 0, types: {} };
@@ -492,17 +448,10 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
                                     <div key={c.id} className={`p-4 rounded-3xl border transition-all animate-fade-in group ${selected ? 'border-emerald-500 bg-emerald-50/50 shadow-md' : 'border-slate-100 bg-white hover:border-slate-300 shadow-sm'}`}>
                                         <div className="flex items-center justify-between gap-4">
                                             <div className="flex items-center gap-4 cursor-pointer flex-1 min-w-0" onClick={() => handleToggleChapter(c)}>
-                                                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all shrink-0 ${selected ? 'bg-emerald-600 text-white' : 'bg-slate-50 text-slate-400'}`}>
-                                                    <iconify-icon icon="mdi:database-check" width="20" />
-                                                </div>
+                                                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all shrink-0 ${selected ? 'bg-emerald-600 text-white' : 'bg-slate-50 text-slate-400'}`}><iconify-icon icon="mdi:database-check" width="20" /></div>
                                                 <div className="min-w-0 flex-1">
                                                     <p className={`text-[11px] font-black uppercase tracking-tight truncate ${selected ? 'text-emerald-900' : 'text-slate-600'}`}>{c.name}</p>
                                                     <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                                        {searchQuery.trim().length >= 2 && (
-                                                            <span className="text-[7px] font-black text-indigo-500 uppercase bg-indigo-50 px-1.5 rounded border border-indigo-100">
-                                                                {c.subject_name || 'Subject'} • {c.class_name || 'Class'}
-                                                            </span>
-                                                        )}
                                                         <span className="text-[7px] font-black text-slate-500 uppercase bg-slate-100 px-1.5 rounded border border-slate-200">Available: {stats.total}</span>
                                                         {stats.easy > 0 && <span className="text-[7px] font-bold text-emerald-600 bg-emerald-50 px-1.5 rounded border border-emerald-100">E:{stats.easy}</span>}
                                                         {stats.medium > 0 && <span className="text-[7px] font-bold text-amber-600 bg-amber-50 px-1.5 rounded border border-amber-100">M:{stats.medium}</span>}
@@ -515,58 +464,38 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
                                     </div>
                                 );
                             })
-                        ) : searchQuery.trim().length >= 2 ? (
-                            <div className="text-center py-10">
-                                <iconify-icon icon="mdi:database-off-outline" width="48" className="text-slate-200 mb-2" />
-                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">No chapters found in "{kbList.find(k => k.id === selectedKbId)?.name}"</p>
-                            </div>
-                        ) : !selectedSubjectId ? (
-                            <div className="text-center py-10 text-slate-300 text-xs font-bold uppercase tracking-widest italic">Select a Subject or Search</div>
-                        ) : (
-                            <div className="text-center py-10 text-slate-300 text-xs font-bold uppercase tracking-widest italic">Empty Subject</div>
-                        )}
+                        ) : <div className="text-center py-10 text-slate-300 text-xs font-bold uppercase tracking-widest italic">Empty</div>}
                     </div>
                     </div>
                 </>
             ) : (
                 <div className="flex-1 flex flex-col items-center justify-center gap-6 p-6 border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50 hover:bg-white hover:border-emerald-200 transition-all cursor-pointer group" onClick={() => fileInputRef.current?.click()}>
-                    <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm border border-slate-100 group-hover:scale-110 transition-transform">
-                        <iconify-icon icon="mdi:file-upload-outline" className="w-10 h-10 text-emerald-500" />
-                    </div>
-                    <div className="text-center space-y-2">
-                        <h3 className="text-lg font-black text-slate-700">Drop Chapter File</h3>
-                        <p className="text-xs text-slate-400 font-medium max-w-[200px] mx-auto">Supports HTML (with images) or Markdown</p>
-                        <p className="text-[9px] font-bold text-emerald-600 uppercase tracking-widest pt-2 bg-emerald-50 px-2 py-1 rounded inline-block">Use HTML for automatic figure support</p>
-                    </div>
+                    <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm border border-slate-100 group-hover:scale-110 transition-transform"><iconify-icon icon="mdi:file-upload-outline" className="w-10 h-10 text-emerald-500" /></div>
+                    <div className="text-center space-y-2"><h3 className="text-lg font-black text-slate-700">Drop Chapter File</h3><p className="text-xs text-slate-400 font-medium">Supports HTML or Markdown</p></div>
                     <input ref={fileInputRef} type="file" accept=".md,.html,.txt" onChange={handleFileUpload} className="hidden" />
                 </div>
             )}
           </div>
         </div>
 
-        {/* Right Panel: Config (State preserved) */}
+        {/* Right Panel: Config */}
         <div className="flex-1 lg:w-[50%] flex flex-col gap-4 min-h-0">
           <div className="bg-slate-900 rounded-[2.5rem] border border-slate-800 p-8 shadow-2xl flex flex-col flex-1 min-h-0 relative">
             <div className="flex items-center justify-between mb-8 shrink-0">
-                <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                    <iconify-icon icon="mdi:cog-outline" className="text-indigo-400" /> 2. Configuration
-                </h2>
+                <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2"><iconify-icon icon="mdi:cog-outline" className="text-indigo-400" /> 2. Configuration</h2>
                 <span className="text-[9px] font-black bg-indigo-500/10 text-indigo-400 px-3 py-1.5 rounded-full uppercase border border-indigo-500/20">{selectedChapters.length} Selected</span>
             </div>
 
-            {/* Rest of the UI remains exactly the same as previous */}
             <div className="space-y-8 flex-1 overflow-y-auto custom-scrollbar pr-2 pb-4">
               <div>
                 <label className="text-[9px] font-black text-slate-500 uppercase ml-2 block mb-2 tracking-widest">Assessment Title</label>
                 <input type="text" value={topic} onChange={e => setTopic(e.target.value)} className="w-full bg-slate-800 border-2 border-slate-700/50 rounded-2xl px-5 py-4 text-sm font-black text-white outline-none focus:border-indigo-500" placeholder="e.g. Midterm Physics" />
               </div>
 
-              {/* Global Strategy Block */}
+              {/* Global Strategy Block - Granular Controls */}
               <div className="p-6 bg-slate-800/40 rounded-[2rem] border border-slate-700/50">
                  <div className="flex items-center justify-between mb-5">
-                    <h3 className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                        <iconify-icon icon="mdi:auto-fix" /> Global Strategy
-                    </h3>
+                    <h3 className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.2em] flex items-center gap-2"><iconify-icon icon="mdi:auto-fix" /> Global Strategy</h3>
                     <button onClick={applyNeetPreset} className="text-[9px] font-black text-white bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg uppercase tracking-wider transition-all">NEET Preset</button>
                  </div>
                  
@@ -623,23 +552,13 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
                             <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-3 block">Total Figure Questions (Distribute)</label>
                             <div className="flex items-center gap-3">
                                 <button onClick={() => handleGlobalFigureChange(String(totalFigures - 1))} className="w-8 h-8 bg-slate-700 text-white rounded-lg flex items-center justify-center"><iconify-icon icon="mdi:minus" /></button>
-                                <input 
-                                    type="number" 
-                                    value={totalFigures} 
-                                    onChange={e => handleGlobalFigureChange(e.target.value)}
-                                    className="flex-1 bg-transparent border-b border-slate-700 focus:border-indigo-500 text-center text-lg font-black text-white outline-none min-w-0"
-                                />
+                                <input type="number" value={totalFigures} onChange={e => handleGlobalFigureChange(e.target.value)} className="flex-1 bg-transparent border-b border-slate-700 focus:border-indigo-500 text-center text-lg font-black text-white outline-none min-w-0" />
                                 <button onClick={() => handleGlobalFigureChange(String(totalFigures + 1))} className="w-8 h-8 bg-slate-700 text-white rounded-lg flex items-center justify-center"><iconify-icon icon="mdi:plus" /></button>
                             </div>
                         </div>
                         <div className="flex-1 flex flex-col items-center">
                             <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-3 block">Chemistry 2D</label>
-                            <button 
-                                onClick={() => setUseSmiles(!useSmiles)}
-                                className={`w-full py-2 rounded-xl border-2 transition-all font-black text-[10px] uppercase tracking-wider ${useSmiles ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-500'}`}
-                            >
-                                {useSmiles ? 'Enabled' : 'Disabled'}
-                            </button>
+                            <button onClick={() => setUseSmiles(!useSmiles)} className={`w-full py-2 rounded-xl border-2 transition-all font-black text-[10px] uppercase tracking-wider ${useSmiles ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>{useSmiles ? 'Enabled' : 'Disabled'}</button>
                         </div>
                     </div>
                  </div>
@@ -651,81 +570,28 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({ onClose, onStart, isL
                 {selectedChapters.map(sc => (
                     <div key={sc.id} className="p-5 bg-slate-800/50 rounded-3xl border border-slate-700/50 group/item">
                         <div className="flex justify-between items-center mb-4">
-                            <div className="min-w-0 flex-1">
-                                <span className="text-[10px] font-black text-slate-300 uppercase truncate block">{sc.name}</span>
-                                <span className="text-[8px] font-bold text-slate-600 uppercase tracking-tighter">
-                                    {sc.source === 'upload' ? <span className="text-emerald-500 flex items-center gap-1"><iconify-icon icon="mdi:file-document-outline"/> File Source</span> : `${sc.subjectName} • ${sc.className}`}
-                                </span>
-                            </div>
+                            <div className="min-w-0 flex-1"><span className="text-[10px] font-black text-slate-300 uppercase truncate block">{sc.name}</span><span className="text-[8px] font-bold text-slate-600 uppercase tracking-tighter">{sc.subjectName} • {sc.className}</span></div>
                             <button onClick={() => setSelectedChapters(p => p.filter(x => x.id !== sc.id))} className="text-slate-600 hover:text-rose-500 transition-colors opacity-0 group-hover/item:opacity-100"><iconify-icon icon="mdi:close-circle" width="18" /></button>
                         </div>
-                        
-                        {/* Custom Control Logic based on Source */}
-                        {sc.source === 'upload' ? (
-                            // UPLOAD SPECIFIC CONTROLS (FIGURE BATCHES ONLY)
-                            <div className="bg-indigo-500/10 rounded-xl p-3 border border-indigo-500/20">
-                                <label className="text-[8px] font-black text-indigo-300 uppercase tracking-widest mb-3 block flex items-center gap-2">
-                                    <iconify-icon icon="mdi:image-multiple" /> Figure Batch Grid (6x)
-                                </label>
-                                <div className="flex items-center gap-4">
-                                    <button onClick={() => updateUploadFigures(sc.id, -6)} className="w-8 h-8 bg-indigo-600 text-white rounded-lg flex items-center justify-center shadow-lg active:scale-90 transition-transform"><iconify-icon icon="mdi:minus" /></button>
-                                    <div className="flex-1 text-center">
-                                        <span className="text-2xl font-black text-white block leading-none">{sc.figureCount}</span>
-                                        <span className="text-[7px] font-bold text-indigo-400 uppercase tracking-widest">Total Figures</span>
-                                    </div>
-                                    <button onClick={() => updateUploadFigures(sc.id, 6)} className="w-8 h-8 bg-indigo-600 text-white rounded-lg flex items-center justify-center shadow-lg active:scale-90 transition-transform"><iconify-icon icon="mdi:plus" /></button>
-                                </div>
-                                <div className="mt-3 text-center">
-                                    <span className="text-[8px] font-bold text-slate-500 bg-slate-900/50 px-2 py-1 rounded-full border border-slate-700">Generates {Math.ceil((sc.figureCount || 0) / 6)} Grid Images</span>
-                                </div>
+                        <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 flex-1 bg-slate-900/50 rounded-xl p-2 border border-slate-700/50">
+                                <button onClick={() => updateChapterCount(sc.id, -1)} className="w-6 h-6 bg-slate-700 text-white rounded-lg flex items-center justify-center active:scale-90 transition-transform"><iconify-icon icon="mdi:minus" width="14" /></button>
+                                <div className="flex-1 text-center"><input type="number" value={sc.count} onChange={e => setChapterCountDirect(sc.id, e.target.value)} className="w-full bg-transparent text-center text-sm font-black text-white outline-none"/><p className="text-[7px] text-slate-500 uppercase font-black">Total</p></div>
+                                <button onClick={() => updateChapterCount(sc.id, 1)} className="w-6 h-6 bg-slate-700 text-white rounded-lg flex items-center justify-center active:scale-90 transition-transform"><iconify-icon icon="mdi:plus" width="14" /></button>
                             </div>
-                        ) : (
-                            // STANDARD DATABASE CONTROLS
-                            <div className="space-y-4">
-                                {/* Total Questions Control */}
-                                <div className="flex items-center gap-3">
-                                    <div className="flex items-center gap-3 flex-1 bg-slate-900/50 rounded-xl p-2 border border-slate-700/50">
-                                        <button onClick={() => updateChapterCount(sc.id, -1)} className="w-6 h-6 bg-slate-700 text-white rounded-lg flex items-center justify-center active:scale-90 transition-transform"><iconify-icon icon="mdi:minus" width="14" /></button>
-                                        <div className="flex-1 text-center">
-                                            <input 
-                                                type="number" 
-                                                value={sc.count} 
-                                                onChange={e => setChapterCountDirect(sc.id, e.target.value)}
-                                                className="w-full bg-transparent text-center text-sm font-black text-white outline-none"
-                                            />
-                                            <p className="text-[7px] text-slate-500 uppercase font-black">Total</p>
-                                        </div>
-                                        <button onClick={() => updateChapterCount(sc.id, 1)} className="w-6 h-6 bg-slate-700 text-white rounded-lg flex items-center justify-center active:scale-90 transition-transform"><iconify-icon icon="mdi:plus" width="14" /></button>
-                                    </div>
-                                    
-                                    {/* Figure Questions Control */}
-                                    <div className="flex items-center gap-3 flex-1 bg-indigo-900/20 rounded-xl p-2 border border-indigo-500/20">
-                                        <button onClick={() => updateChapterFigures(sc.id, -1)} className="w-6 h-6 bg-indigo-900 text-indigo-200 rounded-lg flex items-center justify-center active:scale-90 transition-transform hover:bg-indigo-800"><iconify-icon icon="mdi:minus" width="14" /></button>
-                                        <div className="flex-1 text-center">
-                                            <input 
-                                                type="number" 
-                                                value={sc.figureCount || 0} 
-                                                onChange={e => setChapterFiguresDirect(sc.id, e.target.value)}
-                                                className="w-full bg-transparent text-center text-sm font-black text-indigo-200 outline-none"
-                                            />
-                                            <p className="text-[7px] text-indigo-400 uppercase font-black">Figures</p>
-                                        </div>
-                                        <button onClick={() => updateChapterFigures(sc.id, 1)} className="w-6 h-6 bg-indigo-900 text-indigo-200 rounded-lg flex items-center justify-center active:scale-90 transition-transform hover:bg-indigo-800"><iconify-icon icon="mdi:plus" width="14" /></button>
-                                    </div>
-                                </div>
+                            <div className="flex items-center gap-3 flex-1 bg-indigo-900/20 rounded-xl p-2 border border-indigo-500/20">
+                                <button onClick={() => updateChapterFigures(sc.id, -1)} className="w-6 h-6 bg-indigo-900 text-indigo-200 rounded-lg flex items-center justify-center active:scale-90 transition-transform hover:bg-indigo-800"><iconify-icon icon="mdi:minus" width="14" /></button>
+                                <div className="flex-1 text-center"><input type="number" value={sc.figureCount || 0} onChange={e => setChapterFiguresDirect(sc.id, e.target.value)} className="w-full bg-transparent text-center text-sm font-black text-indigo-200 outline-none"/><p className="text-[7px] text-indigo-400 uppercase font-black">Figures</p></div>
+                                <button onClick={() => updateChapterFigures(sc.id, 1)} className="w-6 h-6 bg-indigo-900 text-indigo-200 rounded-lg flex items-center justify-center active:scale-90 transition-transform hover:bg-indigo-800"><iconify-icon icon="mdi:plus" width="14" /></button>
                             </div>
-                        )}
+                        </div>
                     </div>
                 ))}
               </div>
             </div>
 
             <div className="mt-8 pt-8 border-t border-slate-800 shrink-0">
-               <button 
-                onClick={handleCreateTest}
-                disabled={totalQuestions === 0}
-                className={`w-full py-6 rounded-3xl font-black uppercase tracking-[0.25em] text-[13px] shadow-2xl transition-all disabled:opacity-30 flex items-center justify-center gap-4 active:scale-[0.98] ${initialChapters ? 'bg-indigo-600 shadow-indigo-600/40 hover:bg-indigo-500' : 'bg-emerald-600 shadow-emerald-600/40 hover:bg-emerald-500'}`}
-               >
+               <button onClick={handleCreateTest} disabled={totalQuestions === 0} className={`w-full py-6 rounded-3xl font-black uppercase tracking-[0.25em] text-[13px] shadow-2xl transition-all disabled:opacity-30 flex items-center justify-center gap-4 active:scale-[0.98] ${initialChapters ? 'bg-indigo-600 shadow-indigo-600/40 hover:bg-indigo-500' : 'bg-emerald-600 shadow-emerald-600/40 hover:bg-emerald-500'}`}>
                   <iconify-icon icon={initialChapters ? "mdi:update" : "mdi:content-save-all"} width="24" />
                   {initialChapters ? 'Update Assessment' : 'Initiate Forging'}
                </button>

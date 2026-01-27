@@ -34,7 +34,8 @@ interface Chapter {
   chapter_number?: number;
   pdf_name?: string;
   pdf_path?: string;
-  // raw_text removed from list view interface to prevent accidental fetch
+  doc_name?: string;
+  doc_path?: string;
   raw_text?: string; 
   status: 'draft' | 'ready';
 }
@@ -59,17 +60,20 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
   const [renamingItem, setRenamingItem] = useState<{ type: 'class' | 'subject' | 'chapter'; item: any } | null>(null);
   const [newItemName, setNewItemName] = useState('');
   const [newItemNumber, setNewItemNumber] = useState<string>('');
-  const [modalFile, setModalFile] = useState<File | null>(null);
+  
+  // File Upload States
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [docFile, setDocFile] = useState<File | null>(null);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
-  const [uploadingChapter, setUploadingChapter] = useState<Chapter | null>(null);
-  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
   
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const modalFileInputRef = useRef<HTMLInputElement>(null);
-
+  // Viewer State
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
+
+  // Refs
+  const pdfInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchData();
@@ -88,10 +92,9 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       if (subjectsError) throw subjectsError;
       setSubjects(subjectsData);
       
-      // OPTIMIZATION: Explicitly select columns to avoid fetching 'raw_text' (which is huge)
       const { data: chaptersData, error: chaptersError } = await supabase
         .from('chapters')
-        .select('id, name, chapter_number, status, pdf_name, pdf_path, subject_id, subject_name, class_id, class_name, kb_id, kb_name')
+        .select('id, name, chapter_number, status, pdf_name, pdf_path, doc_name, doc_path, subject_id, subject_name, class_id, class_name, kb_id, kb_name')
         .eq('kb_id', kbId)
         .order('chapter_number', { ascending: true });
       if (chaptersError) throw chaptersError;
@@ -108,8 +111,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     }
   };
   
-  // ... (rest of the file remains largely unchanged, just ensuring no random selects occur)
-  
   useEffect(() => {
     if (renamingItem) {
         setNewItemName(renamingItem.item.name);
@@ -117,7 +118,8 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     } else if (activeModal === 'chapter') {
         setNewItemName('');
         setNewItemNumber('');
-        setModalFile(null);
+        setPdfFile(null);
+        setDocFile(null);
     }
   }, [renamingItem, activeModal]);
 
@@ -141,31 +143,20 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     return fullText;
   };
 
-  // ... (handleAddItem, handleUpdateName, deleteItem - standard logic) ...
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
 
     try {
       if (activeModal === 'class') {
-        const { data, error } = await supabase.from('classes').insert([{ 
-          kb_id: kbId, 
-          kb_name: kbName,
-          name: newItemName 
-        }]).select().single();
+        const { data, error } = await supabase.from('classes').insert([{ kb_id: kbId, kb_name: kbName, name: newItemName }]).select().single();
         if (error) throw error;
         setClasses([...classes, data]);
         setSelectedClass(data);
         setActiveModal(null);
       } 
       else if (activeModal === 'subject' && selectedClass) {
-        const { data, error } = await supabase.from('subjects').insert([{ 
-          class_id: selectedClass.id, 
-          class_name: selectedClass.name,
-          kb_id: kbId,
-          kb_name: kbName,
-          name: newItemName 
-        }]).select().single();
+        const { data, error } = await supabase.from('subjects').insert([{ class_id: selectedClass.id, class_name: selectedClass.name, kb_id: kbId, kb_name: kbName, name: newItemName }]).select().single();
         if (error) throw error;
         setSubjects([...subjects, data]);
         setSelectedSubject(data);
@@ -174,65 +165,62 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       else if (activeModal === 'chapter' && selectedSubject) {
         const num = newItemNumber ? parseInt(newItemNumber) : null;
         
-        // Initial insert (draft)
+        // 1. Create Draft Chapter
         const { data: chapterData, error: chapterError } = await supabase.from('chapters').insert([{ 
-          subject_id: selectedSubject.id, 
-          subject_name: selectedSubject.name,
-          class_id: selectedSubject.class_id,
-          class_name: selectedSubject.class_name,
-          kb_id: kbId,
-          kb_name: kbName,
-          name: newItemName,
-          chapter_number: num,
-          status: 'draft' 
-        }]).select('id, name, chapter_number, status, subject_id, subject_name, class_id, class_name, kb_id, kb_name').single();
+          subject_id: selectedSubject.id, subject_name: selectedSubject.name, class_id: selectedSubject.class_id, class_name: selectedSubject.class_name, kb_id: kbId, kb_name: kbName, name: newItemName, chapter_number: num, status: 'draft' 
+        }]).select().single();
 
         if (chapterError) throw chapterError;
 
-        if (modalFile) {
+        if (pdfFile || docFile) {
             setIsProcessing(true);
             setActiveModal(null);
-            setProcessingStep('Extracting Knowledge...');
             
-            try {
-                const text = await extractTextFromPdf(modalFile);
-                setProcessingStep('Uploading to Cloud...');
-                
-                const kbDir = slugify(kbName);
-                const classDir = slugify(selectedClass?.name);
-                const subjectDir = slugify(selectedSubject?.name);
-                const chapterDir = slugify(newItemName);
-                const fileClean = slugify(modalFile.name.split('.')[0]) + '.pdf';
-                const filePath = `${kbDir}/${classDir}/${subjectDir}/${chapterDir}/${fileClean}`;
-                
-                const { error: uploadError } = await supabase.storage
-                    .from('chapters')
-                    .upload(filePath, modalFile, { upsert: true, contentType: 'application/pdf' });
-                
-                if (uploadError) throw uploadError;
+            const kbDir = slugify(kbName);
+            const classDir = slugify(selectedClass?.name);
+            const subjectDir = slugify(selectedSubject?.name);
+            const chapterDir = slugify(newItemName);
+            const basePath = `${kbDir}/${classDir}/${subjectDir}/${chapterDir}`;
 
-                // Update with text (this is the ONLY time we send raw_text up)
-                const { data: updatedData, error: dbError } = await supabase
-                    .from('chapters')
-                    .update({
-                        pdf_name: modalFile.name,
-                        pdf_path: filePath,
-                        raw_text: text,
-                        status: 'ready'
-                    })
-                    .eq('id', chapterData.id)
-                    .select('id, name, chapter_number, status, pdf_name, pdf_path, subject_id, subject_name, class_id, class_name, kb_id, kb_name') // Don't fetch raw_text back
-                    .single();
+            let pdfPath = null;
+            let rawText = '';
+            let docPath = null;
 
-                if (dbError) throw dbError;
-                setChapters(prev => [...prev.filter(c => c.id !== chapterData.id), updatedData].sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)));
-            } catch (err: any) {
-                alert(`Chapter created but PDF processing failed: ${err.message}`);
-                setChapters(prev => [...prev, chapterData].sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)));
-            } finally {
-                setIsProcessing(false);
-                setProcessingStep('');
+            // 2. Process PDF
+            if (pdfFile) {
+                setProcessingStep('Reading PDF Context...');
+                rawText = await extractTextFromPdf(pdfFile);
+                setProcessingStep('Uploading PDF...');
+                const pdfClean = slugify(pdfFile.name.split('.')[0]) + '.pdf';
+                pdfPath = `${basePath}/${pdfClean}`;
+                await supabase.storage.from('chapters').upload(pdfPath, pdfFile, { upsert: true, contentType: 'application/pdf' });
             }
+
+            // 3. Process Doc
+            if (docFile) {
+                setProcessingStep('Uploading Source Doc...');
+                const ext = docFile.name.split('.').pop();
+                const docClean = slugify(docFile.name.split('.')[0]) + '.' + ext;
+                docPath = `${basePath}/${docClean}`;
+                await supabase.storage.from('chapters').upload(docPath, docFile, { upsert: true });
+            }
+
+            // 4. Update Chapter
+            setProcessingStep('Finalizing...');
+            const { data: updatedData, error: dbError } = await supabase
+                .from('chapters')
+                .update({
+                    pdf_name: pdfFile?.name, pdf_path: pdfPath,
+                    doc_name: docFile?.name, doc_path: docPath,
+                    raw_text: rawText || undefined,
+                    status: 'ready'
+                })
+                .eq('id', chapterData.id)
+                .select()
+                .single();
+
+            if (dbError) throw dbError;
+            setChapters(prev => [...prev.filter(c => c.id !== chapterData.id), updatedData].sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)));
         } else {
             setChapters(prev => [...prev, chapterData].sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)));
             setActiveModal(null);
@@ -240,10 +228,14 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       }
       setNewItemName('');
       setNewItemNumber('');
-      setModalFile(null);
+      setPdfFile(null);
+      setDocFile(null);
     } catch (err: any) {
       console.error(err);
       alert(`Error creating ${activeModal}: ${err.message}`);
+    } finally {
+        setIsProcessing(false);
+        setProcessingStep('');
     }
   };
   
@@ -304,81 +296,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     }
   };
 
-  const handlePdfUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !uploadingChapter) return;
-    setPendingUploadFile(file);
-  };
-
-  const startFinalProcessing = async () => {
-    if (!pendingUploadFile || !uploadingChapter) return;
-    
-    const file = pendingUploadFile;
-    const finalName = newItemName.trim() || uploadingChapter.name;
-    const finalNum = newItemNumber ? parseInt(newItemNumber) : uploadingChapter.chapter_number;
-
-    setIsProcessing(true);
-    setProcessingStep('Extracting Knowledge...');
-
-    try {
-      const text = await extractTextFromPdf(file);
-      setProcessingStep('Uploading to Organized Folders...');
-      
-      const kbDir = slugify(uploadingChapter.kb_name || kbName);
-      const classDir = slugify(uploadingChapter.class_name || selectedClass?.name);
-      const subjectDir = slugify(uploadingChapter.subject_name || selectedSubject?.name);
-      const chapterDir = slugify(finalName);
-      const fileClean = slugify(file.name.split('.')[0]) + '.pdf';
-      
-      const filePath = `${kbDir}/${classDir}/${subjectDir}/${chapterDir}/${fileClean}`;
-      
-      const { error: uploadError } = await supabase.storage
-        .from('chapters')
-        .upload(filePath, file, { upsert: true, contentType: 'application/pdf' });
-
-      if (uploadError) throw uploadError;
-
-      setProcessingStep('Finalizing Sync...');
-      const { error: dbError } = await supabase
-        .from('chapters')
-        .update({
-          name: finalName,
-          chapter_number: finalNum,
-          pdf_name: file.name, 
-          pdf_path: filePath, 
-          raw_text: text, 
-          status: 'ready',
-          kb_name: uploadingChapter.kb_name || kbName,
-          class_name: uploadingChapter.class_name || selectedClass?.name,
-          subject_name: uploadingChapter.subject_name || selectedSubject?.name
-        })
-        .eq('id', uploadingChapter.id);
-
-      if (dbError) throw dbError;
-
-      // Update local state without re-fetching everything
-      setChapters(prev => prev.map(c => 
-        c.id === uploadingChapter.id 
-          ? { ...c, name: finalName, chapter_number: finalNum ?? undefined, pdf_name: file.name, pdf_path: filePath, status: 'ready' as const } 
-          : c
-      ).sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)));
-      
-      alert(`Successfully synced to cloud.`);
-    } catch (err: any) {
-      console.error("Critical Upload/Sync Error:", err);
-      alert(`Sync failed: ${err.message}`);
-    } finally {
-      setIsProcessing(false);
-      setProcessingStep('');
-      setUploadingChapter(null);
-      setPendingUploadFile(null);
-      setNewItemName('');
-      setNewItemNumber('');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  // ... (rest of PDF viewer logic remains the same)
   const openPdfViewer = async (chapter: Chapter) => {
     if (!chapter.pdf_path) return;
     try {
@@ -411,7 +328,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
 
   return (
     <div className="h-full flex flex-col font-sans animate-fade-in w-full bg-slate-50/30 overflow-hidden">
-      {/* ... (UI components remain identical) ... */}
       {isProcessing && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
            <div className="bg-white px-6 py-4 rounded-lg shadow-2xl flex flex-col items-center gap-3 border border-slate-100 max-w-sm w-full">
@@ -423,8 +339,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
            </div>
         </div>
       )}
-
-      <input type="file" accept=".pdf" ref={fileInputRef} onChange={handlePdfUpload} className="hidden" />
 
       {/* Navigation Bars */}
       <div className="shrink-0 bg-white border-b border-slate-200 shadow-sm z-10 px-4">
@@ -505,131 +419,66 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-        {/* Main Content Area - Grid of Chapters */}
-        {/* ... (standard rendering code from original file, omitted here for brevity as logic logic is unchanged, just data source) ... */}
-        {isSearching ? (
-          <div className="space-y-8 animate-fade-in">
-             {/* Search Subjects Results */}
-             {filteredSubjects.length > 0 && (
-                <div className="space-y-4">
-                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                    <iconify-icon icon="mdi:book-search-outline" /> Matching Subjects
-                  </h4>
-                  <div className="flex flex-wrap gap-2">
-                    {filteredSubjects.map(s => (
-                      <button 
-                        key={s.id} 
-                        onClick={() => { setSelectedClass(classes.find(l => l.id === s.class_id) || null); setSelectedSubject(s); setSearchTerm(''); }}
-                        className="bg-white text-slate-600 border border-slate-200 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider shadow-sm hover:border-accent hover:text-accent transition-all"
-                      >
-                        {s.name} <span className="text-[8px] text-slate-300 ml-1">({s.class_name})</span>
-                      </button>
-                    ))}
+        {/* Chapters Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
+          {selectedSubject ? (
+            <>
+              {/* Add Chapter Button */}
+              <button 
+                onClick={() => setActiveModal('chapter')}
+                className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-2 hover:border-accent hover:bg-indigo-50/30 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 group-hover:text-accent group-hover:bg-white transition-all shadow-sm">
+                  <iconify-icon icon="mdi:plus" width="24" />
+                </div>
+                <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider">New Chapter</span>
+              </button>
+
+              {filteredChapters.map(c => (
+                <div 
+                  key={c.id} 
+                  className={`relative aspect-square bg-white border border-slate-100 rounded-xl p-3 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group flex flex-col ${c.status === 'ready' ? 'border-amber-200' : 'grayscale'}`}
+                >
+                  {c.chapter_number !== undefined && c.chapter_number !== null && (
+                    <div className="absolute top-2 left-2 z-10">
+                        <span className="bg-slate-900 text-white text-[7px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-tighter shadow-sm">Ch {c.chapter_number.toString().padStart(2, '0')}</span>
+                    </div>
+                  )}
+
+                  <div className="flex-1 flex flex-col items-center justify-center text-center px-1 overflow-hidden">
+                    <h5 className="text-[10px] font-black text-slate-800 line-clamp-2 leading-tight uppercase tracking-tight">{c.name}</h5>
+                    <div className="mt-2 flex items-center gap-1">
+                        {c.pdf_path && <iconify-icon icon="mdi:file-pdf-box" className="text-rose-500 text-xs" />}
+                        {c.doc_path && <iconify-icon icon="mdi:file-document-outline" className="text-indigo-500 text-xs" />}
+                    </div>
+                  </div>
+
+                  <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-sm rounded-xl opacity-0 group-hover:opacity-100 transition-all flex flex-col items-center justify-center gap-2 p-2">
+                    {c.status === 'ready' && c.pdf_path && (
+                        <button onClick={() => openPdfViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:eye" width="12" /> View PDF</button>
+                    )}
+                    
+                    <div className="flex gap-2 mt-1">
+                      <button onClick={() => setRenamingItem({ type: 'chapter', item: c })} className="text-white/40 hover:text-white transition-colors"><iconify-icon icon="mdi:pencil" width="14" /></button>
+                      <button onClick={() => deleteItem('chapter', c.id, c.name)} className="text-white/40 hover:text-rose-500 transition-colors"><iconify-icon icon="mdi:trash-can-outline" width="14" /></button>
+                    </div>
                   </div>
                 </div>
-             )}
-
-             {/* Search Chapters Results */}
-             <div className="space-y-4">
-               <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                 <iconify-icon icon="mdi:file-search-outline" /> {filteredChapters.length} Chapters Found
-               </h4>
-               {filteredChapters.length > 0 ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
-                    {filteredChapters.map(c => (
-                      <div 
-                        key={c.id} 
-                        className={`relative aspect-square bg-white border border-slate-100 rounded-xl p-3 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group flex flex-col ${c.status === 'ready' ? 'border-amber-200' : 'grayscale'}`}
-                      >
-                        {c.chapter_number !== undefined && c.chapter_number !== null && (
-                          <div className="absolute top-2 left-2 z-10">
-                              <span className="bg-slate-900 text-white text-[7px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-tighter shadow-sm">Ch {c.chapter_number.toString().padStart(2, '0')}</span>
-                          </div>
-                        )}
-                        <div className="flex-1 flex flex-col items-center justify-center text-center px-1 overflow-hidden">
-                          <h5 className="text-[10px] font-black text-slate-800 line-clamp-2 leading-tight uppercase tracking-tight">{c.name}</h5>
-                          <p className="text-[7px] font-bold text-slate-300 uppercase tracking-tighter mt-1">{c.subject_name}</p>
-                        </div>
-                        <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-sm rounded-xl opacity-0 group-hover:opacity-100 transition-all flex flex-col items-center justify-center gap-2 p-2">
-                          <button onClick={() => { setSelectedClass(classes.find(l => l.id === c.class_id) || null); setSelectedSubject(subjects.find(s => s.id === c.subject_id) || null); setSearchTerm(''); }} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50">Go to Parent</button>
-                          {c.status === 'ready' && <button onClick={() => openPdfViewer(c)} className="w-full py-1.5 bg-white/20 text-white rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5">View PDF</button>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-               ) : (
-                  <div className="py-20 flex flex-col items-center justify-center text-slate-300">
-                    <iconify-icon icon="mdi:magnify-close" width="48" className="opacity-20 mb-2" />
-                    <p className="text-xs font-black uppercase tracking-widest opacity-40">No matching chapters found</p>
-                  </div>
-               )}
-             </div>
-          </div>
-        ) : (
-          /* Normal Hierarchy View */
-          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
-            {selectedSubject ? (
-              <>
-                <button 
-                  onClick={() => setActiveModal('chapter')}
-                  className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-2 hover:border-accent hover:bg-indigo-50/30 transition-all group"
-                >
-                  <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 group-hover:text-accent group-hover:bg-white transition-all shadow-sm">
-                    <iconify-icon icon="mdi:plus" width="24" />
-                  </div>
-                  <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider">New Chapter</span>
-                </button>
-
-                {filteredChapters.map(c => (
-                  <div 
-                    key={c.id} 
-                    className={`relative aspect-square bg-white border border-slate-100 rounded-xl p-3 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group flex flex-col ${c.status === 'ready' ? 'border-amber-200' : 'grayscale'}`}
-                  >
-                    {c.chapter_number !== undefined && c.chapter_number !== null && (
-                      <div className="absolute top-2 left-2 z-10">
-                          <span className="bg-slate-900 text-white text-[7px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-tighter shadow-sm">Ch {c.chapter_number.toString().padStart(2, '0')}</span>
-                      </div>
-                    )}
-
-                    <div className="flex-1 flex flex-col items-center justify-center text-center px-1 overflow-hidden">
-                      <h5 className="text-[10px] font-black text-slate-800 line-clamp-3 leading-tight uppercase tracking-tight">{c.name}</h5>
-                      {c.status === 'ready' && (
-                          <div className="mt-2 text-[8px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100 uppercase tracking-tighter">Ready</div>
-                      )}
-                    </div>
-
-                    <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-sm rounded-xl opacity-0 group-hover:opacity-100 transition-all flex flex-col items-center justify-center gap-2 p-2">
-                      {c.status === 'ready' ? (
-                        <>
-                          <button onClick={() => openPdfViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:eye" width="12" /> View</button>
-                          <button onClick={() => { setUploadingChapter(c); fileInputRef.current?.click(); }} className="w-full py-1.5 bg-white/20 text-white rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-white/30"><iconify-icon icon="mdi:refresh" width="12" /> Update</button>
-                        </>
-                      ) : (
-                        <button onClick={() => { setUploadingChapter(c); fileInputRef.current?.click(); }} className="w-full py-1.5 bg-emerald-500 text-white rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-emerald-600 shadow-lg shadow-emerald-500/20"><iconify-icon icon="mdi:upload" width="12" /> Knowledge</button>
-                      )}
-                      
-                      <div className="flex gap-2 mt-1">
-                        <button onClick={() => setRenamingItem({ type: 'chapter', item: c })} className="text-white/40 hover:text-white transition-colors"><iconify-icon icon="mdi:pencil" width="14" /></button>
-                        <button onClick={() => deleteItem('chapter', c.id, c.name)} className="text-white/40 hover:text-rose-500 transition-colors"><iconify-icon icon="mdi:trash-can-outline" width="14" /></button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </>
-            ) : (
-              <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-300">
-                 <iconify-icon icon="mdi:arrow-up-thin-circle-outline" width="64" className="mb-4 opacity-20" />
-                 <p className="text-xs font-black uppercase tracking-widest opacity-40">Select a Subject to manage Chapters</p>
-              </div>
-            )}
-          </div>
-        )}
+              ))}
+            </>
+          ) : (
+            <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-300">
+               <iconify-icon icon="mdi:arrow-up-thin-circle-outline" width="64" className="mb-4 opacity-20" />
+               <p className="text-xs font-black uppercase tracking-widest opacity-40">Select a Subject to manage Chapters</p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Primary Modals (Add/Rename) */}
+      {/* Primary Modals */}
       {(activeModal || renamingItem) && (
         <div className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => { setActiveModal(null); setRenamingItem(null); }}>
-          <div className="bg-white w-full max-w-xs rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200" onClick={e => e.stopPropagation()}>
+          <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-black text-slate-800 mb-4 uppercase tracking-widest">{renamingItem ? `Edit ${renamingItem.type}` : `New ${activeModal}`}</h3>
             <form onSubmit={renamingItem ? handleUpdateName : handleAddItem} className="space-y-4">
               {(activeModal === 'chapter' || renamingItem?.type === 'chapter') && (
@@ -657,29 +506,38 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                 />
               </div>
 
-              {/* Integrated PDF Upload for NEW Chapters */}
+              {/* Enhanced File Upload Section */}
               {activeModal === 'chapter' && !renamingItem && (
-                 <div className="pt-2">
-                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Source Material (PDF)</label>
-                    <div 
-                      onClick={() => modalFileInputRef.current?.click()}
-                      className={`group border-2 border-dashed rounded-xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all ${modalFile ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-100 bg-slate-50 hover:border-accent'}`}
-                    >
-                       <iconify-icon icon={modalFile ? "mdi:file-check" : "mdi:file-pdf-box"} className={`text-2xl ${modalFile ? 'text-emerald-500' : 'text-slate-300 group-hover:text-accent'}`} />
-                       <div className="text-center">
-                          <p className={`text-[10px] font-bold ${modalFile ? 'text-emerald-700' : 'text-slate-500'}`}>
-                            {modalFile ? modalFile.name : 'Click to Upload PDF'}
-                          </p>
-                          <p className="text-[8px] font-medium text-slate-400 uppercase tracking-tighter">Required for AI Context</p>
-                       </div>
+                 <div className="space-y-3 pt-2">
+                    {/* PDF Input */}
+                    <div>
+                        <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Context Material (PDF)</label>
+                        <div 
+                          onClick={() => pdfInputRef.current?.click()}
+                          className={`group border-2 border-dashed rounded-xl p-3 flex items-center justify-center gap-3 cursor-pointer transition-all ${pdfFile ? 'border-rose-200 bg-rose-50/30' : 'border-slate-100 bg-slate-50 hover:border-rose-200'}`}
+                        >
+                           <iconify-icon icon={pdfFile ? "mdi:file-check" : "mdi:file-pdf-box"} className={`text-xl ${pdfFile ? 'text-rose-500' : 'text-slate-300'}`} />
+                           <p className={`text-[10px] font-bold ${pdfFile ? 'text-rose-700' : 'text-slate-400'}`}>
+                                {pdfFile ? pdfFile.name : 'Upload PDF (Required for AI)'}
+                           </p>
+                        </div>
+                        <input type="file" accept=".pdf" ref={pdfInputRef} className="hidden" onChange={(e) => setPdfFile(e.target.files?.[0] || null)} />
                     </div>
-                    <input 
-                      type="file" 
-                      accept=".pdf" 
-                      ref={modalFileInputRef} 
-                      className="hidden" 
-                      onChange={(e) => setModalFile(e.target.files?.[0] || null)} 
-                    />
+
+                    {/* Source Doc Input */}
+                    <div>
+                        <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Figure Source (Doc/HTML)</label>
+                        <div 
+                          onClick={() => docInputRef.current?.click()}
+                          className={`group border-2 border-dashed rounded-xl p-3 flex items-center justify-center gap-3 cursor-pointer transition-all ${docFile ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-100 bg-slate-50 hover:border-indigo-200'}`}
+                        >
+                           <iconify-icon icon={docFile ? "mdi:file-check" : "mdi:file-document-outline"} className={`text-xl ${docFile ? 'text-indigo-500' : 'text-slate-300'}`} />
+                           <p className={`text-[10px] font-bold ${docFile ? 'text-indigo-700' : 'text-slate-400'}`}>
+                                {docFile ? docFile.name : 'Upload DOCX/HTML (Optional)'}
+                           </p>
+                        </div>
+                        <input type="file" accept=".docx,.html" ref={docInputRef} className="hidden" onChange={(e) => setDocFile(e.target.files?.[0] || null)} />
+                    </div>
                  </div>
               )}
 
@@ -689,64 +547,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
               </div>
             </form>
           </div>
-        </div>
-      )}
-
-      {/* Sync Knowledge Modal (Triggered after manual file select from grid update) */}
-      {pendingUploadFile && uploadingChapter && (
-        <div className="fixed inset-0 z-[350] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
-           <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl border border-slate-100 animate-slide-up">
-              <div className="flex items-center gap-3 mb-6">
-                 <div className="w-10 h-10 bg-emerald-50 text-emerald-500 rounded-xl flex items-center justify-center"><iconify-icon icon="mdi:cloud-upload" width="24" /></div>
-                 <div>
-                    <h3 className="text-base font-black text-slate-800 tracking-tight">Sync Knowledge</h3>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Finalize Chapter Details</p>
-                 </div>
-              </div>
-              
-              <div className="space-y-6">
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">Selected File</p>
-                    <p className="text-xs font-bold text-slate-600 truncate">{pendingUploadFile.name}</p>
-                </div>
-
-                <div>
-                   <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Chapter No.</label>
-                   <input 
-                      type="number" 
-                      placeholder="e.g. 1" 
-                      value={newItemNumber} 
-                      onChange={e => setNewItemNumber(e.target.value)} 
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 outline-none focus:border-accent font-bold text-sm" 
-                   />
-                </div>
-
-                <div>
-                   <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Display Name</label>
-                   <input 
-                      type="text" 
-                      value={newItemName} 
-                      onChange={e => setNewItemName(e.target.value)} 
-                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 outline-none focus:border-accent font-bold text-sm" 
-                   />
-                </div>
-              </div>
-
-              <div className="flex gap-4 mt-10">
-                 <button 
-                  onClick={() => { setPendingUploadFile(null); setUploadingChapter(null); }} 
-                  className="flex-1 py-4 text-[10px] font-black uppercase text-slate-400 hover:bg-slate-50 rounded-xl"
-                 >
-                    Cancel
-                 </button>
-                 <button 
-                  onClick={startFinalProcessing}
-                  className="flex-[2] py-4 bg-emerald-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-emerald-500/20 hover:bg-emerald-600 active:scale-95 transition-all"
-                 >
-                    Extract & Sync
-                 </button>
-              </div>
-           </div>
         </div>
       )}
 

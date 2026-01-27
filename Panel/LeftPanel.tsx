@@ -1,4 +1,3 @@
-
 import '../types';
 import React, { useState } from 'react';
 import { generateOMR } from '../Quiz/components/OMR/OMRGenerator';
@@ -15,11 +14,20 @@ interface LeftPanelProps {
 const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen, onClose, brandConfig }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   
+  // MOCK STUDENT BOOLEAN - In real implementation, this comes from Supabase auth profile
+  const isStudent = true; 
+
   const navItems = [
-    { id: 'test', label: 'Tests', icon: 'mdi:file-document-outline' },
-    { id: 'students', label: 'Students', icon: 'mdi:account-group-outline' },
-    { id: 'reports', label: 'Reports', icon: 'mdi:chart-bar' },
-    { id: 'settings', label: 'Settings', icon: 'mdi:cog-outline' },
+    { id: 'test', label: 'Paper Tests', icon: 'mdi:file-document-outline', role: 'teacher' },
+    { id: 'online-exam', label: 'Online Exam', icon: 'mdi:monitor-shimmer', role: 'teacher' },
+    { id: 'students', label: 'Students', icon: 'mdi:account-group-outline', role: 'teacher' },
+    { id: 'reports', label: 'Reports', icon: 'mdi:chart-bar', role: 'teacher' },
+    { id: 'settings', label: 'Settings', icon: 'mdi:cog-outline', role: 'teacher' },
+  ];
+
+  const studentItems = [
+    { id: 'student-online-test', label: 'My Exams', icon: 'mdi:laptop-account', role: 'student' },
+    { id: 'student-mock-test', label: 'Mock Lab', icon: 'mdi:flask-outline', role: 'student' }
   ];
 
   const handleNavClick = (id: string) => {
@@ -42,6 +50,7 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen
 
   return (
     <aside className={`
+        no-print
         flex flex-col bg-slate-900 border-r border-slate-700 h-screen font-sans z-50 transition-transform duration-300 ease-out
         fixed top-0 left-0 w-64 lg:w-56
         lg:sticky lg:translate-x-0
@@ -66,6 +75,8 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen
 
       {/* Nav - Compact */}
       <nav className="flex-1 overflow-y-auto px-4 pb-4 flex flex-col gap-1.5">
+        
+        {/* Teacher Items */}
         {navItems.map(item => {
           const isActive = activeView === item.id;
           return (
@@ -83,6 +94,30 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen
             </button>
           )
         })}
+
+        {/* Student Section (Conditional) */}
+        {isStudent && (
+            <>
+                <div className="mt-4 mb-2 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Student Zone</div>
+                {studentItems.map(item => {
+                    const isActive = activeView === item.id;
+                    return (
+                        <button
+                        key={item.id}
+                        onClick={() => handleNavClick(item.id)}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors shrink-0 ${
+                            isActive 
+                            ? 'bg-emerald-600 text-white font-medium shadow-md shadow-emerald-600/10'
+                            : 'text-slate-400 hover:bg-slate-800 hover:text-white font-normal'
+                        }`}
+                        >
+                        <iconify-icon icon={item.icon} className="w-5 h-5"></iconify-icon>
+                        <span>{item.label}</span>
+                        </button>
+                    )
+                })}
+            </>
+        )}
       </nav>
 
       {/* Footer - Compact */}

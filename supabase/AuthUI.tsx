@@ -1,9 +1,12 @@
-
 import '../types';
 import React, { useState } from 'react';
 import { supabase } from './client';
 
-const AuthUI: React.FC = () => {
+interface AuthUIProps {
+    onDemoLogin?: () => void;
+}
+
+const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -84,6 +87,11 @@ const AuthUI: React.FC = () => {
               <div className="bg-rose-50 text-rose-600 text-[11px] font-bold p-4 rounded-2xl border border-rose-100 animate-fade-in leading-relaxed">
                 <iconify-icon icon="mdi:alert-circle" className="mr-2"></iconify-icon>
                 {error}
+                {error.includes("Invalid login credentials") && (
+                    <div className="mt-2 pt-2 border-t border-rose-200">
+                        <p className="font-normal">New here? Toggle to <span className="font-bold underline cursor-pointer" onClick={() => setIsLogin(false)}>Join System</span> or use Demo mode below.</p>
+                    </div>
+                )}
               </div>
             )}
 
@@ -105,6 +113,17 @@ const AuthUI: React.FC = () => {
                 isLogin ? 'Sign In' : 'Join System'
               )}
             </button>
+
+            {onDemoLogin && (
+                <button
+                    type="button"
+                    onClick={onDemoLogin}
+                    className="w-full bg-indigo-50 text-indigo-700 font-bold py-3 rounded-2xl text-[10px] uppercase tracking-widest hover:bg-indigo-100 transition-all border border-indigo-100 flex items-center justify-center gap-2"
+                >
+                    <iconify-icon icon="mdi:eye-outline" />
+                    Bypass to Demo Access
+                </button>
+            )}
           </form>
 
           <div className="mt-10 text-center pt-8 border-t border-slate-50">

@@ -1,48 +1,31 @@
-
 import '../../types';
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../supabase/client';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
-import { generateQuizQuestions, generateCompositeFigures } from '../../services/geminiService';
+import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, downsampleImage } from '../../services/geminiService';
+import { QuestionType, TypeDistribution, Question } from '../../Quiz/types';
 
-interface DetailedStats {
-    total: number;
-    easy: number;
-    medium: number;
-    hard: number;
-    figures: number;
-}
+declare const mammoth: any;
 
-interface KbStats {
-    total: number;
-    easy: number;
-    medium: number;
-    hard: number;
-    types: Record<string, number>;
-}
-
-interface QuestionItem {
-    id?: string;
-    question_text: string;
-    options: string[];
-    correct_index: number;
-    difficulty: string;
-    question_type: string;
-    explanation?: string;
+interface QuestionItem extends Question {
     chapter_id: string;
+    chapter_name: string;
+    subject_name: string;
+    class_name: string; // Critical for folder pathing
+    question_text: string;
     figure_url?: string;
-    column_a?: string[];
-    column_b?: string[];
-    correct_matches?: number[];
-    page_number?: number; // Added to store source page
+    page_number?: number;
 }
 
-interface TypeDistribution {
-    mcq: number;
-    reasoning: number;
-    matching: number;
-    statement: number;
+interface ChapterConfig {
+    id: string;
+    name: string;
+    subject_name: string;
+    class_name: string;
+    count: number;
+    figureCount: number;
+    doc_path?: string;
 }
 
 interface DifficultyDistribution {
@@ -51,797 +34,636 @@ interface DifficultyDistribution {
     hard: number;
 }
 
-interface ChapterConfig {
-    id: string;
-    name: string;
-    count: number;
-    useGlobal: boolean; 
-    localDiff: DifficultyDistribution;
-    localTypes: TypeDistribution;
-    localFigureCount?: number;
-}
-
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
   const [classes, setClasses] = useState<any[]>([]);
   const [subjects, setSubjects] = useState<any[]>([]);
   const [chapters, setChapters] = useState<any[]>([]);
-  const [chapterStats, setChapterStats] = useState<Record<string, DetailedStats>>({});
   
   const [selectedKbId, setSelectedKbId] = useState<string | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
 
-  // Lazy Loading States
-  const [isKBLoading, setIsKBLoading] = useState(true);
-  const [isClassesLoading, setIsClassesLoading] = useState(false);
-  const [isSubjectsLoading, setIsSubjectsLoading] = useState(false);
-  const [isChaptersLoading, setIsChaptersLoading] = useState(false);
-  const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
-
   const [mode, setMode] = useState<'browse' | 'create'>('browse');
-  
-  // Pagination State
-  const [questions, setQuestions] = useState<QuestionItem[]>([]);
-  const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [totalChapterQuestions, setTotalChapterQuestions] = useState(0);
-  const ITEMS_PER_PAGE = 50;
-
-  const [globalCount, setGlobalCount] = useState(10);
-  const [globalFigureCount, setGlobalFigureCount] = useState(0); 
-  const [topicFocus, setTopicFocus] = useState('');
-  
-  const [globalDiff, setGlobalDiff] = useState<DifficultyDistribution>({ easy: 30, medium: 50, hard: 20 });
-  const [globalTypes, setGlobalTypes] = useState<TypeDistribution>({ mcq: 100, reasoning: 0, matching: 0, statement: 0 });
-  
+  const [questions, setQuestions] = useState<any[]>([]);
   const [targetChapters, setTargetChapters] = useState<ChapterConfig[]>([]);
+  
   const [isForging, setIsForging] = useState(false);
-  const [forgeStatus, setForgeStatus] = useState('');
-  const [forgeProgress, setForgeProgress] = useState(0);
+  const [forgeSteps, setForgeSteps] = useState<string[]>([]);
   const [forgedPreview, setForgedPreview] = useState<QuestionItem[]>([]);
+  const [sourceImagesInDoc, setSourceImagesInDoc] = useState<Record<string, {data: string, mimeType: string}[]>>({});
+  const [extractingIds, setExtractingIds] = useState<Set<string>>(new Set());
+  
+  const [revealExplanations, setRevealExplanations] = useState(false);
+  const [showRefs, setShowRefs] = useState<Record<string, boolean>>({});
+  const [showPrompts, setShowPrompts] = useState<Record<string, boolean>>({});
 
-  // KB Stats State
-  const [showKbStats, setShowKbStats] = useState(false);
-  const [kbStats, setKbStats] = useState<KbStats | null>(null);
-  const [isKbStatsLoading, setIsKbStatsLoading] = useState(false);
+  const [globalDiff, setGlobalDiff] = useState<DifficultyDistribution>({ easy: 30, medium: 50, hard: 20 });
+  const [globalTypes, setGlobalTypes] = useState<TypeDistribution>({ mcq: 70, reasoning: 15, matching: 10, statements: 5 });
 
-  // 1. Initial Load: Knowledge Bases only
+  const applyNeetPreset = () => {
+      setGlobalTypes({ mcq: 70, reasoning: 15, matching: 10, statements: 5 });
+      setGlobalDiff({ easy: 30, medium: 50, hard: 20 });
+  };
+
   useEffect(() => {
-    const fetchKBs = async () => {
-        setIsKBLoading(true);
-        try {
-            const { data, error } = await supabase.from('knowledge_bases').select('id, name').order('name');
-            if (error) throw error;
-            setKbList(data || []);
-            if (data && data.length > 0) setSelectedKbId(data[0].id);
-        } catch (e) {
-            console.error("KB Fetch Error:", e);
-        } finally {
-            setIsKBLoading(false);
-        }
-    };
-    fetchKBs();
+    supabase.from('knowledge_bases').select('id, name').order('name').then(res => {
+        setKbList(res.data || []);
+        if (res.data?.length) setSelectedKbId(res.data[0].id);
+    });
   }, []);
 
-  // 2. KB Selection -> Fetch Classes + Reset Stats
   useEffect(() => {
-    if (!selectedKbId) return;
-    setKbStats(null); // Reset stats on KB change
-    const fetchClasses = async () => {
-        setIsClassesLoading(true);
-        try {
-            const { data, error } = await supabase.from('classes').select('*').eq('kb_id', selectedKbId).order('name');
-            if (error) throw error;
-            setClasses(data || []);
-            if (data && data.length > 0) setSelectedClassId(data[0].id);
-            else {
-                setSelectedClassId(null);
-                setSubjects([]);
-                setChapters([]);
-            }
-        } finally {
-            setIsClassesLoading(false);
-        }
-    };
-    fetchClasses();
+    if (selectedKbId) {
+        supabase.from('classes').select('*').eq('kb_id', selectedKbId).then(res => {
+            setClasses(res.data || []);
+            if (res.data?.length) setSelectedClassId(res.data[0].id);
+        });
+    }
   }, [selectedKbId]);
 
-  // 3. Class Selection -> Fetch Subjects
   useEffect(() => {
-      if (!selectedClassId) {
-          setSubjects([]);
-          setSelectedSubjectId(null);
-          return;
-      }
-      const fetchSubjects = async () => {
-          setIsSubjectsLoading(true);
-          try {
-              const { data, error } = await supabase.from('subjects').select('*').eq('class_id', selectedClassId).order('name');
-              if (error) throw error;
-              setSubjects(data || []);
-              if (data && data.length > 0) setSelectedSubjectId(data[0].id);
-              else {
-                  setSelectedSubjectId(null);
-                  setChapters([]);
-              }
-          } finally {
-              setIsSubjectsLoading(false);
-          }
-      };
-      fetchSubjects();
+    if (selectedClassId) {
+        supabase.from('subjects').select('*').eq('class_id', selectedClassId).then(res => {
+            setSubjects(res.data || []);
+            if (res.data?.length) setSelectedSubjectId(res.data[0].id);
+        });
+    }
   }, [selectedClassId]);
 
-  // 4. Subject Selection -> Fetch Chapters & Specific Stats
   useEffect(() => {
-      if (!selectedSubjectId) {
-          setChapters([]);
-          setChapterStats({});
-          return;
-      }
-      const fetchChapterData = async () => {
-          setIsChaptersLoading(true);
-          try {
-              // OPTIMIZATION: Only select minimal fields. Exclude 'raw_text'.
-              const [chapsRes, statsRes] = await Promise.all([
-                  supabase.from('chapters')
-                    .select('id, name, chapter_number, subject_id, subject_name, class_id, class_name')
-                    .eq('subject_id', selectedSubjectId)
-                    .order('chapter_number', { ascending: true }),
-                  supabase.rpc('get_subject_chapter_stats', { target_subject_id: selectedSubjectId })
-              ]);
-
-              if (chapsRes.error) throw chapsRes.error;
-              setChapters(chapsRes.data || []);
-
-              const stats: Record<string, DetailedStats> = {};
-              if (!statsRes.error && statsRes.data) {
-                  statsRes.data.forEach((s: any) => {
-                      stats[s.chapter_id] = {
-                          total: Number(s.total_count),
-                          easy: Number(s.easy_count),
-                          medium: Number(s.medium_count),
-                          hard: Number(s.hard_count),
-                          figures: Number(s.figure_count)
-                      };
-                  });
-              }
-              setChapterStats(stats);
-              
-              if (chapsRes.data && chapsRes.data.length > 0) {
-                  setSelectedChapterId(chapsRes.data[0].id);
-              } else {
-                  setSelectedChapterId(null);
-              }
-          } finally {
-              setIsChaptersLoading(false);
-          }
-      };
-      fetchChapterData();
+    if (selectedSubjectId) {
+        supabase.from('chapters').select('*').eq('subject_id', selectedSubjectId).order('chapter_number').then(res => {
+            setChapters(res.data || []);
+            if (res.data?.length) setSelectedChapterId(res.data[0].id);
+        });
+    }
   }, [selectedSubjectId]);
 
-  // 5. Chapter Selection -> Fetch Questions (Initial)
   useEffect(() => {
-      if (selectedChapterId) {
-          setQuestions([]);
-          setPage(0);
-          setHasMore(false);
-          setTotalChapterQuestions(0);
-          fetchQuestions(selectedChapterId, 0);
-          
-          if (mode === 'create') {
-              const chap = chapters.find(c => c.id === selectedChapterId);
-              if (chap) addChapterToForge(chap);
-          }
-      } else {
-          setQuestions([]);
-      }
+      if (selectedChapterId) fetchQuestions(selectedChapterId);
   }, [selectedChapterId]);
 
-  const fetchQuestions = async (chapterId: string, pageNum: number) => {
-      setIsLoadingQuestions(true);
-      try {
-          const from = pageNum * ITEMS_PER_PAGE;
-          const to = from + ITEMS_PER_PAGE - 1;
-
-          const { data, error, count } = await supabase
-            .from('question_bank_neet')
-            .select('*', { count: 'exact' })
-            .eq('chapter_id', chapterId)
-            .order('created_at', { ascending: false })
-            .range(from, to);
-            
-          if (error) throw error;
-          
-          if (pageNum === 0) {
-              setQuestions(data || []);
-          } else {
-              setQuestions(prev => [...prev, ...(data || [])]);
-          }
-
-          if (count !== null) setTotalChapterQuestions(count);
-          
-          if (count && (from + (data?.length || 0)) < count) {
-              setHasMore(true);
-          } else {
-              setHasMore(false);
-          }
-      } catch (e) {
-          console.warn("Fetch Questions Warning:", e);
-      } finally {
-          setIsLoadingQuestions(false);
-      }
+  const fetchQuestions = async (id: string) => {
+      const { data } = await supabase.from('question_bank_neet').select('*').eq('chapter_id', id).order('created_at', { ascending: false });
+      setQuestions(data || []);
   };
 
-  const handleLoadMore = () => {
-      if (!selectedChapterId) return;
-      const nextPage = page + 1;
-      setPage(nextPage);
-      fetchQuestions(selectedChapterId, nextPage);
-  };
+  const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
 
-  const fetchKbStats = async () => {
-      if (!selectedKbId) return;
-      setIsKbStatsLoading(true);
+  const extractImagesFromDoc = async (docPath: string): Promise<{ data: string, mimeType: string }[]> => {
       try {
-          // Fetch wider range to ensure we capture >1000 items if they exist
-          const { data, error } = await supabase
-              .from('question_bank_neet')
-              .select('difficulty, question_type, chapters!inner(kb_id)')
-              .eq('chapters.kb_id', selectedKbId)
-              .range(0, 9999); // Explicitly request up to 10k rows to bypass default 1000 limit
-
-          if (error) throw error;
-
-          const stats: KbStats = {
-              total: data?.length || 0,
-              easy: 0,
-              medium: 0,
-              hard: 0,
-              types: {}
+          const { data: blob } = await supabase.storage.from('chapters').download(docPath);
+          if (!blob) return [];
+          const arrayBuffer = await blob.arrayBuffer();
+          const images: { data: string, mimeType: string }[] = [];
+          
+          const options = {
+              convertImage: mammoth.images.imgElement(function(image: any) {
+                  return image.read("base64").then(function(imageBuffer: string) {
+                      const contentType = image.contentType.startsWith('image/') ? image.contentType : 'image/png';
+                      images.push({ data: imageBuffer, mimeType: contentType });
+                      return { src: "" }; 
+                  });
+              })
           };
 
-          data?.forEach((q: any) => {
-              if (q.difficulty === 'Easy') stats.easy++;
-              else if (q.difficulty === 'Medium') stats.medium++;
-              else if (q.difficulty === 'Hard') stats.hard++;
-
-              const type = q.question_type || 'unknown';
-              stats.types[type] = (stats.types[type] || 0) + 1;
-          });
-
-          setKbStats(stats);
-      } catch (err) {
-          console.error("Failed to load KB stats", err);
-      } finally {
-          setIsKbStatsLoading(false);
+          await mammoth.convertToHtml({ arrayBuffer: arrayBuffer }, options);
+          return await Promise.all(images.map(img => downsampleImage(img.data, img.mimeType, 800)));
+      } catch (e) {
+          console.error("Image extraction failed", e);
+          return [];
       }
   };
 
-  const handleToggleStats = () => {
-      if (!showKbStats && !kbStats) {
-          fetchKbStats();
+  const handleToggleChapter = async (c: any) => {
+      if (targetChapters.some(tc => tc.id === c.id)) {
+          setTargetChapters(prev => prev.filter(x => x.id !== c.id));
+          return;
       }
-      setShowKbStats(!showKbStats);
+
+      setExtractingIds(prev => new Set(prev).add(c.id));
+      
+      const newConfig: ChapterConfig = { 
+          id: c.id, 
+          name: c.name, 
+          subject_name: c.subject_name, 
+          class_name: c.class_name,
+          count: 10, 
+          figureCount: 2,
+          doc_path: c.doc_path
+      };
+
+      setTargetChapters(prev => [...prev, newConfig]);
+
+      if (c.doc_path && !sourceImagesInDoc[c.id]) {
+          const extracted = await extractImagesFromDoc(c.doc_path);
+          setSourceImagesInDoc(prev => ({ ...prev, [c.id]: extracted }));
+          setTargetChapters(prev => prev.map(tc => tc.id === c.id ? { ...tc, figureCount: Math.min(tc.count, extracted.length) } : tc));
+      }
+      
+      setExtractingIds(prev => {
+          const next = new Set(prev);
+          next.delete(c.id);
+          return next;
+      });
   };
 
-  const addChapterToForge = (chap: any) => {
-      if (!targetChapters.find(tc => tc.id === chap.id)) {
-          setTargetChapters(prev => [...prev, {
-              id: chap.id,
-              name: chap.name,
-              count: globalCount,
-              useGlobal: true,
-              localDiff: { ...globalDiff },
-              localTypes: { ...globalTypes },
-              localFigureCount: globalFigureCount
-          }]);
-      }
-  };
+  const forgeStats = useMemo(() => {
+      const stats = { types: {} as Record<string, number>, figures: [] as {idx: number, count: number, thumb: string, chapId: string}[] };
+      
+      forgedPreview.forEach(q => {
+          stats.types[q.type] = (stats.types[q.type] || 0) + 1;
+          if (q.sourceImageIndex !== undefined && q.sourceImageIndex !== -1 && q.chapter_id) {
+              const images = sourceImagesInDoc[q.chapter_id] || [];
+              const img = images[q.sourceImageIndex];
+              const existing = stats.figures.find(f => f.chapId === q.chapter_id && f.idx === q.sourceImageIndex);
+              if (existing) {
+                  existing.count++;
+              } else {
+                  stats.figures.push({
+                      chapId: q.chapter_id,
+                      idx: q.sourceImageIndex,
+                      count: 1,
+                      thumb: img ? `data:${img.mimeType};base64,${img.data}` : ''
+                  });
+              }
+          }
+      });
 
-  const removeChapterFromForge = (id: string) => {
-      setTargetChapters(prev => prev.filter(tc => tc.id !== id));
-  };
+      return stats;
+  }, [forgedPreview, sourceImagesInDoc]);
 
   const handleAiForge = async () => {
-      if (targetChapters.length === 0) return alert("Select at least one chapter.");
+      if (targetChapters.length === 0) return;
+      await ensureApiKey();
       setIsForging(true);
-      setForgeProgress(0);
-      setForgedPreview([]);
-      let progressStep = 0;
-      let allGeneratedItems: QuestionItem[] = [];
+      const addStep = (step: string) => setForgeSteps(prev => [...prev, step]);
+      setForgeSteps(["Synthesizing Knowledge..."]);
+      
+      let allResults: QuestionItem[] = [];
 
       try {
-          for (const chapConfig of targetChapters) {
-              setForgeStatus(`Processing: ${chapConfig.name}`);
-              const diff = chapConfig.useGlobal ? globalDiff : chapConfig.localDiff;
-              const types = chapConfig.useGlobal ? globalTypes : chapConfig.localTypes;
-              const count = chapConfig.count;
-              const figCount = chapConfig.useGlobal ? globalFigureCount : (chapConfig.localFigureCount || 0);
-
-              // Correctly lazy load raw text only when needed for generation
-              const { data: chapData } = await supabase.from('chapters').select('raw_text').eq('id', chapConfig.id).single();
-              let context = undefined;
-              if (chapData?.raw_text) {
-                   context = { data: chapData.raw_text, mimeType: 'text/plain' };
-              }
-
-              const topicPrompt = topicFocus || chapConfig.name;
-              const typeKeys: (keyof TypeDistribution)[] = ['mcq', 'reasoning', 'matching', 'statement'];
-              let figuresGeneratedSoFar = 0;
+          for (const chap of targetChapters) {
+              addStep(`Drafting Items for ${chap.name}...`);
+              const { data: chapData } = await supabase.from('chapters').select('raw_text').eq('id', chap.id).single();
               
+              const docImages = sourceImagesInDoc[chap.id] || [];
+              const context = { text: chapData?.raw_text || "", images: docImages };
+              
+              const typeKeys: (keyof TypeDistribution)[] = ['mcq', 'reasoning', 'matching', 'statements'];
+              let chapQuestions: Question[] = [];
+
               for (const typeKey of typeKeys) {
-                  const typeCount = Math.round((types[typeKey] / 100) * count);
-                  if (typeCount <= 0) continue;
-
-                  let batchFigureTarget = 0;
-                  if (typeKey === 'mcq') {
-                      batchFigureTarget = Math.max(0, figCount - figuresGeneratedSoFar);
-                      batchFigureTarget = Math.min(batchFigureTarget, typeCount);
-                  }
-
-                  setForgeStatus(`Forging ${typeCount} ${typeKey.toUpperCase()}s...`);
-                  const apiType = typeKey === 'statement' ? 'statements' : typeKey; 
-
-                  const generated = await generateQuizQuestions(
-                      topicPrompt,
-                      diff, 
-                      typeCount,
-                      context,
-                      apiType as any,
-                      (s) => setForgeStatus(`${chapConfig.name}: ${s}`),
-                      batchFigureTarget
-                  );
-
-                  if (batchFigureTarget > 0) {
-                       setForgeStatus(`Synthesizing Diagrams...`);
-                       const figCandidates = generated.filter(q => !!q.figurePrompt);
-                       if (figCandidates.length > 0) {
-                           const prompts = figCandidates.map(q => q.figurePrompt!);
-                           const images = await generateCompositeFigures(prompts);
-                           figCandidates.forEach((q, i) => {
-                               if (images[i]) q.figureDataUrl = `data:image/png;base64,${images[i]}`;
-                           });
-                           figuresGeneratedSoFar += figCandidates.length;
-                       }
-                  }
-
-                  const previewItems = generated.map(q => ({
-                      chapter_id: chapConfig.id,
-                      question_text: q.text,
-                      options: q.options,
-                      correct_index: q.correctIndex,
-                      difficulty: q.difficulty,
-                      question_type: q.type,
-                      explanation: q.explanation,
-                      figure_url: q.figureDataUrl, // Map generation result directly
-                      column_a: q.columnA,
-                      column_b: q.columnB,
-                      correct_matches: q.correctMatches,
-                      page_number: typeof q.pageNumber === 'number' ? q.pageNumber : undefined // Correctly map page number
-                  }));
-                  allGeneratedItems = [...allGeneratedItems, ...previewItems];
+                  const percentage = globalTypes[typeKey] || 0;
+                  if (percentage <= 0) continue;
+                  const typeCount = Math.max(1, Math.round((percentage / 100) * chap.count));
+                  
+                  addStep(`Forging ${typeKey.toUpperCase()} items...`);
+                  const batchFigureTarget = typeKey === 'mcq' ? chap.figureCount : 0;
+                  const gen = await generateQuizQuestions(chap.name, globalDiff, typeCount, context, typeKey, undefined, batchFigureTarget);
+                  chapQuestions = [...chapQuestions, ...gen];
               }
-              progressStep++;
-              setForgeProgress((progressStep / targetChapters.length) * 100);
+
+              const figureQs = chapQuestions.filter(q => q.figurePrompt);
+              if (figureQs.length > 0) {
+                  addStep(`Stylizing Diagrams...`);
+                  const sourceEditGroups: Record<number, Question[]> = {};
+                  const purelySynthetic: Question[] = [];
+                  
+                  figureQs.forEach(q => {
+                      if (q.sourceImageIndex !== undefined && q.sourceImageIndex !== -1 && docImages[q.sourceImageIndex]) {
+                          if (!sourceEditGroups[q.sourceImageIndex]) sourceEditGroups[q.sourceImageIndex] = [];
+                          sourceEditGroups[q.sourceImageIndex].push(q);
+                      } else {
+                          purelySynthetic.push(q);
+                      }
+                  });
+
+                  for (const [imgIdx, groupQs] of Object.entries(sourceEditGroups)) {
+                      const idx = parseInt(imgIdx);
+                      const sourceImg = docImages[idx];
+                      if (!sourceImg) continue;
+
+                      for (let i = 0; i < groupQs.length; i += 6) {
+                          const chunk = groupQs.slice(i, i + 6);
+                          const prompts = chunk.map(q => q.figurePrompt!);
+                          const results = await generateCompositeStyleVariants(sourceImg.data, prompts);
+                          chunk.forEach((q, cIdx) => {
+                              if (results[cIdx]) {
+                                  q.figureDataUrl = `data:image/png;base64,${results[cIdx]}`;
+                                  q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`;
+                              }
+                          });
+                      }
+                  }
+
+                  for (let i = 0; i < purelySynthetic.length; i += 6) {
+                      const chunk = purelySynthetic.slice(i, i + 6);
+                      const prompts = chunk.map(q => q.figurePrompt!);
+                      const results = await generateCompositeFigures(prompts);
+                      chunk.forEach((q, cIdx) => {
+                          if (results[cIdx]) q.figureDataUrl = `data:image/png;base64,${results[cIdx]}`;
+                      });
+                  }
+              }
+
+              const mapped = chapQuestions.map(q => ({
+                  ...q,
+                  chapter_id: chap.id,
+                  chapter_name: chap.name,
+                  subject_name: chap.subject_name,
+                  class_name: chap.class_name,
+                  question_text: q.text,
+                  figure_url: q.figureDataUrl,
+                  page_number: q.pageNumber as number
+              }));
+              allResults = [...allResults, ...mapped];
           }
-          setForgedPreview(allGeneratedItems);
+          setForgedPreview(allResults);
       } catch (e: any) {
-          alert("Forge Process Halted: " + e.message);
+          alert("Forge error: " + e.message);
       } finally {
           setIsForging(false);
-          setForgeStatus('');
+          setForgeSteps([]);
       }
   };
 
-  const handleSavePreviewToDB = async () => {
-      if (forgedPreview.length === 0) return;
-      setIsForging(true); 
-      setForgeStatus('Initializing Save...');
-      
+  const handleSaveToDB = async () => {
+      setIsForging(true);
+      setForgeSteps(['Committing to Repository...']);
       try {
-          let uploadedCount = 0;
-          const totalImages = forgedPreview.filter(q => q.figure_url?.startsWith('data:')).length;
+          const dbRecords = [];
+          
+          for (const q of forgedPreview) {
+              const qId = crypto.randomUUID();
+              let finalFigureUrl = null;
 
-          const processedItems = await Promise.all(forgedPreview.map(async (q) => {
-              let finalFigureUrl = q.figure_url;
-              if (q.figure_url && q.figure_url.startsWith('data:')) {
-                  if(totalImages > 0) setForgeStatus(`Uploading Assets (${uploadedCount + 1}/${totalImages})...`);
-                  try {
-                      const res = await fetch(q.figure_url);
-                      const blob = await res.blob();
-                      const fileName = `forge_${Date.now()}_${Math.random().toString(36).substring(7)}.png`;
-                      await supabase.storage.from('question-images').upload(fileName, blob, { contentType: 'image/png' });
-                      const { data } = supabase.storage.from('question-images').getPublicUrl(fileName);
-                      finalFigureUrl = data.publicUrl;
-                      uploadedCount++;
-                  } catch (err) {
-                      finalFigureUrl = null; 
-                  }
+              if (q.figure_url?.startsWith('data:')) {
+                  const res = await fetch(q.figure_url);
+                  const blob = await res.blob();
+                  
+                  const classSlug = slugify(q.class_name || 'unknown_class');
+                  const subjectSlug = slugify(q.subject_name || 'unknown_subject');
+                  const chapterSlug = slugify(q.chapter_name || 'unknown_chapter');
+                  const storagePath = `${classSlug}/${subjectSlug}/${chapterSlug}/${qId}.png`;
+
+                  const { error: uploadError } = await supabase.storage
+                    .from('question-figures')
+                    .upload(storagePath, blob, { contentType: 'image/png', upsert: true });
+                  
+                  if (uploadError) throw uploadError;
+
+                  finalFigureUrl = supabase.storage.from('question-figures').getPublicUrl(storagePath).data.publicUrl;
               }
-              const { id, ...rest } = q; 
-              // rest contains page_number if mapped correctly in handleAiForge
-              return { ...rest, figure_url: finalFigureUrl };
-          }));
 
-          setForgeStatus('Committing to Database...');
-          const { error } = await supabase.from('question_bank_neet').insert(processedItems);
+              dbRecords.push({
+                  id: qId,
+                  chapter_id: q.chapter_id,
+                  chapter_name: q.chapter_name,
+                  subject_name: q.subject_name,
+                  class_name: q.class_name,
+                  question_text: q.question_text,
+                  options: q.options,
+                  correct_index: q.correctIndex, // Map JS correctIndex to Postgres correct_index
+                  difficulty: q.difficulty,
+                  question_type: q.type,
+                  explanation: q.explanation,
+                  figure_url: finalFigureUrl,
+                  page_number: q.page_number
+              });
+          }
+
+          const { error } = await supabase.from('question_bank_neet').insert(dbRecords);
           if (error) throw error;
           
-          alert(`Successfully saved ${processedItems.length} questions.`);
-          setForgedPreview([]); 
-          if (selectedSubjectId) {
-             const statsRes = await supabase.rpc('get_subject_chapter_stats', { target_subject_id: selectedSubjectId });
-             if (!statsRes.error && statsRes.data) {
-                const stats: Record<string, DetailedStats> = {};
-                statsRes.data.forEach((s: any) => {
-                    stats[s.chapter_id] = { total: Number(s.total_count), easy: Number(s.easy_count), medium: Number(s.medium_count), hard: Number(s.hard_count), figures: Number(s.figure_count) };
-                });
-                setChapterStats(stats);
-             }
-          }
-          if (selectedChapterId) {
-              setQuestions([]);
-              setPage(0);
-              fetchQuestions(selectedChapterId, 0);
-          }
-          setMode('browse'); 
-      } catch (e: any) {
-          alert("Save Failed: " + e.message);
-      } finally {
-          setIsForging(false);
-      }
-  };
-
-  const handleDelete = async (id: string) => {
-      if (!confirm("Delete this question permanently?")) return;
-      const { error } = await supabase.from('question_bank_neet').delete().eq('id', id);
-      if (!error) {
-          setQuestions(prev => prev.filter(q => q.id !== id));
-          if (selectedSubjectId) {
-              const statsRes = await supabase.rpc('get_subject_chapter_stats', { target_subject_id: selectedSubjectId });
-              if (!statsRes.error && statsRes.data) {
-                  const stats: Record<string, DetailedStats> = {};
-                  statsRes.data.forEach((s: any) => {
-                      stats[s.chapter_id] = { total: Number(s.total_count), easy: Number(s.easy_count), medium: Number(s.medium_count), hard: Number(s.hard_count), figures: Number(s.figure_count) };
-                  });
-                  setChapterStats(stats);
-              }
-          }
-      }
-  };
-
-  const getTypeBadgeStyle = (type: string) => {
-      switch(type) {
-          case 'mcq': return 'bg-blue-100 text-blue-700 border-blue-200';
-          case 'matching': return 'bg-orange-100 text-orange-700 border-orange-200';
-          case 'reasoning': return 'bg-purple-100 text-purple-700 border-purple-200';
-          case 'statements': return 'bg-cyan-100 text-cyan-700 border-cyan-200';
-          default: return 'bg-slate-100 text-slate-600 border-slate-200';
-      }
-  };
-
-  const getTypeShortName = (type: string) => {
-      switch(type) {
-          case 'mcq': return 'MCQ';
-          case 'matching': return 'MAT';
-          case 'reasoning': return 'ASR';
-          case 'statements': return 'STM';
-          default: return type.substring(0,3).toUpperCase();
+          setForgedPreview([]);
+          setMode('browse');
+          if (selectedChapterId) fetchQuestions(selectedChapterId);
+          alert(`Successfully committed ${dbRecords.length} items to Repository.`);
+      } catch (e: any) { 
+          alert("Commit failed: " + e.message);
+      } finally { 
+          setIsForging(false); 
+          setForgeSteps([]); 
       }
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans animate-fade-in">
-        <div className="bg-white border-b border-slate-200 px-6 py-4 shrink-0 flex flex-col gap-4 shadow-sm z-20">
-            <div className="flex items-center justify-between">
-                <h1 className="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-                    <iconify-icon icon="mdi:database-search-outline" className="text-amber-500" />
-                    Question Bank
-                </h1>
-                <div className="flex items-center gap-3">
-                    {isKBLoading ? (
-                        <div className="w-32 h-8 bg-slate-100 animate-pulse rounded-lg" />
-                    ) : (
-                        <div className="flex gap-2">
-                            <select 
-                                value={selectedKbId || ''} 
-                                onChange={e => setSelectedKbId(e.target.value)} 
-                                className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-black text-slate-600 outline-none focus:border-indigo-500"
-                            >
-                                {kbList.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-                            </select>
-                            <button 
-                                onClick={handleToggleStats}
-                                className={`w-8 h-8 rounded-lg flex items-center justify-center border transition-all ${showKbStats ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-400 border-slate-200 hover:text-indigo-600 hover:border-indigo-200'}`}
-                                title="Knowledge Base Stats"
-                            >
-                                <iconify-icon icon="mdi:chart-box-outline" width="18" />
-                            </button>
-                        </div>
-                    )}
-                </div>
+    <div className="w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans">
+        <div className="bg-white border-b p-4 flex gap-4 overflow-x-auto shadow-sm shrink-0 no-print">
+            <select value={selectedKbId || ''} onChange={e => setSelectedKbId(e.target.value)} className="p-2 border border-slate-200 rounded-lg text-xs font-black text-slate-600 outline-none hover:border-indigo-300 transition-colors appearance-none px-4">
+                {kbList.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
+            </select>
+            <div className="flex gap-2">
+                {classes.map(c => <button key={c.id} onClick={() => setSelectedClassId(c.id)} className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all whitespace-nowrap ${selectedClassId === c.id ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>{c.name}</button>)}
             </div>
-            
-            {/* KB Stats Panel */}
-            {showKbStats && (
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 animate-slide-up shadow-inner">
-                    {isKbStatsLoading ? (
-                        <div className="flex items-center justify-center py-2 text-slate-400 gap-2 text-xs font-bold uppercase tracking-widest">
-                            <div className="w-4 h-4 border-2 border-slate-300 border-t-indigo-500 rounded-full animate-spin"></div>
-                            Calculating Overview...
-                        </div>
-                    ) : kbStats ? (
-                        <div className="flex flex-col md:flex-row gap-6 items-start md:items-center">
-                            <div className="flex flex-col items-start pr-6 border-r border-slate-200 min-w-[120px]">
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Volume</span>
-                                <span className="text-3xl font-black text-slate-800">{kbStats.total}</span>
-                            </div>
-                            
-                            <div className="flex-1 w-full space-y-2">
-                                <div className="flex justify-between text-[9px] font-bold uppercase text-slate-500 tracking-wide">
-                                    <span>Difficulty Distribution</span>
-                                    <span>E: {kbStats.easy} / M: {kbStats.medium} / H: {kbStats.hard}</span>
-                                </div>
-                                <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                                    <div className="bg-emerald-500 h-full" style={{ width: `${(kbStats.easy / (kbStats.total || 1)) * 100}%` }}></div>
-                                    <div className="bg-amber-500 h-full" style={{ width: `${(kbStats.medium / (kbStats.total || 1)) * 100}%` }}></div>
-                                    <div className="bg-rose-500 h-full" style={{ width: `${(kbStats.hard / (kbStats.total || 1)) * 100}%` }}></div>
-                                </div>
-                            </div>
-
-                            <div className="flex flex-wrap gap-2 max-w-sm">
-                                {Object.entries(kbStats.types).map(([type, count]) => (
-                                    <div key={type} className="px-2 py-1 rounded bg-white border border-slate-200 text-[9px] font-bold uppercase text-slate-600 shadow-sm">
-                                        {getTypeShortName(type)}: {count}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="text-center py-2 text-xs text-slate-400">No data available for this Knowledge Base.</div>
-                    )}
-                </div>
-            )}
-
-            <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-4 overflow-x-auto scrollbar-hide pb-2">
-                    {isClassesLoading ? (
-                        <div className="flex gap-4"><div className="w-16 h-4 bg-slate-100 animate-pulse rounded"/><div className="w-16 h-4 bg-slate-100 animate-pulse rounded"/></div>
-                    ) : (
-                        classes.map(cls => (
-                            <button
-                                key={cls.id}
-                                onClick={() => setSelectedClassId(cls.id)}
-                                className={`text-xs font-black uppercase tracking-widest whitespace-nowrap transition-colors ${selectedClassId === cls.id ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
-                            >
-                                {cls.name}
-                            </button>
-                        ))
-                    )}
-                </div>
-                <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide">
-                    {isSubjectsLoading ? (
-                        <div className="flex gap-3"><div className="w-20 h-6 bg-slate-100 animate-pulse rounded-full"/><div className="w-20 h-6 bg-slate-100 animate-pulse rounded-full"/></div>
-                    ) : (
-                        subjects.map(sub => (
-                            <button
-                                key={sub.id}
-                                onClick={() => setSelectedSubjectId(sub.id)}
-                                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border whitespace-nowrap transition-all ${selectedSubjectId === sub.id ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-white text-slate-400 border-slate-200 hover:border-amber-200'}`}
-                            >
-                                {sub.name}
-                            </button>
-                        ))
-                    )}
-                </div>
+            <div className="flex gap-2 border-l border-slate-100 pl-4">
+                {subjects.map(s => <button key={s.id} onClick={() => setSelectedSubjectId(s.id)} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase border transition-all whitespace-nowrap ${selectedSubjectId === s.id ? 'bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-600/20' : 'bg-white text-slate-400 hover:border-emerald-300'}`}>{s.name}</button>)}
             </div>
         </div>
 
         <div className="flex-1 flex overflow-hidden">
-            <aside className="w-80 border-r border-slate-800 flex flex-col shrink-0 bg-slate-900 text-slate-300">
-                <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Chapters</span>
-                    <span className="text-[9px] font-bold text-slate-500 uppercase">{chapters.length} Items</span>
-                </div>
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
-                    {isChaptersLoading ? (
-                        <div className="space-y-3">
-                            {[1,2,3,4,5].map(i => <div key={i} className="h-16 bg-slate-800/50 rounded-xl animate-pulse" />)}
-                        </div>
-                    ) : chapters.length > 0 ? (
-                        chapters.map(c => {
-                            const stats = chapterStats[c.id] || { total: 0, easy: 0, medium: 0, hard: 0, figures: 0 };
-                            const isSelected = selectedChapterId === c.id;
-                            const isAdded = targetChapters.some(tc => tc.id === c.id);
-                            
-                            return (
-                                <div 
-                                    key={c.id} 
-                                    onClick={() => setSelectedChapterId(c.id)}
-                                    className={`p-3 rounded-xl border transition-all cursor-pointer group flex flex-col gap-2 ${
-                                        isSelected 
-                                            ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg' 
-                                            : 'bg-slate-800/50 border-slate-800 hover:border-slate-600 hover:bg-slate-800'
-                                    }`}
-                                >
-                                    <div className="flex items-center justify-between min-w-0 gap-2">
-                                        <p className={`text-[11px] font-black uppercase leading-tight truncate flex-1 ${isSelected ? 'text-white' : 'text-slate-400'}`}>{c.name}</p>
-                                        <button
-                                            onClick={(e) => { 
-                                                e.stopPropagation(); 
-                                                if(isAdded) removeChapterFromForge(c.id);
-                                                else addChapterToForge(c); 
-                                            }}
-                                            className={`w-6 h-6 rounded-md flex items-center justify-center ${isAdded ? 'bg-emerald-500 text-white' : 'bg-slate-700 text-slate-500'}`}
-                                        >
-                                            <iconify-icon icon={isAdded ? "mdi:check" : "mdi:plus"} width="14" />
-                                        </button>
-                                    </div>
-                                    <div className="flex flex-wrap gap-1.5">
-                                        <span className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border ${isSelected ? 'bg-indigo-500 border-indigo-400 text-indigo-100' : 'bg-slate-900 border-slate-700 text-slate-500'}`}>{stats.total} Qs</span>
-                                        {stats.figures > 0 && (
-                                            <span className="text-[8px] font-bold text-indigo-300 bg-indigo-900/40 px-1.5 py-0.5 rounded border border-indigo-800 flex items-center gap-1">
-                                                <iconify-icon icon="mdi:image-outline" width="10" /> {stats.figures}
-                                            </span>
-                                        )}
-                                    </div>
+            <aside className="w-64 border-r bg-slate-900 text-white overflow-y-auto shrink-0 flex flex-col custom-scrollbar no-print">
+                {forgedPreview.length > 0 && mode === 'create' ? (
+                    <div className="p-6 animate-fade-in flex flex-col gap-8">
+                        <div>
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Synthesis Strategy</h4>
+                            <div className="bg-slate-800/50 rounded-2xl p-4 border border-white/5 space-y-3">
+                                <div className="flex justify-between items-center border-b border-white/5 pb-2 mb-2">
+                                    <span className="text-[9px] font-bold text-slate-300 uppercase">Total Items</span>
+                                    <span className="text-[10px] font-black text-indigo-400">{forgedPreview.length}</span>
                                 </div>
-                            );
-                        })
-                    ) : (
-                        <div className="text-center py-20 text-slate-600 text-[10px] font-bold uppercase tracking-widest italic">Select Subject</div>
-                    )}
-                </div>
+                                {Object.entries(forgeStats.types).map(([type, count]) => (
+                                    <div key={type} className="flex justify-between items-center">
+                                        <span className="text-[9px] font-bold text-slate-400 uppercase">{type}</span>
+                                        <span className="text-[10px] font-black text-emerald-400">{count}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {forgeStats.figures.length > 0 && (
+                            <div>
+                                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Source Inventory</h4>
+                                <div className="space-y-4">
+                                    {forgeStats.figures.map((fig) => (
+                                        <div key={`${fig.chapId}-${fig.idx}`} className="bg-slate-800/50 rounded-2xl p-3 border border-white/5 flex items-center gap-3">
+                                            <div className="w-12 h-12 rounded-lg bg-slate-700 overflow-hidden shrink-0 border border-white/5 flex items-center justify-center shadow-inner">
+                                                {fig.thumb ? <img src={fig.thumb} className="w-full h-full object-cover grayscale opacity-60" /> : <iconify-icon icon="mdi:image-outline" className="text-slate-500" />}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-[9px] font-black text-slate-300 uppercase truncate">Source Image #{fig.idx + 1}</p>
+                                                <p className="text-[8px] font-bold text-emerald-400 uppercase">{fig.count} Questions Linked</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="mt-auto pt-6 border-t border-white/10 text-center opacity-30">
+                             <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Pipeline v3.2 Active</p>
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        <div className="p-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-slate-800">Chapter Catalog</div>
+                        {chapters.map(c => (
+                            <div key={c.id} onClick={() => setSelectedChapterId(c.id)} className={`p-4 border-b border-slate-800 cursor-pointer hover:bg-slate-800 transition-colors flex justify-between items-center group ${selectedChapterId === c.id ? 'bg-indigo-600/30 text-indigo-400' : ''}`}>
+                                <span className="text-[11px] font-black uppercase truncate pr-2">{c.name}</span>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); handleToggleChapter(c); }} 
+                                    className={`w-6 h-6 rounded flex items-center justify-center transition-all ${targetChapters.some(tc => tc.id === c.id) ? 'bg-emerald-50 text-white' : 'bg-white/10 text-white/40 hover:bg-white/20'}`}
+                                >
+                                    {extractingIds.has(c.id) ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <iconify-icon icon={targetChapters.some(tc => tc.id === c.id) ? "mdi:check" : "mdi:plus"} />}
+                                </button>
+                            </div>
+                        ))}
+                    </>
+                )}
             </aside>
 
-            <main className="flex-1 flex flex-col min-w-0 bg-slate-50/50 relative">
-                {/* ... (Main Content for Browse/Forge remains largely unchanged, just ensuring logic) ... */}
-                <div className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-white">
-                    <div className="flex bg-slate-100 p-1 rounded-xl">
-                        <button onClick={() => setMode('browse')} className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${mode === 'browse' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>Browse</button>
-                        <button onClick={() => setMode('create')} className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${mode === 'create' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>Forge</button>
+            <main className="flex-1 overflow-hidden flex flex-col bg-white">
+                <div className="p-4 bg-slate-50/50 border-b flex justify-between items-center shrink-0 no-print">
+                    <div className="flex bg-white p-1 rounded-xl border border-slate-200 shadow-sm">
+                        <button onClick={() => { setMode('browse'); setForgedPreview([]); }} className={`px-6 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'browse' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>Repository</button>
+                        <button onClick={() => setMode('create')} className={`px-6 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'create' ? 'bg-rose-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>AI Forge Studio</button>
                     </div>
-                    {mode === 'browse' && selectedChapterId && (
-                        <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Total Qs:</span>
-                            <span className="text-xs font-black text-slate-700">{totalChapterQuestions > 0 ? totalChapterQuestions : questions.length}{hasMore ? '+' : ''}</span>
+                    {forgedPreview.length > 0 && (
+                        <div className="flex items-center gap-6">
+                            <label className="flex items-center gap-3 cursor-pointer group">
+                                <div className="text-[9px] font-black uppercase text-slate-400 group-hover:text-slate-700 tracking-widest">Reveal Answers</div>
+                                <div className="relative" onClick={() => setRevealExplanations(!revealExplanations)}>
+                                    <div className={`w-10 h-5 rounded-full transition-colors ${revealExplanations ? 'bg-emerald-500' : 'bg-slate-200'}`}></div>
+                                    <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform ${revealExplanations ? 'translate-x-5' : ''}`}></div>
+                                </div>
+                            </label>
                         </div>
                     )}
                 </div>
 
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
                     {mode === 'browse' ? (
-                        selectedChapterId ? (
-                            questions.length > 0 || isLoadingQuestions ? (
-                                <div className="space-y-4">
-                                    {questions.map((q, idx) => (
-                                        <div key={q.id || idx} className="bg-white p-5 rounded-2xl border border-slate-200 hover:border-indigo-200 transition-all group relative">
-                                            <button onClick={() => q.id && handleDelete(q.id)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 transition-all"><iconify-icon icon="mdi:trash-can-outline" /></button>
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <span className={`px-2 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-wider border ${
-                                                    q.difficulty === 'Easy' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
-                                                    q.difficulty === 'Medium' ? 'bg-amber-50 text-amber-600 border-amber-100' :
-                                                    'bg-rose-50 text-rose-600 border-rose-100'
-                                                }`}>{q.difficulty}</span>
-                                                <span className={`border px-2 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-wider ${getTypeBadgeStyle(q.question_type)}`}>{getTypeShortName(q.question_type)}</span>
-                                                {q.page_number && <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wide bg-slate-50 px-2 py-0.5 rounded border border-slate-100">P.{q.page_number}</span>}
-                                            </div>
-                                            {q.figure_url && <img src={q.figure_url} className="mb-4 max-w-sm rounded-xl border border-slate-100 shadow-sm" />}
-                                            <div className="text-sm font-medium text-slate-700 leading-relaxed mb-3">{renderWithSmiles(parsePseudoLatexAndMath(q.question_text), 100)}</div>
-                                            <div className="grid grid-cols-2 gap-2 pl-2 border-l-2 border-slate-100">
-                                                {q.options.map((opt, i) => (
-                                                    <div key={i} className={`text-xs ${i === q.correct_index ? 'text-emerald-600 font-bold' : 'text-slate-500'}`}>
-                                                        {String.fromCharCode(65 + i)}. {renderWithSmiles(parsePseudoLatexAndMath(opt), 80)}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ))}
-                                    
-                                    {isLoadingQuestions && (
-                                        <div className="flex items-center justify-center py-8">
-                                            <div className="w-8 h-8 border-4 border-slate-200 border-t-indigo-500 rounded-full animate-spin"></div>
-                                        </div>
-                                    )}
-                                    
-                                    {!isLoadingQuestions && hasMore && (
-                                        <button 
-                                            onClick={handleLoadMore}
-                                            className="w-full py-3 bg-slate-100 text-slate-500 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 transition-all"
-                                        >
-                                            Load More Questions
-                                        </button>
-                                    )}
-                                </div>
-                            ) : <div className="text-center py-20 text-slate-400 font-black uppercase tracking-widest">Empty chapter.</div>
-                        ) : <div className="text-center py-20 text-slate-300 font-black uppercase tracking-widest">Select a chapter from sidebar.</div>
-                    ) : (
-                        <div className="max-w-5xl mx-auto pb-10">
-                            {/* Forge Mode Content (unchanged) */}
-                            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm relative overflow-hidden">
-                                {isForging && (
-                                    <div className="absolute inset-0 bg-white/95 z-20 flex flex-col items-center justify-center">
-                                        <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
-                                        <h3 className="text-xl font-black text-slate-800">{forgeStatus}</h3>
-                                        <div className="w-64 bg-slate-200 rounded-full h-2 mt-4 overflow-hidden"><div className="bg-indigo-600 h-full" style={{ width: `${forgeProgress}%` }}></div></div>
+                        <div className="space-y-4 max-w-4xl mx-auto pb-10">
+                            {questions.length === 0 ? (
+                                <div className="text-center py-24 text-slate-300"><iconify-icon icon="mdi:database-search" width="64" className="opacity-20 mb-4" /><p className="text-xs font-bold uppercase tracking-widest">Empty Workspace</p></div>
+                            ) : questions.map((q, idx) => (
+                                <div key={idx} className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm group hover:border-indigo-200 transition-all">
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <span className={`text-[8px] font-black px-2.5 py-1 rounded-full uppercase border ${q.difficulty === 'Easy' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : q.difficulty === 'Medium' ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>{q.difficulty}</span>
+                                        <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest ml-auto">{q.question_type}</span>
                                     </div>
-                                )}
-                                
-                                {forgedPreview.length > 0 ? (
-                                    <div className="animate-slide-up">
-                                        <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-100">
-                                            <h3 className="text-lg font-black text-slate-800">Preview ({forgedPreview.length})</h3>
-                                            <div className="flex gap-3">
-                                                <button onClick={() => setForgedPreview([])} className="px-4 py-2 text-rose-500 font-bold">Discard</button>
-                                                <button onClick={handleSavePreviewToDB} className="px-6 py-2 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest">Save to DB</button>
+                                    <div className="font-bold text-slate-800 mb-6 leading-relaxed text-lg">{renderWithSmiles(parsePseudoLatexAndMath(q.question_text), 120)}</div>
+                                    {q.figure_url && <div className="mb-6"><img src={q.figure_url} className="max-w-md rounded-2xl shadow-inner border border-slate-50 bg-slate-50/30 p-2" /></div>}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {q.options.map((o: any, i: number) => <div key={i} className={`text-xs p-4 rounded-xl border-2 transition-all ${i === q.correct_index ? 'bg-emerald-50 text-emerald-700 border-emerald-400 font-bold' : 'bg-slate-50 text-slate-500 border-slate-100'}`}><span className="opacity-30 mr-2">({String.fromCharCode(65+i)})</span> {renderWithSmiles(parsePseudoLatexAndMath(o), 90)}</div>)}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : forgedPreview.length > 0 ? (
+                        <div className="max-w-5xl mx-auto animate-fade-in pb-10">
+                            <div className="flex justify-between items-center mb-10 bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden">
+                                <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 blur-[100px] rounded-full"></div>
+                                <div className="relative z-10">
+                                    <h2 className="text-2xl font-black uppercase tracking-tight">Sync Completed</h2>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.4em] mt-1">{forgedPreview.length} standard NEET items forged</p>
+                                </div>
+                                <div className="flex gap-4 relative z-10">
+                                    <button onClick={() => setForgedPreview([])} className="px-6 py-3 bg-white/5 hover:bg-white/10 text-white rounded-xl font-black uppercase tracking-widest text-[10px] border border-white/10 transition-all">Discard</button>
+                                    <button onClick={handleSaveToDB} className="px-8 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-emerald-500/40 transition-all active:scale-95">Commit to Repo</button>
+                                </div>
+                            </div>
+                            <div className="space-y-6">
+                                {forgedPreview.map((q, i) => (
+                                    <div key={i} className="p-8 border border-slate-100 rounded-[3rem] bg-white shadow-sm flex flex-col md:flex-row gap-10 hover:shadow-xl transition-all">
+                                        <div className="flex-1">
+                                            <div className="flex flex-wrap items-center gap-3 mb-6">
+                                                <span className="text-[9px] font-black text-rose-600 bg-rose-50 px-3 py-1 rounded-full uppercase tracking-wider">{q.chapter_name}</span>
+                                                <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full uppercase tracking-wider">{q.difficulty}</span>
+                                                {q.page_number && <span className="text-[9px] font-black text-slate-400 bg-slate-50 px-3 py-1 rounded-full uppercase border border-slate-100 ml-auto">Pg {q.page_number}</span>}
                                             </div>
+                                            <p className="text-xl font-bold text-slate-700 mb-8 leading-relaxed">{q.question_text}</p>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                                                {q.options.map((o, oi) => <div key={oi} className={`text-xs p-4 rounded-xl border ${oi === q.correctIndex ? 'bg-emerald-50 border-emerald-200 text-emerald-700 font-bold' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>{String.fromCharCode(65+oi)}. {o}</div>)}
+                                            </div>
+                                            {revealExplanations && q.explanation && (
+                                                <div className="bg-slate-50 rounded-2xl p-6 border-l-4 border-indigo-500 animate-slide-up">
+                                                    <h5 className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mb-2">Scientific Explanation</h5>
+                                                    <p className="text-sm text-slate-600 leading-relaxed font-medium italic">{q.explanation}</p>
+                                                </div>
+                                            )}
                                         </div>
-                                        <div className="space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
-                                            {forgedPreview.map((q, i) => (
-                                                <div key={i} className="p-4 rounded-2xl border border-slate-100 bg-slate-50/50">
-                                                    <p className="text-sm font-bold text-slate-700 mb-2">{q.question_text}</p>
-                                                    {q.figure_url && (
-                                                        <div className="mb-3 max-w-[200px] border border-slate-200 rounded-lg overflow-hidden">
-                                                            <img src={q.figure_url} alt="Question Figure" className="w-full h-auto block" />
+                                        {q.figure_url && (
+                                            <div className="flex flex-col gap-4 shrink-0">
+                                                <div className="w-64 h-64 rounded-[2.5rem] overflow-hidden border border-slate-100 bg-white flex items-center justify-center p-6 shadow-inner relative">
+                                                    <img src={q.figure_url} className="max-h-full max-w-full object-contain" />
+                                                    {showPrompts[i] && q.figurePrompt && (
+                                                        <div className="absolute inset-4 bg-slate-900/90 backdrop-blur-md rounded-[1.5rem] p-4 text-white animate-fade-in overflow-y-auto custom-scrollbar z-20">
+                                                            <div className="flex items-center gap-2 mb-2 border-b border-white/10 pb-2">
+                                                                <iconify-icon icon="mdi:robot-outline" className="text-indigo-400" />
+                                                                <span className="text-[8px] font-black uppercase tracking-widest">Image Instruction</span>
+                                                            </div>
+                                                            <p className="text-[10px] leading-relaxed font-medium text-slate-200 italic">{q.figurePrompt}</p>
                                                         </div>
                                                     )}
-                                                    <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
-                                                        {q.options.map((o, oi) => <div key={oi}>{String.fromCharCode(65+oi)}. {o}</div>)}
+                                                </div>
+                                                <div className="flex flex-col gap-2">
+                                                    <div className="flex gap-2">
+                                                        <button 
+                                                            onClick={() => setShowPrompts(prev => ({...prev, [i]: !prev[i]}))}
+                                                            className={`flex-1 flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm ${showPrompts[i] ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 border border-slate-100 hover:bg-slate-100'}`}
+                                                        >
+                                                            <iconify-icon icon={showPrompts[i] ? "mdi:eye-off" : "mdi:robot-outline"} />
+                                                            {showPrompts[i] ? "Hide Prompt" : "AI Prompt"}
+                                                        </button>
+                                                        {q.sourceFigureDataUrl && (
+                                                            <button 
+                                                                onClick={() => setShowRefs(prev => ({...prev, [i]: !prev[i]}))}
+                                                                className={`flex-1 flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm ${showRefs[i] ? 'bg-emerald-600 text-white' : 'bg-slate-50 text-slate-500 border border-slate-100 hover:bg-slate-100'}`}
+                                                            >
+                                                                <iconify-icon icon={showRefs[i] ? "mdi:eye-off" : "mdi:eye"} />
+                                                                {showRefs[i] ? "Hide Ref" : "Ref Image"}
+                                                            </button>
+                                                        )}
                                                     </div>
-                                                    {q.page_number && <p className="text-[9px] text-slate-400 mt-2 font-bold uppercase tracking-wider">Source: P.{q.page_number}</p>}
+                                                    {showRefs[i] && q.sourceFigureDataUrl && (
+                                                        <div className="w-64 p-3 bg-slate-50 border border-slate-200 rounded-[1.5rem] animate-fade-in shadow-inner">
+                                                            <p className="text-[7px] font-black text-slate-400 uppercase mb-2 px-1 text-center">Original Reference</p>
+                                                            <img src={q.sourceFigureDataUrl} className="w-full h-auto rounded-xl grayscale" />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="max-w-4xl mx-auto bg-white p-12 rounded-[3.5rem] border border-slate-200 shadow-2xl relative overflow-hidden">
+                            {isForging && (
+                                <div className="absolute inset-0 bg-white/98 backdrop-blur-xl z-50 flex flex-col items-center justify-center p-12 text-center animate-fade-in">
+                                    <div className="w-24 h-24 bg-rose-600 text-white rounded-[2rem] flex items-center justify-center shadow-2xl mb-12 animate-pulse"><iconify-icon icon="mdi:lightning-bolt" width="48" /></div>
+                                    <h3 className="text-3xl font-black text-slate-800 tracking-tight mb-8 uppercase">Neural Pipeline Active</h3>
+                                    <div className="w-full max-w-sm space-y-4">
+                                        {forgeSteps.map((step, idx) => (
+                                            <div key={idx} className="flex items-center gap-3 animate-slide-up opacity-0 [animation-fill-mode:forwards]" style={{ animationDelay: `${idx * 0.1}s` }}>
+                                                <iconify-icon icon={idx === forgeSteps.length - 1 ? "mdi:circle-slice-8" : "mdi:check-circle"} className={idx === forgeSteps.length - 1 ? "text-rose-600 animate-spin" : "text-emerald-500"} />
+                                                <span className={`text-[10px] font-black uppercase tracking-widest ${idx === forgeSteps.length - 1 ? 'text-slate-800' : 'text-slate-400'}`}>{step}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="flex items-center justify-between mb-12 pb-8 border-b border-slate-100">
+                                <div className="flex items-center gap-6">
+                                    <div className="w-16 h-16 bg-rose-600 text-white rounded-[1.5rem] flex items-center justify-center shadow-xl transform rotate-3"><iconify-icon icon="mdi:database-plus" width="32" /></div>
+                                    <div>
+                                        <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight leading-none mb-2">NEET Forge Blueprint</h2>
+                                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{targetChapters.length} Chapters Prepared</p>
+                                    </div>
+                                </div>
+                                <button onClick={applyNeetPreset} className="px-6 py-3 bg-indigo-50 text-indigo-600 rounded-xl font-black uppercase text-[10px] tracking-widest border border-indigo-100 hover:bg-indigo-100 transition-all shadow-sm">NEET Standard Mix</button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                                <div className="space-y-10">
+                                    <section>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-6 block ml-1">Complexity Matrix (%)</label>
+                                        <div className="grid grid-cols-3 gap-4">
+                                            {['easy', 'medium', 'hard'].map(level => (
+                                                <div key={level} className="space-y-2">
+                                                    <span className="text-[8px] font-black text-slate-400 uppercase block text-center capitalize">{level}</span>
+                                                    <input type="number" value={globalDiff[level as keyof DifficultyDistribution]} onChange={e => setGlobalDiff({...globalDiff, [level]: Math.min(100, parseInt(e.target.value)||0)})} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl py-4 text-center text-sm font-black text-slate-700 outline-none focus:border-rose-500 shadow-inner" />
                                                 </div>
                                             ))}
                                         </div>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="flex items-center gap-4 mb-8">
-                                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center border border-indigo-100"><iconify-icon icon="mdi:creation" width="24" /></div>
-                                            <h3 className="text-lg font-black text-slate-800 uppercase">AI Forge</h3>
+                                    </section>
+                                    <section>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-6 block ml-1">Pattern Array (%)</label>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            {[{k:'mcq',l:'Standard MCQ'},{k:'reasoning',l:'Assertion-Reason'},{k:'matching',l:'Matrix Match'},{k:'statements',l:'Statement I/II'}].map(type => (
+                                                <div key={type.k} className="space-y-2">
+                                                    <span className="text-[8px] font-black text-slate-400 uppercase block px-1 truncate">{type.l}</span>
+                                                    <input type="number" value={globalTypes[type.k as keyof TypeDistribution] || 0} onChange={e => setGlobalTypes({...globalTypes, [type.k]: Math.min(100, parseInt(e.target.value)||0)})} className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-2xl py-4 text-center text-sm font-black text-emerald-700 outline-none focus:border-emerald-500 shadow-inner" />
+                                                </div>
+                                            ))}
                                         </div>
-                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                            <div className="space-y-6">
-                                                <div className="p-5 bg-slate-50 border border-slate-200 rounded-3xl">
-                                                    <h4 className="text-xs font-black text-slate-700 uppercase mb-4">Difficulty</h4>
-                                                    <div className="flex gap-3">
-                                                        {['easy','medium','hard'].map(d => (
-                                                            <div key={d} className="flex-1">
-                                                                <label className="text-[9px] font-bold text-slate-500 uppercase block mb-1">{d}</label>
-                                                                <input type="number" value={globalDiff[d as keyof DifficultyDistribution]} onChange={e => setGlobalDiff({...globalDiff, [d]: parseInt(e.target.value)||0})} className="w-full bg-white border border-slate-200 rounded-xl p-2 text-center font-bold" />
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                                <div className="flex gap-4">
-                                                    <div className="flex-1">
-                                                        <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Count / Chap</label>
-                                                        <input type="number" value={globalCount} onChange={e => setGlobalCount(parseInt(e.target.value))} className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 font-bold" />
-                                                    </div>
-                                                    <div className="flex-1">
-                                                        <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Figures</label>
-                                                        <input type="number" value={globalFigureCount} onChange={e => setGlobalFigureCount(parseInt(e.target.value)||0)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 font-bold" />
-                                                    </div>
-                                                </div>
+                                    </section>
+                                </div>
+
+                                <div className="space-y-6">
+                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-4 block ml-1">Synthesis Queue</label>
+                                    <div className="bg-slate-50/50 rounded-[2.5rem] border border-slate-100 p-6 space-y-6 max-h-[450px] overflow-y-auto custom-scrollbar shadow-inner">
+                                        {targetChapters.length === 0 ? (
+                                            <div className="py-24 text-center flex flex-col items-center">
+                                                <iconify-icon icon="mdi:playlist-plus" width="48" className="text-slate-200 mb-4" />
+                                                <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em] leading-relaxed">Add chapters from the<br/>catalog to begin</p>
                                             </div>
-                                            <div className="flex flex-col h-full min-h-[300px]">
-                                                <h4 className="text-xs font-black text-slate-700 uppercase mb-3">Target Chapters ({targetChapters.length})</h4>
-                                                <div className="flex-1 bg-slate-50 rounded-2xl border border-slate-200 p-2 overflow-y-auto space-y-2">
-                                                    {targetChapters.map(tc => (
-                                                        <div key={tc.id} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
-                                                            <p className="text-[10px] font-black text-slate-700 uppercase truncate max-w-[150px]">{tc.name}</p>
-                                                            <button onClick={() => removeChapterFromForge(tc.id)} className="text-rose-500 hover:text-rose-700 transition-colors"><iconify-icon icon="mdi:close" /></button>
+                                        ) : targetChapters.map(c => {
+                                            const images = sourceImagesInDoc[c.id] || [];
+                                            const isExtracting = extractingIds.has(c.id);
+                                            return (
+                                                <div key={c.id} className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm animate-fade-in group hover:shadow-md transition-shadow">
+                                                    <div className="flex justify-between items-start mb-4">
+                                                        <div className="min-w-0 flex-1 pr-4">
+                                                            <span className="text-[11px] font-black text-slate-800 uppercase tracking-tight block truncate">{c.name}</span>
+                                                            <span className="text-[8px] font-bold text-slate-400 uppercase">{c.subject_name}</span>
                                                         </div>
-                                                    ))}
-                                                    {targetChapters.length === 0 && <p className="text-center text-slate-400 text-[10px] font-bold uppercase py-10">No chapters selected.</p>}
+                                                        <button onClick={() => setTargetChapters(targetChapters.filter(x => x.id !== c.id))} className="text-slate-200 hover:text-rose-500 transition-colors shrink-0"><iconify-icon icon="mdi:close-circle" width="20" /></button>
+                                                    </div>
+
+                                                    <div className="mb-5">
+                                                        <div className="flex justify-between items-center mb-2">
+                                                            <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Source Figures</p>
+                                                            <span className="text-[7px] font-black text-indigo-500 bg-indigo-50 px-1.5 rounded-full">{isExtracting ? 'Scanning...' : `${images.length} Detected`}</span>
+                                                        </div>
+                                                        <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                                                            {isExtracting ? (
+                                                                <div className="flex gap-2">
+                                                                    {[1,2,3].map(i => <div key={i} className="w-10 h-10 rounded-lg bg-slate-50 animate-pulse border border-slate-100" />)}
+                                                                </div>
+                                                            ) : images.length > 0 ? (
+                                                                images.map((img, idx) => (
+                                                                    <div key={idx} className="w-10 h-10 rounded-lg overflow-hidden border border-slate-100 shrink-0 bg-slate-50 flex items-center justify-center shadow-sm">
+                                                                        <img src={`data:${img.mimeType};base64,${img.data}`} className="w-full h-full object-cover grayscale opacity-70" />
+                                                                    </div>
+                                                                ))
+                                                            ) : (
+                                                                <p className="text-[7px] text-slate-300 italic">No figures found in document</p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex gap-3">
+                                                        <div className="flex-1 bg-slate-50 p-3 rounded-2xl border border-slate-100">
+                                                            <span className="text-[7px] font-black text-slate-400 uppercase block mb-1">Total Qs</span>
+                                                            <input type="number" value={c.count} onChange={e => setTargetChapters(targetChapters.map(x => x.id === c.id ? {...x, count: Math.min(100, parseInt(e.target.value)||1)} : x))} className="w-full bg-transparent text-sm font-black text-slate-700 outline-none" />
+                                                        </div>
+                                                        <div className="flex-1 bg-rose-50 p-3 rounded-2xl border border-rose-100">
+                                                            <span className="text-[7px] font-black text-rose-400 uppercase block mb-1">Diagrams</span>
+                                                            <input type="number" value={c.figureCount} onChange={e => setTargetChapters(targetChapters.map(x => x.id === c.id ? {...x, figureCount: Math.min(c.count, parseInt(e.target.value)||0)} : x))} className="w-full bg-transparent text-sm font-black text-rose-700 outline-none" />
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        </div>
-                                        <button onClick={handleAiForge} disabled={isForging} className="w-full mt-8 py-4 rounded-xl bg-indigo-600 text-white font-black uppercase tracking-[0.2em] shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-95 transition-all">Start Forge</button>
-                                    </>
-                                )}
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                             </div>
+
+                            <button 
+                                onClick={handleAiForge} 
+                                disabled={isForging || targetChapters.length === 0} 
+                                className="w-full mt-12 bg-rose-600 text-white py-6 rounded-[2rem] font-black uppercase tracking-[0.4em] text-sm shadow-2xl shadow-rose-600/30 hover:bg-rose-700 transition-all active:scale-[0.98] disabled:opacity-50 disabled:grayscale flex items-center justify-center gap-6"
+                            >
+                                <iconify-icon icon="mdi:lightning-bolt" width="28" />
+                                <span>Initiate Synthesis</span>
+                            </button>
                         </div>
                     )}
                 </div>

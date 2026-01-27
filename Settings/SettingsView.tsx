@@ -2,18 +2,30 @@
 import '../types';
 import React from 'react';
 import BrandingCard from './Branding/BrandingCard';
+import SchoolManager from './Schools/SchoolManager';
 import { BrandingConfig } from '../Quiz/types';
 
 interface SettingsViewProps {
   brandConfig: BrandingConfig;
   onUpdateBranding: (config: BrandingConfig) => void;
   onSignOut: () => void;
+  // Updated Props
+  schools?: any[];
+  schoolClasses?: any[];
+  onRefresh?: () => void;
+  // Legacy props ignored
+  folders?: any[]; 
+  onAddFolder?: any;
+  onDeleteFolder?: any;
 }
 
 const SettingsView: React.FC<SettingsViewProps> = ({ 
   brandConfig, 
   onUpdateBranding, 
   onSignOut,
+  schools,
+  schoolClasses,
+  onRefresh
 }) => {
   return (
     <div className="w-full max-w-4xl mx-auto p-6 md:p-12 animate-fade-in">
@@ -34,6 +46,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="grid grid-cols-1 gap-12 pb-20">
         <section>
           <BrandingCard config={brandConfig} onUpdate={onUpdateBranding} />
+        </section>
+        
+        <section>
+          <SchoolManager 
+            schools={schools} 
+            schoolClasses={schoolClasses} 
+            onRefresh={onRefresh} 
+          />
         </section>
       </div>
     </div>
