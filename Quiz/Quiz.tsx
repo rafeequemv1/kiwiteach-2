@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabase/client';
 import AuthUI from '../supabase/AuthUI';
@@ -17,34 +16,41 @@ import InteractiveQuizSession from './components/InteractiveQuizSession';
 import StudentOnlineTestDashboard from '../Student/OnlineTest/StudentOnlineTestDashboard';
 import StudentMockTestDashboard from '../Student/MockTest/StudentMockTestDashboard';
 import SolutionViewer from '../Student/OnlineTest/SolutionViewer';
-import { BrandingConfig, Question, QuestionType, SelectedChapter, LayoutConfig, TypeDistribution } from './types';
-import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey } from '../services/geminiService';
+import { BrandingConfig, Question, QuestionType, SelectedChapter, LayoutConfig, TypeDistribution, CreateTestOptions } from './types';
+import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractImagesFromDoc } from '../services/geminiService';
 
-interface School {
-  id: string;
-  name: string;
-  color?: string;
-}
+interface School { id: string; name: string; color?: string; }
+interface SchoolClass { id: string; name: string; school_id: string; }
+interface Folder { id: string; name: string; parent_id?: string | null; tests: any[]; }
 
-interface SchoolClass {
-  id: string;
-  name: string;
-  school_id: string;
-}
-
-interface Folder {
-  id: string;
-  name: string;
-  parent_id?: string | null;
-  tests: any[];
-}
+/**
+ * Utility to strip Null characters (\u0000) which are illegal in Postgres text types.
+ */
+const sanitizeForPostgres = (obj: any): any => {
+    if (typeof obj === 'string') {
+        return obj.replace(/\u0000/g, '').replace(/\0/g, '');
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(sanitizeForPostgres);
+    }
+    if (obj !== null && typeof obj === 'object') {
+        const cleaned: any = {};
+        for (const key in obj) {
+            cleaned[key] = sanitizeForPostgres(obj[key]);
+        }
+        return cleaned;
+    }
+    return obj;
+};
 
 const Quiz: React.FC = () => {
   const [session, setSession] = useState<any>(null);
   const [activeView, setActiveView] = useState('test');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState(''); // New state for loading text
   const fetchingRef = useRef(false);
+  const lastFetchTime = useRef<number>(0);
   
   const [schools, setSchools] = useState<School[]>([]);
   const [schoolClasses, setSchoolClasses] = useState<SchoolClass[]>([]);
@@ -53,12 +59,7 @@ const Quiz: React.FC = () => {
   const [viewMode, setViewMode] = useState<'grid' | 'calendar' | 'kanban'>('grid');
   const [calendarType, setCalendarType] = useState<'month' | 'week' | 'year'>('month');
 
-  const [brandConfig, setBrandConfig] = useState<BrandingConfig>({
-    name: 'KiwiTeach',
-    logo: null,
-    showOnTest: true,
-    showOnOmr: true
-  });
+  const [brandConfig, setBrandConfig] = useState<BrandingConfig>({ name: 'KiwiTeach', logo: null, showOnTest: true, showOnOmr: true });
 
   const [isCreatorOpen, setIsCreatorOpen] = useState(false);
   const [isOnlineExamCreatorOpen, setIsOnlineExamCreatorOpen] = useState(false);
@@ -70,48 +71,19 @@ const Quiz: React.FC = () => {
   const [creatorFolderId, setCreatorFolderId] = useState<string | null>(null);
   const [isForging, setIsForging] = useState(false);
   const [forgeStep, setForgeStep] = useState('');
-  const [forgedResult, setForgedResult] = useState<{ topic: string, questions: Question[], layoutConfig?: LayoutConfig } | null>(null);
+  const [forgedResult, setForgedResult] = useState<{ topic: string, questions: Question[], layoutConfig?: LayoutConfig, sourceOptions: CreateTestOptions } | null>(null);
   
   const [editingTestId, setEditingTestId] = useState<string | null>(null);
   const [editInitialChapters, setEditInitialChapters] = useState<SelectedChapter[] | undefined>(undefined);
+  const [editInitialTopic, setEditInitialTopic] = useState<string | undefined>(undefined);
+  const [editInitialSettings, setEditInitialSettings] = useState<any>(undefined);
+  const [editInitialManualQuestions, setEditInitialManualQuestions] = useState<Question[] | undefined>(undefined);
 
   useEffect(() => {
     let localSchools = localStorage.getItem('kt_schools');
     let localClasses = localStorage.getItem('kt_classes');
-    let localStudents = localStorage.getItem('kt_students');
-    let localResults = localStorage.getItem('kt_test_results');
-
-    if (!localSchools || JSON.parse(localSchools).length === 0) {
-        const seedSchools: School[] = [
-            { id: 'sc-boys', name: 'Zaitoon International Boys', color: 'indigo' },
-            { id: 'sc-girls', name: 'Zaitoon International Girls', color: 'rose' },
-            { id: 'sc-kannur', name: 'Zaitoon International Kannur', color: 'emerald' }
-        ];
-        const seedClasses: SchoolClass[] = [
-            { id: 'cl-b-10', name: '10th Standard', school_id: 'sc-boys' },
-            { id: 'cl-b-11', name: '11th Standard', school_id: 'sc-boys' },
-            { id: 'cl-b-12', name: '12th Standard', school_id: 'sc-boys' },
-            { id: 'cl-g-10', name: '10th Standard', school_id: 'sc-girls' },
-            { id: 'cl-g-11', name: '11th Standard', school_id: 'sc-girls' },
-            { id: 'cl-g-12', name: '12th Standard', school_id: 'sc-girls' },
-            { id: 'cl-k-10', name: '10th Standard', school_id: 'sc-kannur' },
-            { id: 'cl-k-11', name: '11th Standard', school_id: 'sc-kannur' },
-            { id: 'cl-k-12', name: '12th Standard', school_id: 'sc-kannur' }
-        ];
-        const seedStudents = [
-            { id: 'st-1', name: 'Ahmad Faisal', email: 'ahmad@zaitoon.com', class_id: 'cl-b-11', attending_exams: ['NEET'] },
-            { id: 'st-2', name: 'Omar Khalid', email: 'omar@zaitoon.com', class_id: 'cl-b-12', attending_exams: ['JEE'] },
-            { id: 'st-3', name: 'Zaid Mansoor', email: 'zaid@zaitoon.com', class_id: 'cl-b-10', attending_exams: ['Foundation'] }
-        ];
-        localStorage.setItem('kt_schools', JSON.stringify(seedSchools));
-        localStorage.setItem('kt_classes', JSON.stringify(seedClasses));
-        localStorage.setItem('kt_students', JSON.stringify(seedStudents));
-        setSchools(seedSchools);
-        setSchoolClasses(seedClasses);
-    } else {
-        setSchools(JSON.parse(localSchools));
-        setSchoolClasses(JSON.parse(localClasses));
-    }
+    if (localSchools) setSchools(JSON.parse(localSchools));
+    if (localClasses) setSchoolClasses(JSON.parse(localClasses));
   }, []);
 
   const refreshOrgData = () => {
@@ -124,37 +96,78 @@ const Quiz: React.FC = () => {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session?.user) fetchWorkspace(session.user);
-      else setIsLoadingWorkspace(false);
+      if (session?.user) { 
+        fetchWorkspace(session.user); 
+        fetchBranding(session.user.id); 
+      } else { 
+        setIsLoadingWorkspace(false); 
+      }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
-      if (session?.user) fetchWorkspace(session.user);
-      else { setFolders([]); setAllTests([]); setIsLoadingWorkspace(false); }
+      if (session?.user && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) { 
+        fetchWorkspace(session.user); 
+        fetchBranding(session.user.id); 
+      } else if (event === 'SIGNED_OUT') {
+        setFolders([]); 
+        setAllTests([]); 
+        setIsLoadingWorkspace(false); 
+      }
     });
     return () => subscription.unsubscribe();
   }, []);
 
+  const fetchBranding = async (userId: string) => {
+      const { data, error } = await supabase.from('branding_settings').select('brand_name, logo_url, show_on_test, show_on_omr').eq('user_id', userId).single();
+      if (!error && data) {
+          setBrandConfig({ 
+            name: data.brand_name || 'KiwiTeach', 
+            logo: data.logo_url || null, 
+            showOnTest: data.show_on_test ?? true, 
+            showOnOmr: data.show_on_omr ?? true 
+          });
+      }
+  };
+
+  const handleUpdateBranding = async (newConfig: BrandingConfig) => {
+      setBrandConfig(newConfig);
+      if (session?.user) {
+          await supabase.from('branding_settings').upsert({ user_id: session.user.id, brand_name: newConfig.name, logo_url: newConfig.logo, show_on_test: newConfig.showOnTest, show_on_omr: newConfig.showOnOmr, updated_at: new Date().toISOString() });
+      }
+  };
+
   const fetchWorkspace = async (currentUser?: any) => {
-    if (fetchingRef.current) return;
+    const now = Date.now();
+    if (fetchingRef.current || (now - lastFetchTime.current < 2000)) return;
+    
     fetchingRef.current = true;
+    lastFetchTime.current = now;
+    
     try {
         let user = currentUser || session?.user;
         if (!user) { const { data } = await supabase.auth.getUser(); user = data.user; }
         if (!user) return;
+
         const [foldersRes, testsRes] = await Promise.all([
-            supabase.from('folders').select('*').eq('user_id', user.id).order('created_at'),
-            supabase.from('tests').select('id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids, layout_config, config').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100)
+            supabase.from('folders').select('id, name, parent_id').eq('user_id', user.id).order('created_at'),
+            supabase.from('tests').select('id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids').eq('user_id', user.id).order('created_at', { ascending: false }).limit(60)
         ]);
-        const processedTests = (testsRes.data || []).map((t: any) => ({ ...t, questionCount: t.question_count || 0, generatedAt: t.created_at, scheduledAt: t.scheduled_at, layoutConfig: t.layout_config, class_ids: t.class_ids || [] }));
+
+        const processedTests = (testsRes.data || []).map((t: any) => ({ ...t, questionCount: t.question_count || 0, generatedAt: t.created_at, scheduledAt: t.scheduled_at, class_ids: t.class_ids || [] }));
         setAllTests(processedTests);
+        
         const folderMap = new Map();
         (foldersRes.data || []).forEach((f: any) => { folderMap.set(f.id, { ...f, children: [], tests: [] }); });
         processedTests.forEach((t: any) => { if (t.folder_id && folderMap.has(t.folder_id)) { folderMap.get(t.folder_id).tests.push(t); } });
+        
         const rootFolders: Folder[] = [];
         folderMap.forEach(f => { if (f.parent_id && folderMap.has(f.parent_id)) { folderMap.get(f.parent_id).children.push(f); } else rootFolders.push(f); });
         setFolders(rootFolders);
-    } finally { setIsLoadingWorkspace(false); fetchingRef.current = false; }
+    } finally { 
+        setIsLoadingWorkspace(false); 
+        fetchingRef.current = false; 
+    }
   };
 
   const handleAddFolder = async (folder: { name: string, parent_id: string | null }) => {
@@ -163,42 +176,100 @@ const Quiz: React.FC = () => {
   };
 
   const handleDeleteItem = async (type: 'folder' | 'test', id: string, name: string) => {
-      try { if (type === 'folder') await supabase.from('folders').delete().eq('id', id); else await supabase.from('tests').delete().eq('id', id); await fetchWorkspace(); } catch (err: any) { alert(`Failed to delete ${type}: ${err.message}`); }
+      try { 
+        if (type === 'folder') await supabase.from('folders').delete().eq('id', id); 
+        else await supabase.from('tests').delete().eq('id', id); 
+        fetchWorkspace(); 
+      } catch (err: any) { alert(`Failed to delete ${type}: ${err.message}`); }
   };
 
   const handleDuplicateTest = async (test: any) => {
+      setLoadingMessage('Cloning Assessment...');
       setIsLoadingTest(true);
       try {
           const { data: { user } } = await supabase.auth.getUser();
-          let sourceQuestions = test.questions;
-          if (!sourceQuestions) { const { data, error } = await supabase.from('tests').select('questions').eq('id', test.id).single(); if (error) throw error; sourceQuestions = data.questions; }
-          let qCount = test.question_count || sourceQuestions?.length || 0;
-          await supabase.from('tests').insert({ name: `${test.name} (Copy)`, folder_id: test.folder_id, user_id: user?.id, questions: sourceQuestions || [], question_ids: test.question_ids || [], config: test.config || {}, layout_config: test.layout_config || {}, question_count: qCount, status: 'draft', scheduled_at: null, class_ids: [] });
+          const { data: fullData } = await supabase.from('tests').select('*').eq('id', test.id).single();
+          await supabase.from('tests').insert({ name: `${test.name} (Copy)`, folder_id: test.folder_id, user_id: user?.id, questions: fullData?.questions || [], question_ids: fullData?.question_ids || [], config: fullData?.config || {}, layout_config: fullData?.layout_config || {}, question_count: fullData?.question_count || 0, status: 'draft', scheduled_at: null, class_ids: [] });
           await fetchWorkspace();
       } catch (e: any) { alert("Duplicate failed: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
   const handleRenameTest = async (testId: string, newName: string) => { try { await supabase.from('tests').update({ name: newName }).eq('id', testId); await fetchWorkspace(); } catch (err: any) { alert("Rename failed: " + err.message); } };
-
-  const handleScheduleTest = async (testId: string, dateStr: string | null) => {
-      try { const updates = dateStr ? { scheduled_at: new Date(dateStr).toISOString(), status: 'scheduled' } : { scheduled_at: null, status: 'generated' }; await supabase.from('tests').update(updates).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Scheduling Error:", e); }
-  };
-
+  const handleScheduleTest = async (testId: string, dateStr: string | null) => { try { const updates = dateStr ? { scheduled_at: new Date(dateStr).toISOString(), status: 'scheduled' } : { scheduled_at: null, status: 'generated' }; await supabase.from('tests').update(updates).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Scheduling Error:", e); } };
   const handleAssignClasses = async (testId: string, classIds: string[]) => { try { await supabase.from('tests').update({ class_ids: classIds }).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Assign Error:", e); } };
 
-  const handleStartTestCreator = (folderId: string | null) => { setEditInitialChapters(undefined); setEditingTestId(null); setCreatorFolderId(folderId); setIsCreatorOpen(true); };
-  const handleStartOnlineExamCreator = (folderId: string | null) => { setEditInitialChapters(undefined); setEditingTestId(null); setCreatorFolderId(folderId); setIsOnlineExamCreatorOpen(true); };
+  const handleStartTestCreator = (folderId: string | null) => { 
+      setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
+      setEditingTestId(null); setCreatorFolderId(folderId); setIsCreatorOpen(true); 
+  };
+  const handleStartOnlineExamCreator = (folderId: string | null) => { 
+      setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
+      setEditingTestId(null); setCreatorFolderId(folderId); setIsOnlineExamCreatorOpen(true); 
+  };
 
   const handleEditBlueprint = (questions: Question[]) => {
-      const chaptersMap = new Map<string, SelectedChapter>();
-      questions.forEach(q => {
-          if (!q.sourceChapterId) return;
-          if (chaptersMap.has(q.sourceChapterId)) { chaptersMap.get(q.sourceChapterId)!.count += 1; } else {
-              chaptersMap.set(q.sourceChapterId, { id: q.sourceChapterId, name: q.sourceChapterName || 'Unknown Chapter', subjectName: q.sourceSubjectName || 'Unknown Subject', className: 'Unknown', count: 1, figureCount: 0, difficulty: 'Global', source: 'db', styleCounts: { mcq: 1 }, selectionMode: 'count' });
-          }
-      });
-      setEditInitialChapters(Array.from(chaptersMap.values()));
-      setIsCreatorOpen(true);
+    if (forgedResult?.sourceOptions) {
+        const options = forgedResult.sourceOptions;
+        setEditInitialChapters(options.chapters);
+        setEditInitialTopic(options.topic);
+        setEditInitialManualQuestions(questions);
+        setEditInitialSettings({
+            totalQuestions: questions.length, globalDiff: options.globalDifficultyMix, globalTypes: options.globalTypeMix,
+            useGlobalDifficulty: options.useGlobalDifficulty, globalFigureCount: options.globalFigureCount,
+            selectionMode: options.selectionMode || (options.manualQuestions && options.manualQuestions.length > 0 ? 'manual' : 'auto')
+        });
+    } else {
+        const chaptersMap = new Map<string, SelectedChapter>();
+        questions.forEach(q => {
+            if (!q.sourceChapterId) return;
+            if (chaptersMap.has(q.sourceChapterId)) { chaptersMap.get(q.sourceChapterId)!.count += 1; } 
+            else { chaptersMap.set(q.sourceChapterId, { id: q.sourceChapterId, name: q.sourceChapterName || 'Unknown', subjectName: q.sourceSubjectName || 'Unknown', className: 'Unknown', count: 1, figureCount: 0, difficulty: 'Global', source: 'db', styleCounts: { mcq: 1 }, selectionMode: 'count', visualMode: 'image' }); }
+        });
+        setEditInitialChapters(Array.from(chaptersMap.values()));
+        setEditInitialTopic(forgedResult?.topic || 'Untitled');
+        setEditInitialSettings({ totalQuestions: questions.length, selectionMode: 'manual' });
+        setEditInitialManualQuestions(questions);
+    }
+    setIsCreatorOpen(true);
+    setForgedResult(null); 
+  };
+
+  const handleSaveDraft = async (options: CreateTestOptions) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Auth required.");
+      const manualQs = options.manualQuestions || [];
+      
+      const safeOptions = sanitizeForPostgres(options);
+      const safeManualQs = sanitizeForPostgres(manualQs);
+
+      const payload = { 
+          name: safeOptions.topic || 'New Assessment Draft', 
+          folder_id: creatorFolderId, 
+          user_id: user.id, 
+          questions: safeManualQs, 
+          question_ids: safeManualQs.map((q: any) => q.id || '').filter(Boolean), 
+          config: { sourceOptions: safeOptions, mode: 'paper' }, 
+          layout_config: {}, 
+          status: 'draft', 
+          question_count: safeOptions.selectionMode === 'manual' ? safeManualQs.length : safeOptions.totalQuestions, 
+          scheduled_at: null, 
+          class_ids: [] 
+      };
+
+      if (editingTestId) { 
+        // This is the correct path for an existing draft. It should update.
+        await supabase.from('tests').update(payload).eq('id', editingTestId); 
+      } else { 
+        // This path runs for a new draft. It inserts.
+        const { data, error } = await supabase.from('tests').insert([payload]).select('id').single(); 
+        if (error) throw error;
+        // After inserting, capture the new ID. This prevents subsequent saves in the same session from creating duplicates.
+        if (data?.id) {
+            setEditingTestId(data.id);
+        }
+      }
+      // Refresh the dashboard to show the changes.
+      await fetchWorkspace();
   };
 
   const processUploadContent = (content: string) => {
@@ -210,223 +281,385 @@ const Quiz: React.FC = () => {
       return { text, images };
   };
 
-  const generateQuestionsLogic = async (options: any, setStatus: (s: string) => void) => {
+  const generateQuestionsLogic = async (options: CreateTestOptions, setStatus: (s: string) => void) => {
       await ensureApiKey();
-      let finalQuestions: Question[] = [];
-      const existingQuestions = (options.mode === 'online-exam' ? onlineExamResult?.questions : forgedResult?.questions) || [];
       
+      const manualQs = options.manualQuestions || [];
+      let finalQuestions: Question[] = [...manualQs]; 
+      
+      const styleTransferCache: Record<string, string> = {};
+
       for (const chap of options.chapters) {
+          const manualForThisChap = manualQs.filter(q => q.sourceChapterId === chap.id);
           const targetCount = chap.count || 0;
-          if (targetCount === 0) continue;
-          const existingForChap = existingQuestions.filter(q => q.sourceChapterId === chap.id);
           
-          if (existingForChap.length > 0 && existingForChap.length >= targetCount) {
-              finalQuestions = [...finalQuestions, ...existingForChap.slice(0, targetCount)];
-          } else {
-              finalQuestions = [...finalQuestions, ...existingForChap];
-              const additionalNeeded = targetCount - existingForChap.length;
-              setStatus(`Forging ${additionalNeeded} new questions for ${chap.name}...`);
-              let newBatch: Question[] = [];
+          const neededFromAi = Math.max(0, targetCount - manualForThisChap.length);
+          if (neededFromAi <= 0) continue;
+          
+          setStatus(`Forging ${neededFromAi} remainder questions for ${chap.name}...`);
+          let newBatch: Question[] = [];
+          let effectiveSource = chap.source;
+          
+          let allPossibleImgs: { data: string, mimeType: string }[] = [];
+          let rawText = "";
+
+          if (chap.content) { 
+              const p = processUploadContent(chap.content); 
+              rawText = p.text;
+              allPossibleImgs = p.images;
+          } else if (chap.id) { 
+              const { data } = await supabase.from('chapters').select('raw_text, doc_path').eq('id', chap.id).maybeSingle(); 
+              if (data?.raw_text) rawText = data.raw_text;
+              if (data?.doc_path && chap.figureCount > 0 && chap.visualMode === 'image') {
+                  setStatus(`Scanning source material for ${chap.name}...`);
+                  allPossibleImgs = await extractImagesFromDoc(data.doc_path);
+              }
+          }
+
+          const selectedIndices = Object.keys(chap.selectedFigures || {}).map(Number);
+          const filteredImgs = selectedIndices.length > 0 
+              ? selectedIndices.map(idx => allPossibleImgs[idx]).filter(Boolean)
+              : allPossibleImgs.slice(0, 20);
+
+          const sourceContext = { text: rawText, images: filteredImgs };
+
+          if (effectiveSource === 'db') {
+              const currentIds = finalQuestions.map(q => q.originalId || q.id).filter(id => id && id.length === 36 && !id.startsWith('forge-'));
+              let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', chap.id);
+              if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
+              const { data } = await query.limit(neededFromAi);
+              if (data && data.length > 0) {
+                  newBatch = data.map(bq => ({ 
+                      id: bq.id, originalId: bq.id, text: bq.question_text, type: (bq.question_type || 'mcq') as any, difficulty: bq.difficulty as any, options: bq.options, 
+                      correctIndex: bq.correct_index, explanation: bq.explanation, figureDataUrl: bq.figure_url, sourceFigureDataUrl: bq.source_figure_url, columnA: bq.column_a, 
+                      columnB: bq.column_b, correctMatches: bq.correct_matches, sourceChapterId: bq.chapter_id, sourceSubjectName: bq.subject_name,
+                      sourceChapterName: bq.chapter_name || chap.name, pageNumber: bq.page_number, topic_tag: bq.topic_tag
+                  }));
+              } else { effectiveSource = 'ai'; }
+          }
+          
+          if (effectiveSource === 'ai') {
+              let diffConfig = options.useGlobalDifficulty ? options.globalDifficultyMix : chap.difficulty;
+              const breakdownJson = JSON.stringify(chap.selectedFigures || {});
               
-              if (chap.source === 'ai' || chap.source === 'upload') {
-                  let diffConfig = options.useGlobalDifficulty ? options.globalDifficultyMix : chap.difficulty;
-                  if (diffConfig === 'Global') diffConfig = options.globalDifficultyMix;
+              const gen = await generateQuizQuestions(
+                  chap.name, diffConfig, neededFromAi, sourceContext, options.questionType || 'mcq', 
+                  setStatus, chap.figureCount, options.useSmiles, breakdownJson, 'gemini-3-pro-preview', chap.visualMode
+              );
+              
+              const figureQs = gen.filter(q => q.figurePrompt);
+              if (figureQs.length > 0 && chap.figureCount > 0) {
+                  setStatus(`Synthesizing Visuals for ${chap.name}...`);
+                  const useAsIs = options.useAsIsFigures;
                   
-                  let sourceContext = undefined;
-                  if (chap.content) { const processed = processUploadContent(chap.content); sourceContext = { text: processed.text, images: processed.images }; } 
-                  else if (chap.id) { const { data: chData } = await supabase.from('chapters').select('raw_text').eq('id', chap.id).maybeSingle(); if (chData?.raw_text) sourceContext = { text: chData.raw_text }; }
+                  if (chap.visualMode === 'image') {
+                      figureQs.forEach(q => {
+                          const sIdx = q.sourceImageIndex !== undefined ? Number(q.sourceImageIndex) : 0;
+                          const sourceImg = filteredImgs[sIdx] || filteredImgs[0];
+                          if (sourceImg) {
+                              q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`;
+                          }
+                      });
 
-                  const typeMix: TypeDistribution = options.globalTypeMix || { mcq: 100, reasoning: 0, matching: 0, statements: 0 };
-                  const typeKeys: (keyof TypeDistribution)[] = ['mcq', 'reasoning', 'matching', 'statements'];
-                  let figuresGeneratedSoFar = 0;
-                  const chapterTotalFigures = chap.figureCount || 0;
-
-                  for (const typeKey of typeKeys) {
-                      let percentage = typeMix[typeKey] || 0;
-                      if (percentage <= 0) continue;
-                      let typeCount = Math.round((percentage / 100) * additionalNeeded);
-                      let batchFigureTarget = 0;
-                      if (typeKey === 'mcq') {
-                          batchFigureTarget = Math.max(0, chapterTotalFigures - figuresGeneratedSoFar);
-                          if (batchFigureTarget > 0) batchFigureTarget = Math.ceil(batchFigureTarget / 6) * 6;
-                          typeCount = Math.max(typeCount, batchFigureTarget);
-                      }
-                      if (typeCount <= 0) continue;
-                      setStatus(`Forging ${typeCount} ${typeKey.toUpperCase()}...`);
-                      const apiType = typeKey; 
-                      const generated = await generateQuizQuestions(chap.name, diffConfig, typeCount, sourceContext, apiType as any, (s) => setStatus(s), batchFigureTarget, options.useSmiles);
-
-                      if (batchFigureTarget > 0) {
-                          setStatus(`Synthesizing diagrams...`);
-                          const figureQs = generated.filter(q => q.figurePrompt);
-                          if (figureQs.length > 0 && sourceContext?.images && sourceContext.images.length > 0) {
-                              for (let i = 0; i < figureQs.length; i += 6) {
-                                  const batch = figureQs.slice(i, i + 6);
-                                  let batchImageIndex = batch[0].sourceImageIndex;
-                                  if (batchImageIndex === undefined || batchImageIndex < 0 || batchImageIndex >= sourceContext.images.length) {
-                                      const batchNum = Math.floor(i / 6);
-                                      batchImageIndex = batchNum % sourceContext.images.length;
+                      if (useAsIs) {
+                          for (const q of figureQs) {
+                              const sIdx = q.sourceImageIndex !== undefined ? Number(q.sourceImageIndex) : 0;
+                              const sourceImg = filteredImgs[sIdx] || filteredImgs[0];
+                              
+                              if (sourceImg) {
+                                  const cacheKey = sourceImg.data.substring(0, 100) + sourceImg.data.length;
+                                  if (!styleTransferCache[cacheKey]) {
+                                      setStatus(`Converting unique visual to Line Art...`);
+                                      const results = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, [q.figurePrompt || ""], true);
+                                      if (results[0]) {
+                                          styleTransferCache[cacheKey] = results[0];
+                                      }
                                   }
-                                  batch.forEach(q => { q.sourceImageIndex = batchImageIndex; });
+                                  if (styleTransferCache[cacheKey]) {
+                                      q.figureDataUrl = `data:image/png;base64,${styleTransferCache[cacheKey]}`;
+                                  }
                               }
                           }
+                      } else {
                           const sourceEditGroups: Record<number, Question[]> = {};
-                          const textGenCandidates: Question[] = [];
-                          generated.forEach(q => {
-                              if (q.figurePrompt) {
-                                  if (q.sourceImageIndex !== undefined && q.sourceImageIndex !== -1) {
-                                      if (!sourceEditGroups[q.sourceImageIndex]) sourceEditGroups[q.sourceImageIndex] = [];
-                                      sourceEditGroups[q.sourceImageIndex].push(q);
-                                  } else { textGenCandidates.push(q); }
-                              }
+                          const purelySynthetic: Question[] = [];
+                          figureQs.forEach(q => {
+                              const sIdx = q.sourceImageIndex !== undefined ? Number(q.sourceImageIndex) : -1;
+                              if (sIdx !== -1 && filteredImgs[sIdx]) {
+                                  if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = [];
+                                  sourceEditGroups[sIdx].push(q);
+                              } else { purelySynthetic.push(q); }
                           });
                           for (const [imgIdx, groupQs] of Object.entries(sourceEditGroups)) {
-                              const idx = parseInt(imgIdx);
-                              const sourceImg = sourceContext?.images?.[idx];
-                              if (!sourceImg) continue;
+                              const sourceImg = filteredImgs[parseInt(imgIdx)];
                               for (let i = 0; i < groupQs.length; i += 6) {
                                   const chunk = groupQs.slice(i, i + 6);
-                                  const prompts = chunk.map(q => q.figurePrompt!);
-                                  setStatus(`Editing batch for Image #${idx}...`);
-                                  const images = await generateCompositeStyleVariants(sourceImg.data, prompts);
-                                  chunk.forEach((q, cIdx) => { if (images[cIdx]) { q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; figuresGeneratedSoFar++; } });
+                                  const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, chunk.map(q => q.figurePrompt!), false);
+                                  chunk.forEach((q, cIdx) => { 
+                                      if (images[cIdx]) { 
+                                          q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; 
+                                      } 
+                                  });
                               }
                           }
-                          for (let i = 0; i < textGenCandidates.length; i += 6) {
-                              const chunk = textGenCandidates.slice(i, i + 6);
-                              const prompts = chunk.map(q => q.figurePrompt!);
-                              setStatus(`Generating diagram batch...`);
-                              const images = await generateCompositeFigures(prompts);
-                              chunk.forEach((q, cIdx) => { if (images[cIdx]) { q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; figuresGeneratedSoFar++; } });
+                          for (let i = 0; i < purelySynthetic.length; i += 6) {
+                              const chunk = purelySynthetic.slice(i, i + 6);
+                              const images = await generateCompositeFigures(chunk.map(q => q.figurePrompt!));
+                              chunk.forEach((q, cIdx) => { 
+                                  if (images[cIdx]) { 
+                                      q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; 
+                                  } 
+                              });
                           }
                       }
-                      newBatch = [...newBatch, ...generated];
-                  }
-                  if (newBatch.length === 0 && additionalNeeded > 0) { newBatch = await generateQuizQuestions(chap.name, diffConfig, additionalNeeded, sourceContext, 'mcq', (s) => setStatus(s), chapterTotalFigures, options.useSmiles); }
-              } else {
-                  const currentIds = finalQuestions.map(q => q.originalId || q.id).filter(id => !!id);
-                  let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', chap.id);
-                  if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
-                  const { data: dbData } = await query.limit(additionalNeeded);
-                  if (dbData) {
-                      newBatch = dbData.map(bq => ({ 
-                          id: bq.id, originalId: bq.id, text: bq.question_text, type: bq.question_type, difficulty: bq.difficulty, options: bq.options, 
-                          correctIndex: bq.correct_index, explanation: bq.explanation, figureDataUrl: bq.figure_url, columnA: bq.column_a, 
-                          columnB: bq.column_b, correctMatches: bq.correct_matches, sourceChapterId: bq.chapter_id, sourceSubjectName: bq.subject_name,
-                          sourceChapterName: bq.chapter_name || chap.name, pageNumber: bq.page_number
-                      }));
+                  } else {
+                      for (let i = 0; i < figureQs.length; i += 6) {
+                          const chunk = figureQs.slice(i, i + 6);
+                          const images = await generateCompositeFigures(chunk.map(q => q.figurePrompt!));
+                          chunk.forEach((q, cIdx) => { 
+                              if (images[cIdx]) { 
+                                  q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; 
+                              } 
+                          });
+                      }
                   }
               }
-              const enrichedBatch = newBatch.map(q => ({ ...q, sourceChapterId: q.sourceChapterId || chap.id, sourceChapterName: q.sourceChapterName || chap.name, sourceSubjectName: q.sourceSubjectName || chap.subjectName }));
-              if (enrichedBatch.length > additionalNeeded) finalQuestions = [...finalQuestions, ...enrichedBatch.slice(0, additionalNeeded)];
-              else finalQuestions = [...finalQuestions, ...enrichedBatch];
+              newBatch = gen;
           }
+          
+          const enriched = newBatch.map(q => ({ ...q, sourceChapterId: q.sourceChapterId || chap.id, sourceChapterName: q.sourceChapterName || chap.name, sourceSubjectName: q.sourceSubjectName || chap.subjectName }));
+          finalQuestions = [...finalQuestions, ...enriched];
       }
-      if (finalQuestions.length === 0) throw new Error("No questions generated.");
       return finalQuestions;
   };
 
-  const handleCreateTest = async (options: any) => {
-      setIsForging(true); setForgeStep('Initializing Intelligence...');
+  const commitTestToHub = async (topicName: string, questions: Question[], mode: 'paper' | 'online', extraConfig: any = {}) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Auth required.");
+
+      // Critical: Sanitize all strings before inserting into Postgres
+      const safeQuestions = sanitizeForPostgres(questions);
+      const safeConfig = sanitizeForPostgres(extraConfig);
+      const safeTopicName = sanitizeForPostgres(topicName);
+
+      const payload = { 
+          name: safeTopicName || 'New Assessment', folder_id: creatorFolderId, user_id: user.id, 
+          questions: safeQuestions.map((q: any) => JSON.parse(JSON.stringify(q))), 
+          question_ids: safeQuestions.map((q: any) => q.id || '').filter((id: string) => id !== ''), 
+          config: { ...safeConfig, totalQuestions: safeQuestions.length, mode: mode }, 
+          layout_config: safeConfig.layout_config || {}, 
+          status: mode === 'online' ? 'scheduled' : 'generated', 
+          question_count: safeQuestions.length, 
+          scheduled_at: safeConfig.scheduledAt || null, 
+          class_ids: safeConfig.classIds || [] 
+      };
+      if (editingTestId) { await supabase.from('tests').update(payload).eq('id', editingTestId); } 
+      else { await supabase.from('tests').insert([payload]); }
+      await fetchWorkspace();
+  };
+
+  const handleCreateTest = async (options: CreateTestOptions) => {
+      setIsForging(true); setForgeStep('Synthesizing Assessment...');
       try {
           const questions = await generateQuestionsLogic(options, setForgeStep);
-          setForgedResult({ topic: options.topic, questions: questions });
-          setIsCreatorOpen(false); setEditInitialChapters(undefined);
+          setForgedResult({ topic: options.topic, questions, sourceOptions: options });
+          setIsCreatorOpen(false); 
       } catch (err: any) { alert("Forge Failed: " + err.message); } finally { setIsForging(false); setForgeStep(''); }
   };
 
-  const handleCreateOnlineExam = async (options: any) => {
-      setIsForging(true); setForgeStep('Initializing Online Exam Module...');
-      try {
-          const questions = await generateQuestionsLogic({ ...options, mode: 'online-exam' }, setForgeStep);
-          setOnlineExamResult({ topic: options.topic, questions: questions });
-          setIsOnlineExamCreatorOpen(false); setEditInitialChapters(undefined);
-      } catch (err: any) { alert("Exam Creation Failed: " + err.message); } finally { setIsForging(false); setForgeStep(''); }
+  const handleSaveTestToSupabase = async (questions: Question[], layoutConfig?: LayoutConfig, updatedTitle?: string) => {
+      if (!forgedResult) return;
+      setLoadingMessage('Syncing to Cloud...');
+      setIsLoadingTest(true);
+      try { 
+          await commitTestToHub(updatedTitle || forgedResult.topic, questions, 'paper', { layout_config: layoutConfig, sourceOptions: forgedResult.sourceOptions });
+          setForgedResult(null); setEditingTestId(null); 
+      } catch (error: any) { alert("Failed to save: " + error.message); } finally { setIsLoadingTest(false); }
   };
 
-  const handleStudentGenerateMock = async (chapterIds: string[], difficulty: string, type: string) => {
+  const handleTestClick = async (testSummary: any) => {
+      setLoadingMessage('Opening Assessment...');
       setIsLoadingTest(true);
       try {
-          const TOTAL_QUESTIONS = 20; let dbQuestions: Question[] = []; let topicTitle = 'Mock Practice';
-          if (chapterIds.length === 1) { const { data } = await supabase.from('chapters').select('name').eq('id', chapterIds[0]).single(); if (data) topicTitle = data.name; } 
-          else if (chapterIds.length > 1) topicTitle = `Combined Mock (${chapterIds.length} Chapters)`;
-          let query = supabase.from('question_bank_neet').select('*').in('chapter_id', chapterIds).eq('difficulty', difficulty);
-          if (type !== 'neet') query = query.eq('question_type', type);
-          const { data: dbData } = await query.limit(50);
-          if (dbData && dbData.length > 0) { const shuffled = dbData.sort(() => 0.5 - Math.random()).slice(0, TOTAL_QUESTIONS); dbQuestions = shuffled.map((q: any) => ({ id: q.id, type: q.question_type || 'mcq', text: q.question_text, options: q.options, correctIndex: q.correct_index, explanation: q.explanation, difficulty: q.difficulty, figureDataUrl: q.figure_url, columnA: q.column_a, columnB: q.column_b, correctMatches: q.correct_matches, sourceChapterId: q.chapter_id })); }
-          if (dbQuestions.length === 0) { alert(`No questions found for the selected criteria in the database.`); setIsLoadingTest(false); return; }
-          setActiveStudentExam({ topic: `${topicTitle} (${difficulty})`, questions: dbQuestions });
-      } catch (e: any) { alert("Mock Generation Failed: " + e.message); } finally { setIsLoadingTest(false); }
+          const { data: test, error } = await supabase.from('tests').select('*').eq('id', testSummary.id).single();
+          if (error) throw error;
+
+          if (test.status === 'draft') {
+              setIsCreatorOpen(false); setEditingTestId(test.id); setCreatorFolderId(test.folder_id); setEditInitialTopic(test.name);
+              const options = test.config?.sourceOptions || test.config;
+              if (options) {
+                  setEditInitialChapters(options.chapters); setEditInitialManualQuestions(test.questions || options.manualQuestions);
+                  setEditInitialSettings({ totalQuestions: options.totalQuestions, globalDiff: options.globalDifficultyMix || options.globalDiff, globalTypes: options.globalTypeMix || options.globalTypes, useGlobalDifficulty: options.useGlobalDifficulty, globalFigureCount: options.globalFigureCount, selectionMode: options.selectionMode || (options.manualQuestions ? 'manual' : 'auto') });
+                  if (options.mode === 'online-exam' || test.config.mode === 'online-exam') setIsOnlineExamCreatorOpen(true); else setIsCreatorOpen(true);
+              }
+              return;
+          }
+          
+          const isOnline = test.config?.mode === 'online';
+          if (isOnline) setOnlineExamResult({ topic: test.name, questions: test.questions, config: test.config });
+          else setForgedResult({ topic: test.name, questions: test.questions, layoutConfig: test.layout_config, sourceOptions: test.config?.sourceOptions });
+          setEditingTestId(test.id);
+      } catch (e: any) { alert("Failed to load: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
-  const handleSaveTestToSupabase = async (questions: Question[], layoutConfig?: LayoutConfig) => {
-      if (!forgedResult) return;
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const payload = { name: forgedResult.topic || 'New Test', folder_id: creatorFolderId, user_id: user.id, questions: questions.map(q => JSON.parse(JSON.stringify(q))), question_ids: questions.map(q => q.id || '').filter(id => id !== ''), config: { totalQuestions: questions.length, mode: 'paper' }, layout_config: layoutConfig, status: 'generated', question_count: questions.length, scheduled_at: null, class_ids: [] };
-      try { if (editingTestId) await supabase.from('tests').update(payload).eq('id', editingTestId); else await supabase.from('tests').insert([payload]); await fetchWorkspace(); setForgedResult(null); setEditingTestId(null); } catch (error: any) { alert("Failed to save: " + error.message); }
-  };
-
-  const handleSaveOnlineExam = async (examData: any) => {
-      if (!onlineExamResult) return;
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const questions = examData.questions;
-      const payload = { name: examData.title || onlineExamResult.topic || 'New Online Exam', folder_id: creatorFolderId, user_id: user.id, questions: questions.map((q: any) => JSON.parse(JSON.stringify(q))), question_ids: questions.map((q: any) => q.id || '').filter((id: string) => id !== ''), config: { totalQuestions: questions.length, mode: 'online', duration: examData.duration, releaseAnswers: examData.releaseAnswers }, layout_config: {}, status: 'scheduled', question_count: questions.length, scheduled_at: examData.scheduledAt, class_ids: examData.classIds || [] };
-      try { if (editingTestId) await supabase.from('tests').update(payload).eq('id', editingTestId); else await supabase.from('tests').insert([payload]); await fetchWorkspace(); setOnlineExamResult(null); setEditingTestId(null); } catch (error: any) { alert("Failed to save exam: " + error.message); }
-  };
-
-  const handleTestClick = async (test: any) => {
-    setIsLoadingTest(true);
-    try {
-        let fullQuestions = test.questions;
-        if (!fullQuestions) { const { data, error } = await supabase.from('tests').select('questions').eq('id', test.id).single(); if (error) throw error; fullQuestions = data.questions || []; }
-        setEditingTestId(test.id);
-        if (test.config?.mode === 'online') { setOnlineExamResult({ topic: test.name, questions: fullQuestions, config: { ...test.config, scheduledAt: test.scheduled_at, classIds: test.class_ids } }); setActiveView('online-exam'); } 
-        else { setForgedResult({ topic: test.name, questions: fullQuestions, layoutConfig: test.layout_config }); setActiveView('test'); }
-    } catch (e) { alert("Failed to load test content."); } finally { setIsLoadingTest(false); }
+  const handleStudentMockStart = async (chapterIds: string[], difficulty: string, type: string) => {
+      setIsForging(true);
+      setForgeStep('Generating Mock Exam...');
+      try {
+          const { data: chaptersData } = await supabase.from('chapters').select('id, name, subject_name, class_name').in('id', chapterIds);
+          if (!chaptersData) throw new Error("Chapters not found");
+          
+          const selectedChapters: SelectedChapter[] = chaptersData.map(c => ({
+              id: c.id, name: c.name, subjectName: c.subject_name || 'General', className: c.class_name || 'General',
+              count: 10, figureCount: 0, difficulty: difficulty as any, source: 'ai', styleCounts: { mcq: 10 },
+              visualMode: 'image'
+          }));
+          
+          const totalQ = selectedChapters.length * 10;
+          
+          const options: CreateTestOptions = {
+              mode: 'multi-ai',
+              topic: `Mock Test - ${new Date().toLocaleDateString()}`,
+              chapters: selectedChapters,
+              useGlobalDifficulty: true,
+              globalDifficultyMix: { easy: 30, medium: 50, hard: 20 },
+              globalTypeMix: { mcq: 100, reasoning: 0, matching: 0, statements: 0 },
+              totalQuestions: totalQ,
+              selectionMode: 'auto',
+              questionType: type as any
+          };
+          
+          if (difficulty === 'Easy') options.globalDifficultyMix = { easy: 80, medium: 20, hard: 0 };
+          else if (difficulty === 'Hard') options.globalDifficultyMix = { easy: 10, medium: 30, hard: 60 };
+          
+          if (type === 'neet') options.globalTypeMix = { mcq: 70, reasoning: 15, matching: 10, statements: 5 };
+          else if (type === 'mcq') options.globalTypeMix = { mcq: 100, reasoning: 0, matching: 0, statements: 0 };
+          else if (type === 'reasoning') options.globalTypeMix = { mcq: 0, reasoning: 100, matching: 0, statements: 0 };
+          
+          const questions = await generateQuestionsLogic(options, setForgeStep);
+          setActiveStudentExam({ topic: options.topic, questions });
+          
+      } catch(e: any) {
+          alert("Mock gen failed: " + e.message);
+      } finally {
+          setIsForging(false);
+          setForgeStep('');
+      }
   };
 
   const handleStudentTakeExam = async (test: any) => {
+      setLoadingMessage('Loading Exam Environment...');
       setIsLoadingTest(true);
-      try { let fullQuestions = test.questions; if (!fullQuestions) { const { data, error } = await supabase.from('tests').select('questions').eq('id', test.id).single(); if (error) throw error; fullQuestions = data.questions || []; } setActiveStudentExam({ topic: test.name, questions: fullQuestions }); } catch(e) { alert("Could not load exam data."); } finally { setIsLoadingTest(false); }
+      try {
+          const { data, error } = await supabase.from('tests').select('name, questions').eq('id', test.id).single();
+          if (error) throw error;
+          setActiveStudentExam({ topic: data.name, questions: data.questions });
+      } catch (e: any) { alert("Failed to load exam: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
-  const handleViewSolutions = async (test: any) => {
+  const handleStudentViewSolutions = async (test: any) => {
+      setLoadingMessage('Fetching Solution Key...');
       setIsLoadingTest(true);
-      try { let fullQuestions = test.questions; if (!fullQuestions) { const { data, error } = await supabase.from('tests').select('questions').eq('id', test.id).single(); if (error) throw error; fullQuestions = data.questions || []; } setActiveStudentSolution({ topic: test.name, questions: fullQuestions, showAnswers: test.config?.releaseAnswers || false }); } catch (e) { alert("Could not load solutions."); } finally { setIsLoadingTest(false); }
+      try {
+          const { data, error } = await supabase.from('tests').select('name, questions, config').eq('id', test.id).single();
+          if (error) throw error;
+          setActiveStudentSolution({ topic: data.name, questions: data.questions, showAnswers: data.config?.releaseAnswers });
+      } catch (e: any) { alert("Failed to load solutions: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
-  const handleDemoLogin = () => { const mockSession = { user: { id: '00000000-0000-0000-0000-000000000000', email: 'demo@kiwiteach.com', user_metadata: { full_name: 'Demo Teacher' } } }; setSession(mockSession); fetchWorkspace(mockSession.user); };
-
-  if (isLoadingWorkspace) return <div className="h-screen w-full flex items-center justify-center bg-slate-50 text-slate-400">Loading Workspace...</div>;
-  if (!session) return <AuthUI onDemoLogin={handleDemoLogin} />;
+  if (!session) return <AuthUI onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })} />;
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 overflow-hidden font-sans text-slate-900 relative">
-        {isLoadingTest && <div className="absolute inset-0 z-[100] bg-white/50 backdrop-blur-sm flex items-center justify-center"><div className="flex flex-col items-center gap-3"><div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div><span className="text-xs font-black uppercase tracking-widest text-indigo-900">Loading Content...</span></div></div>}
-        <LeftPanel activeView={activeView} setActiveView={setActiveView} isOpen={true} onClose={() => {}} brandConfig={brandConfig} />
-        <main className="flex-1 h-full overflow-y-auto relative custom-scrollbar">
-            {activeView === 'test' && !forgedResult && (
-                <TestDashboard username={session.user.email} schoolsList={schools} classesList={schoolClasses} folders={folders} allTests={allTests.filter(t => t.config?.mode !== 'online')} title="Paper Tests" onAddFolder={handleAddFolder} onStartNewTest={handleStartTestCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />
-            )}
-            {activeView === 'online-exam' && !onlineExamResult && (
-                <OnlineExamDashboard username={session.user.email} schoolsList={schools} classesList={schoolClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />
-            )}
-            {activeView === 'student-online-test' && !activeStudentExam && !activeStudentSolution && ( <StudentOnlineTestDashboard availableTests={allTests.filter(t => t.config?.mode === 'online' && t.status === 'scheduled')} onTakeExam={handleStudentTakeExam} onViewSolutions={handleViewSolutions} /> )}
-            {activeView === 'student-mock-test' && !activeStudentExam && ( <StudentMockTestDashboard onStartMock={handleStudentGenerateMock} isLoading={isLoadingTest} /> )}
-            {activeView === 'students' && <StudentDirectory schoolsList={schools} classesList={schoolClasses} />}
-            {activeView === 'reports' && <ReportsDashboard schoolsList={schools} classesList={schoolClasses} />}
-            {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={setBrandConfig} onSignOut={() => supabase.auth.signOut()} schools={schools} schoolClasses={schoolClasses} onRefresh={refreshOrgData} />}
-            {activeView === 'admin' && <AdminView />}
-            {activeView === 'omr-lab' && <OMRAccuracyTester />}
-            {forgedResult && ( <div className="absolute inset-0 z-40 bg-white"> <QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} initialLayoutConfig={forgedResult.layoutConfig} onRestart={() => { setForgedResult(null); setEditingTestId(null); }} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} /> </div> )}
-            {onlineExamResult && ( <div className="absolute inset-0 z-40 bg-white"> <OnlineExamScheduler topic={onlineExamResult.topic} questions={onlineExamResult.questions} initialConfig={onlineExamResult.config} onBack={() => { setOnlineExamResult(null); setEditingTestId(null); }} onSave={handleSaveOnlineExam} schoolsList={schools} classesList={schoolClasses} /> </div> )}
-            {activeStudentExam && ( <div className="absolute inset-0 z-50 bg-white"> <InteractiveQuizSession questions={activeStudentExam.questions} topic={activeStudentExam.topic} onExit={() => setActiveStudentExam(null)} /> </div> )}
-            {activeStudentSolution && ( <div className="absolute inset-0 z-50 bg-white"> <SolutionViewer topic={activeStudentSolution.topic} questions={activeStudentSolution.questions} onClose={() => setActiveStudentSolution(null)} showAnswers={activeStudentSolution.showAnswers} /> </div> )}
-        </main>
-        {isCreatorOpen && <div className="fixed inset-0 z-50 bg-white"> <TestCreatorView onClose={() => setIsCreatorOpen(false)} onStart={handleCreateTest} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={forgedResult?.topic} /> </div>}
-        {isOnlineExamCreatorOpen && <div className="fixed inset-0 z-50 bg-white"> <TestCreatorView onClose={() => setIsOnlineExamCreatorOpen(false)} onStart={handleCreateOnlineExam} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={onlineExamResult?.topic} /> </div>}
+    <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
+      <LeftPanel activeView={activeView} setActiveView={setActiveView} isOpen={true} onClose={() => {}} brandConfig={brandConfig} />
+      <main className="flex-1 h-full overflow-hidden relative">
+        {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div><h3 className="text-xl font-black uppercase tracking-tight">Syncing Hub</h3></div>}
+        
+        {isLoadingTest && (
+            <div className="absolute inset-0 z-[100] bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
+                <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-slate-100 flex flex-col items-center gap-5 transform scale-100 animate-slide-up">
+                    <div className="relative w-16 h-16">
+                        <div className="absolute inset-0 rounded-full border-4 border-slate-50"></div>
+                        <div className="absolute inset-0 rounded-full border-4 border-indigo-600 border-t-transparent animate-spin"></div>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                            <iconify-icon icon="mdi:lightning-bolt" className="text-indigo-600 text-xl animate-pulse" />
+                        </div>
+                    </div>
+                    <div className="text-center">
+                        <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest">{loadingMessage || 'Processing...'}</h3>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">Please Wait</p>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {activeView === 'test' && <TestDashboard username={session.user.email} schoolsList={schools} classesList={schoolClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewTest={handleStartTestCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
+        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} schoolsList={schools} classesList={schoolClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
+        {activeView === 'students' && <StudentDirectory schoolsList={schools} classesList={schoolClasses} />}
+        {activeView === 'reports' && <ReportsDashboard schoolsList={schools} classesList={schoolClasses} />}
+        {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} schools={schools} schoolClasses={schoolClasses} onRefresh={refreshOrgData} />}
+        {activeView === 'admin' && <AdminView />}
+        {activeView === 'omr-lab' && <OMRAccuracyTester />}
+        {activeView === 'student-online-test' && <StudentOnlineTestDashboard availableTests={allTests} onTakeExam={handleStudentTakeExam} onViewSolutions={handleStudentViewSolutions} />}
+        {activeView === 'student-mock-test' && <StudentMockTestDashboard onStartMock={handleStudentMockStart} isLoading={isForging} />}
+      </main>
+      
+      {activeStudentExam && (
+          <InteractiveQuizSession 
+              questions={activeStudentExam.questions} 
+              topic={activeStudentExam.topic} 
+              onExit={() => setActiveStudentExam(null)} 
+          />
+      )}
+
+      {activeStudentSolution && (
+          <SolutionViewer 
+              topic={activeStudentSolution.topic} 
+              questions={activeStudentSolution.questions} 
+              showAnswers={activeStudentSolution.showAnswers} 
+              onClose={() => setActiveStudentSolution(null)} 
+          />
+      )}
+
+      {isCreatorOpen && <div className="fixed inset-0 z-[100] bg-white"><TestCreatorView onClose={() => setIsCreatorOpen(false)} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} /></div>}
+      {forgedResult && <div className="fixed inset-0 z-[150] bg-white"><QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} onRestart={() => setForgedResult(null)} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} initialLayoutConfig={forgedResult.layoutConfig} /></div>}
+      {isOnlineExamCreatorOpen && (
+          <div className="fixed inset-0 z-[100] bg-white">
+              <TestCreatorView 
+                  onClose={() => setIsOnlineExamCreatorOpen(false)} 
+                  onSaveDraft={handleSaveDraft}
+                  onStart={async (opts) => {
+                      setIsForging(true); setForgeStep('Forging Exam...');
+                      try {
+                          const qs = await generateQuestionsLogic(opts, setForgeStep);
+                          setOnlineExamResult({ topic: opts.topic, questions: qs, config: opts });
+                          setIsOnlineExamCreatorOpen(false);
+                      } catch(e: any) { alert("Forge failed: " + e.message); } finally { setIsForging(false); setForgeStep(''); }
+                  }}
+                  isLoading={isForging} 
+                  loadingStep={forgeStep} 
+                  initialChapters={editInitialChapters} 
+                  initialTopic={editInitialTopic} 
+                  initialManualQuestions={editInitialManualQuestions}
+              />
+          </div>
+      )}
+      {onlineExamResult && (
+          <div className="fixed inset-0 z-[150] bg-white">
+              <OnlineExamScheduler 
+                  topic={onlineExamResult.topic} 
+                  questions={onlineExamResult.questions} 
+                  initialConfig={onlineExamResult.config}
+                  onBack={() => setOnlineExamResult(null)} 
+                  onSave={async (examData) => {
+                      await commitTestToHub(examData.title, examData.questions, 'online', { ...examData, mode: 'online', sourceOptions: onlineExamResult.config?.sourceOptions || onlineExamResult.config });
+                      setOnlineExamResult(null); setEditingTestId(null);
+                  }} 
+                  schoolsList={schools}
+                  classesList={schoolClasses}
+              />
+          </div>
+      )}
     </div>
   );
 };

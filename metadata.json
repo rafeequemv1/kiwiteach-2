@@ -1,5 +1,5 @@
 {
-  "name": "KiwiTeach",
+  "name": "KiwiTeach Exam Prep",
   "description": "An elegant, colorful, and AI-powered multiple choice testing application that generates quizzes on any topic.",
   "requestFramePermissions": [
     "camera"

@@ -1,12 +1,12 @@
 
 import '../../types';
-import React from 'react';
+import React, { useState } from 'react';
 
 // Hardcoded types that exist in the system (e.g. TestCreatorView)
 const INBUILT_TYPES = [
     { id: 'mcq', label: 'Standard MCQ', icon: 'mdi:format-list-numbered', desc: '4 Options, 1 Correct. The gold standard for objective testing.' },
     { id: 'reasoning', label: 'Assertion-Reason', icon: 'mdi:brain-freeze', desc: 'Tests causal relationships between two statements.' },
-    { id: 'matching', label: 'Matrix Matching', icon: 'mdi:grid-large', desc: 'Match items from Column I with Column II.' },
+    { id: 'matching', label: 'Matrix Matching', icon: 'mdi:grid-large', desc: 'Match items from Column A with Column B.' },
     { id: 'statements', label: 'Statement I/II', icon: 'mdi:card-text-outline', desc: 'Evaluate truthfulness of two independent statements.' },
     { id: 'statement_combo', label: 'Combination Choice', icon: 'mdi:format-list-checks', desc: 'Select correct combination (e.g. Only 1 and 3 are correct).' },
     { id: 'true_false', label: 'True / False', icon: 'mdi:check-circle-outline', desc: 'Binary choice rapid fire questions.' },

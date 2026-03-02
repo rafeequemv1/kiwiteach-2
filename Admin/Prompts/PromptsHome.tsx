@@ -11,60 +11,105 @@ interface Prompt {
 const SECTIONS = [
     { id: 'General', color: 'indigo', icon: 'mdi:tune', label: 'Core Logic' },
     { id: 'Difficulty', color: 'emerald', icon: 'mdi:scale-balance', label: 'Level Rules' },
+    { id: 'Explanation', color: 'sky', icon: 'mdi:school-outline', label: 'Explanation Logic' },
     { id: 'Distractors', color: 'amber', icon: 'mdi:source-branch', label: 'Option/Choice Logic' },
     { id: 'Figure', color: 'purple', icon: 'mdi:image-filter-hdr', label: 'Visuals' },
-    { id: 'Chemistry', color: 'cyan', icon: 'mdi:flask-outline', label: 'Chemistry' }
+    { id: 'Chemistry', color: 'cyan', icon: 'mdi:flask-outline', label: 'Chemistry' },
+    { id: 'Latex', color: 'rose', icon: 'mdi:sigma', label: 'LaTeX Protocol' }
 ];
 
-// Default prompts matching geminiService.ts
 const DEFAULT_PROMPTS: Record<string, string> = {
-    'General': `TASK: Generate specific, high-quality questions for a competitive entrance exam (NEET/JEE level).
-    - Tone: Formal, academic, and clinically precise. No conversational filler.
-    - Context: Questions must be STANDALONE. Do not refer to "the text provided" unless analyzing a specific passage included in the question itself.
-    - Citations: If source material is provided, identify the specific page number in 'pageNumber'.`,
+    'General': `TASK: Generate elite medical entrance (NEET UG) level questions.
+    - RIGOR: Clinical, analytical, and professional.
+    - NEGATIVE CONSTRAINT: NEVER use the words "NCERT", "Textbook", "The Source", "Chapter", or "Passage" in the output. The question must appear as an independent scientific problem.
+    - SYLLABUS CONSTRAINT: Map every question to a specific sub-topic from the syllabus.`,
 
-    'Difficulty': `STRICT DIFFICULTY STANDARDS:
-    1. **EASY (Foundation)**: Tests core recall and direct definitions. Must use formal phrasing (e.g. "Which property primarily determines..." vs "What is...").
-    2. **MEDIUM (Standard)**: Requires linking two distinct concepts, multi-step calculation, or condition analysis.
-    3. **HARD (Ranker)**: Advanced application, interdisciplinary synthesis (e.g., Physics logic in Chemistry), or exceptions to rules.`,
+    'Difficulty': `RIGOR PROTOCOL (ELITE STANDARD):
+    1. **EASY (Application Standard)**: 
+       - Corresponds to typical 'Medium' standard level. 
+       - Frame as conceptual applications rather than pure recall. 
+       - Requires 1-2 steps of logical derivation.
+    2. **MEDIUM (Deep Analyzer)**: 
+       - High-Standard rigor. 
+       - STYLE: Increased length (50-90 words). Frame as intricate scenarios, experimental set-ups, or clinical observations. 
+       - LOGIC: Requires multi-step analysis (3-4 steps) and correlating distinct scientific variables or principles from the same topic.
+    3. **HARD (Elite Strategist)**: 
+       - Designed for Top 1% Rankers (AIIMS/JIPMER).
+       - **LENGTH**: Verbose (70-120 words), utilizing clinical vignettes, experimental data tables, or multi-statement analysis.
+       - **CONSTRAINT**: Strictly within syllabus scope, testing deep theoretical nuances and cross-concept mapping.
+       - **LOGIC**: Requires linking concepts from entirely different parts of the curriculum.`,
 
-    'Distractors': `CHOICE & DISTRACTOR LOGIC (CRITICAL):
-    1. **Loosely Related Distractors**: Wrong options must be scientifically plausible and related to the topic. Use terminology that sounds correct to a novice but is clearly wrong to an expert.
-    2. **Hard Choice**: Avoid obvious outliers. Distractors should represent common misconceptions or calculation errors.
-    3. **Special Options**: In 25-30% of questions, YOU MUST use options like:
-       - "All of the above"
-       - "None of the above"
-       - "Both A and B"
-       - "Data insufficient"
-    4. **Balance**: When special options are used, ensure they are the CORRECT answer roughly 40% of the time. Do not make them always correct or always wrong.`,
+    'Explanation': `EXPLANATION PROTOCOL (CRITICAL FOR LEARNING):
+- **Clarity and Depth**: Explanations MUST be comprehensive, clear, and sufficient for a student to fully understand the reasoning. They should be detailed paragraphs, not terse one-liners.
+- **Step-by-Step Logic**: For questions requiring calculation or multi-step reasoning, explicitly break down the process into logical, sequential steps. Show the work.
+- **Conceptual Connection**: Clearly state the core scientific principle or concept being tested and explain how it applies to arrive at the correct answer.
+- **Distractor Analysis**: Briefly but effectively explain why each of the incorrect options are wrong, targeting the specific misconception each distractor represents.
+- **Self-Contained**: The explanation must be a standalone piece of teaching, making complete sense without needing to refer back to external source material.`,
 
-    'Figure': `VISUAL CONTENT RULES:
-    - **Figure Mode**: For questions requiring a diagram, provide a detailed 'figurePrompt'.
-    - **Edit Instructions**: If 'sourceImageIndex' is valid, write the prompt as an instruction to an illustrator to MODIFY the source image (e.g., "Label the mitochondria", "Show cross-section").
-    - **New Figures**: If generating from scratch, describe the diagram in high-contrast scientific line-art style.`,
+    'Distractors': `CHOICE & DISTRACTOR LOGIC (HIGH ENTROPY):
+    1. **Plausible Distractors**: All wrong options must be scientifically grounded.
+    2. **Common Errors**: Design based on frequent student misconceptions (e.g., confusing similar terms).
+    3. **Numerical Nuance**: Include options resulting from common calculation slips.`,
+
+    'Figure': `VISUAL PROTOCOL (STRICT MONOCHROME):
+    - **MONOCHROME ONLY**: 0% Color. Use #000000 (Pure Black) and #FFFFFF (Pure White) only. 
+    - **NO GREYSCALE**: No shading, no grey, no gradients. Use stippling (dots) for density if needed.
+    - **LABEL STYLE**: Labels must be BOLD and SOLID BLACK. Cushion each label with a small solid white mask.
+    - **TARGETED LABELING**: ONLY draw labels referenced in the question stem. Remove all original source text.
+    - **STYLE**: Clean, high-resolution 2D technical line-art suitable for laser printing.`,
     
-    'Chemistry': `CHEMISTRY FORMATTING:
-    - Include SMILES strings for chemical structures in [SMILES:xyz] format.
-    - Ensure stereochemistry and aromaticity are accurate.`
+    'Chemistry': `EXPERT CHEMISTRY EXAM PROTOCOL (NEET/AIIMS STANDARD):
+
+**PERSONA:** Act as a veteran chemistry professor with decades of experience setting papers for top-tier medical entrance exams. Your questions must be precise, conceptually deep, and reflect the patterns seen in high-stakes tests.
+
+**ORGANIC CHEMISTRY EMPHASIS:**
+1.  **STRUCTURE-FOCUSED QUESTIONS:** Prioritize questions where the options (A, B, C, D) are molecular structures. This is critical for testing understanding of isomerism, stereochemistry, reaction products, and reagents.
+2.  **REACTION MECHANISM & SYNTHESIS:**
+    *   Generate multi-step reaction sequences (like A -> B -> C). Ask for the final product, an intermediate, or a required reagent.
+    *   For "Identify A, B" questions, the options should be structures or scientifically accurate names.
+    *   Design problems based on named reactions, reagent-specific transformations, and tests for functional groups (e.g., Iodoform, Lucas test).
+3.  **IUPAC NOMENCLATURE:** For naming questions, provide complex, branched structures involving multiple functional groups, double/triple bonds, and stereocenters to rigorously test IUPAC rules.
+
+**FIGURE & DIAGRAM PROTOCOL (MANDATORY):**
+1.  **COMPOSITE IMAGE GENERATION:** For any question involving a reaction scheme AND structural options, the 'figurePrompt' MUST command the image model to generate a SINGLE, composite diagram. This diagram must cleanly display the main reaction pathway AND the four labeled options (A, B, C, D) below it. This is non-negotiable.
+2.  **VISUAL CLARITY:** All structures must be rendered as clean, unambiguous bond-line (skeletal) formulas. Ensure correct bond angles, valencies, and clear representation of stereochemistry (wedges/dashes) where relevant.
+3.  **KaTeX for TEXT:** Use standard chemical formulas and KaTeX notation (e.g., H_2SO_4, CH_3COOH) for all chemical text in the question stem, options, and explanation. AVOID plain text like 'H2SO4'.`,
+
+    'Latex': `MATH & LATEX TYPOGRAPHY PROTOCOL (CRITICAL - STRICT COMPLIANCE REQUIRED):
+    
+    1. **JSON ESCAPING (MANDATORY)**: 
+       - The output is a JSON string. You **MUST DOUBLE-ESCAPE** all backslashes.
+       - **WRONG:** "\text{hello}", "\times", "\frac"
+       - **CORRECT:** "\\text{hello}", "\\times", "\\frac"
+       - **Reason:** A single backslash \t is interpreted as a TAB character by parsers, destroying the LaTeX command.
+    
+    2. **MANDATORY DELIMITERS**: ALL mathematical expressions, symbols, variables, and equations MUST be wrapped in \`$\` signs.
+       - Correct: "Calculate the velocity $v$ where $v = u + at$."
+    
+    3. **DIVISION SYNTAX**: 
+       - ALWAYS use \`\\dfrac{numerator}{denominator}\`. 
+       - Example: $\\dfrac{GM}{r^2}$
+       - BANNED: Do not use \`/\` for vertical division in math.
+
+    4. **SYMBOLS & UNITS**: 
+       - Use \`\\times\` for multiplication (e.g., $4 \\times 10^5$).
+       - Use standard units directly or with \`\\mathrm{}\`. Avoid nested \`\\text{}\` for simple units.
+       - **Correct:** $0.5 \\mu\\mathrm{m}$ or $0.5 \\mu m$.
+       - **Avoid:** $0.5 \\text{\\text{mu}m}$.`
 };
 
 const PromptsHome: React.FC = () => {
-    // State now manages local overrides
     const [prompts, setPrompts] = useState<Record<string, string>>(DEFAULT_PROMPTS);
     const [saving, setSaving] = useState(false);
-
-    // AI Refiner State
     const [isAiOpen, setIsAiOpen] = useState(false);
     const [aiInstruction, setAiInstruction] = useState('');
     const [aiTargetSection, setAiTargetSection] = useState<string | null>(null);
     const [isRefining, setIsRefining] = useState(false);
 
     useEffect(() => {
-        // Load from Local Storage on mount
         const saved = localStorage.getItem('kiwiteach_system_prompts');
         if (saved) {
             try {
-                // Merge saved prompts with defaults to ensure new keys appear
                 setPrompts({ ...DEFAULT_PROMPTS, ...JSON.parse(saved) });
             } catch (e) {
                 console.error("Failed to parse local prompts", e);
@@ -74,7 +119,6 @@ const PromptsHome: React.FC = () => {
 
     const handleSavePrompt = (section: string, text: string) => {
         setSaving(true);
-        // Simulate network delay for UX
         setTimeout(() => {
             const updated = { ...prompts, [section]: text };
             setPrompts(updated);
@@ -96,11 +140,7 @@ const PromptsHome: React.FC = () => {
         try {
             const currentText = prompts[aiTargetSection];
             const refined = await refineSystemPrompt(currentText, aiInstruction);
-            
-            setPrompts(prev => ({
-                ...prev,
-                [aiTargetSection]: refined
-            }));
+            setPrompts(prev => ({ ...prev, [aiTargetSection]: refined }));
             setIsAiOpen(false);
             setAiInstruction('');
         } catch (e: any) {
@@ -112,25 +152,19 @@ const PromptsHome: React.FC = () => {
 
     return (
         <div className="flex flex-col h-full gap-6 animate-fade-in pb-10">
-            {/* Top Control Center */}
             <div className="bg-white p-5 rounded-[2rem] border border-slate-100 shadow-xl shadow-slate-200/50 flex flex-col md:flex-row gap-6 items-center justify-between z-10 relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-rose-400 via-purple-400 to-indigo-400"></div>
-                
                 <div className="flex items-center gap-5">
                     <div className="bg-slate-900 text-white w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-slate-900/20">
                         <iconify-icon icon="mdi:console" width="28" />
                     </div>
                     <div>
                         <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">System Control</h2>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Global AI Logic Configuration</p>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Global AI Logic Configuration</p>
                     </div>
                 </div>
-
                 <div className="flex gap-4 items-center">
-                    <button 
-                        onClick={handleResetDefaults}
-                        className="text-xs font-black text-slate-400 hover:text-rose-500 uppercase tracking-widest transition-colors flex items-center gap-2"
-                    >
+                    <button onClick={handleResetDefaults} className="text-xs font-black text-slate-400 hover:text-rose-50 uppercase tracking-widest transition-colors flex items-center gap-2">
                         <iconify-icon icon="mdi:restore" /> Reset Defaults
                     </button>
                 </div>
@@ -146,14 +180,10 @@ const PromptsHome: React.FC = () => {
                                 </div>
                                 <span className={`text-[10px] font-black uppercase tracking-widest text-${section.color}-600`}>{section.label}</span>
                             </div>
-                            <button 
-                                onClick={() => { setAiTargetSection(section.id); setIsAiOpen(true); }}
-                                className="text-indigo-400 hover:text-indigo-600 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider transition-colors"
-                            >
+                            <button onClick={() => { setAiTargetSection(section.id); setIsAiOpen(true); }} className="text-indigo-400 hover:text-indigo-600 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider transition-colors">
                                 <iconify-icon icon="mdi:magic-staff" /> Refine
                             </button>
                         </div>
-                        
                         <div className="flex-1 bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all flex flex-col overflow-hidden group focus-within:ring-4 focus-within:ring-indigo-50 focus-within:border-indigo-200">
                             <textarea
                                 value={prompts[section.id] || ''}
@@ -162,14 +192,8 @@ const PromptsHome: React.FC = () => {
                                 placeholder={`Define strict rules for ${section.id} questions...`}
                             />
                             <div className="p-3 border-t border-slate-50 bg-slate-50/50 flex justify-between items-center">
-                                <span className="text-[8px] font-bold text-slate-300 uppercase tracking-widest pl-2">
-                                    {(prompts[section.id] || '').length} chars
-                                </span>
-                                <button 
-                                    onClick={() => handleSavePrompt(section.id, prompts[section.id])}
-                                    disabled={saving}
-                                    className="bg-white border border-slate-200 text-slate-600 hover:text-emerald-600 hover:border-emerald-200 hover:bg-emerald-50 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest shadow-sm transition-all flex items-center gap-2 active:scale-95"
-                                >
+                                <span className="text-[8px] font-bold text-slate-300 uppercase tracking-widest pl-2">{(prompts[section.id] || '').length} chars</span>
+                                <button onClick={() => handleSavePrompt(section.id, prompts[section.id])} disabled={saving} className="bg-white border border-slate-200 text-slate-600 hover:text-emerald-600 hover:border-emerald-200 hover:bg-emerald-50 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest shadow-sm transition-all flex items-center gap-2 active:scale-95">
                                     <iconify-icon icon="mdi:content-save-outline" /> Apply
                                 </button>
                             </div>
@@ -178,7 +202,6 @@ const PromptsHome: React.FC = () => {
                 ))}
             </div>
 
-            {/* AI Refiner Modal */}
             {isAiOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
                     <div className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl border border-white animate-slide-up">
@@ -188,28 +211,14 @@ const PromptsHome: React.FC = () => {
                             </div>
                             <div>
                                 <h3 className="text-lg font-black text-slate-800">Refine Prompt</h3>
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                    Target: {aiTargetSection}
-                                </p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Target: {aiTargetSection}</p>
                             </div>
                         </div>
-
                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Instruction</label>
-                        <textarea
-                            autoFocus
-                            value={aiInstruction}
-                            onChange={e => setAiInstruction(e.target.value)}
-                            placeholder="e.g. Make the distractors strictly focused on numerical sign errors..."
-                            className="w-full h-32 bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 mb-6 resize-none"
-                        />
-
+                        <textarea autoFocus value={aiInstruction} onChange={e => setAiInstruction(e.target.value)} placeholder="e.g. Make the distractors strictly focused on numerical sign errors..." className="w-full h-32 bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 mb-6 resize-none" />
                         <div className="flex gap-3">
                             <button onClick={() => setIsAiOpen(false)} className="flex-1 py-3 text-[10px] font-black uppercase text-slate-400 hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
-                            <button 
-                                onClick={handleAiRefine}
-                                disabled={isRefining || !aiInstruction.trim()}
-                                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-all active:scale-95"
-                            >
+                            <button onClick={handleAiRefine} disabled={isRefining || !aiInstruction.trim()} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-all active:scale-95">
                                 {isRefining ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <iconify-icon icon="mdi:auto-fix" />}
                                 Generate
                             </button>

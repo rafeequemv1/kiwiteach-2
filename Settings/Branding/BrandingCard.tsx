@@ -1,6 +1,8 @@
-import '../../../types';
-import React, { useRef } from 'react';
+
+import '../../types';
+import React, { useRef, useState } from 'react';
 import { BrandingConfig } from '../../Quiz/types';
+import { supabase } from '../../supabase/client';
 
 interface BrandingCardProps {
   config: BrandingConfig;
@@ -23,19 +25,46 @@ const Toggle: React.FC<{ label: string; sub: string; checked: boolean; onChange:
 
 const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onUpdate({ ...config, name: e.target.value });
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        onUpdate({ ...config, logo: reader.result as string });
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    try {
+      setIsUploading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("You must be logged in to upload a logo.");
+
+      // Sanitize filename
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}_logo.${fileExt}`;
+      const filePath = `logos/${user.id}/${fileName}`;
+
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('branding-assets')
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      // Get Public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('branding-assets')
+        .getPublicUrl(filePath);
+
+      // Update config with new URL
+      onUpdate({ ...config, logo: publicUrl });
+
+    } catch (err: any) {
+      alert("Upload failed: " + err.message);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -82,24 +111,32 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
           <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 ml-1">Identity Logo</label>
           <div className="flex flex-col md:flex-row gap-6 items-start md:items-center">
             <div className="relative">
-              <div className="w-32 h-32 rounded-3xl bg-slate-50 border-2 border-dashed border-slate-200 flex items-center justify-center overflow-hidden group hover:border-accent transition-colors">
-                {config.logo ? (
+              <div className="w-32 h-32 rounded-3xl bg-slate-50 border-2 border-dashed border-slate-200 flex items-center justify-center overflow-hidden group hover:border-accent transition-colors relative">
+                {isUploading ? (
+                  <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-10">
+                    <div className="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                  </div>
+                ) : config.logo ? (
                   <img src={config.logo} alt="Brand Logo" className="w-full h-full object-contain p-2" />
                 ) : (
                   <iconify-icon icon="mdi:image-plus" width="32" className="text-slate-300 group-hover:text-accent transition-colors"></iconify-icon>
                 )}
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleLogoUpload}
-                  accept="image/*"
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                />
+                
+                {!isUploading && (
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleLogoUpload}
+                    accept="image/png, image/jpeg, image/svg+xml"
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                )}
               </div>
-              {config.logo && (
+              
+              {!isUploading && config.logo && (
                 <button
                   onClick={removeLogo}
-                  className="absolute -top-2 -right-2 bg-white text-red-500 rounded-full p-1 shadow-lg border border-red-50 hover:bg-red-50 transition-colors"
+                  className="absolute -top-2 -right-2 bg-white text-red-500 rounded-full p-1 shadow-lg border border-red-50 hover:bg-red-50 transition-colors z-20"
                 >
                   <iconify-icon icon="mdi:close-circle" width="20"></iconify-icon>
                 </button>
@@ -108,13 +145,14 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
             <div className="flex-1 space-y-2">
               <p className="text-sm font-bold text-slate-600">Upload your organization logo</p>
               <p className="text-xs text-slate-400 leading-relaxed max-w-xs">
-                Recommended size: 512x512px. Supported formats: PNG, JPG, or SVG. This logo will appear in the navigation bar and generated PDFs.
+                Recommended size: 512x512px. Supported formats: PNG, JPG, or SVG. Stored securely in cloud bucket.
               </p>
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="mt-2 text-accent text-xs font-black uppercase tracking-widest hover:underline"
+                disabled={isUploading}
+                className="mt-2 text-accent text-xs font-black uppercase tracking-widest hover:underline disabled:opacity-50"
               >
-                Choose File
+                {isUploading ? 'Uploading...' : 'Choose File'}
               </button>
             </div>
           </div>

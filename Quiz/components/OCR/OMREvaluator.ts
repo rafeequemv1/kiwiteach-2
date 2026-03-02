@@ -22,7 +22,7 @@ export const evaluateOMRSheet = async (
        return;
     }
 
-    let src, gray, blurred, thresh, contours, hierarchy, warped, warpedThresh, warpedGray, M, pts1, pts2;
+    let src: any, gray: any, blurred: any, thresh: any, contours: any, hierarchy: any, warped: any, warpedThresh: any, warpedGray: any, M: any, pts1: any, pts2: any;
 
     try {
       src = cv.imread(imageSource);

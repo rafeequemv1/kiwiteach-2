@@ -1,8 +1,7 @@
-
 import React from 'react';
 import QuestionBankHome from '../QuestionBank/QuestionBankHome';
 
-const QuestionDBHome: React.FC = () => {
+const QuestionDBHome = () => {
   return <QuestionBankHome />;
 };
 

@@ -1,4 +1,3 @@
-
 import '../../types';
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabase/client';
@@ -61,17 +60,14 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
   const [newItemName, setNewItemName] = useState('');
   const [newItemNumber, setNewItemNumber] = useState<string>('');
   
-  // File Upload States
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [docFile, setDocFile] = useState<File | null>(null);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
-  
-  // Viewer State
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
+  const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
 
-  // Refs
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
 
@@ -83,12 +79,18 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     setIsLoading(true);
     try {
       const { data: classesData, error: classesError } = await supabase
-        .from('classes').select('*').eq('kb_id', kbId).order('created_at', { ascending: true });
+        .from('classes')
+        .select('id, name, kb_name')
+        .eq('kb_id', kbId)
+        .order('created_at', { ascending: true });
       if (classesError) throw classesError;
       setClasses(classesData);
 
       const { data: subjectsData, error: subjectsError } = await supabase
-        .from('subjects').select('*').eq('kb_id', kbId).order('created_at', { ascending: true });
+        .from('subjects')
+        .select('id, class_id, class_name, kb_id, kb_name, name')
+        .eq('kb_id', kbId)
+        .order('created_at', { ascending: true });
       if (subjectsError) throw subjectsError;
       setSubjects(subjectsData);
       
@@ -164,8 +166,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       } 
       else if (activeModal === 'chapter' && selectedSubject) {
         const num = newItemNumber ? parseInt(newItemNumber) : null;
-        
-        // 1. Create Draft Chapter
         const { data: chapterData, error: chapterError } = await supabase.from('chapters').insert([{ 
           subject_id: selectedSubject.id, subject_name: selectedSubject.name, class_id: selectedSubject.class_id, class_name: selectedSubject.class_name, kb_id: kbId, kb_name: kbName, name: newItemName, chapter_number: num, status: 'draft' 
         }]).select().single();
@@ -186,7 +186,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
             let rawText = '';
             let docPath = null;
 
-            // 2. Process PDF
             if (pdfFile) {
                 setProcessingStep('Reading PDF Context...');
                 rawText = await extractTextFromPdf(pdfFile);
@@ -196,7 +195,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                 await supabase.storage.from('chapters').upload(pdfPath, pdfFile, { upsert: true, contentType: 'application/pdf' });
             }
 
-            // 3. Process Doc
             if (docFile) {
                 setProcessingStep('Uploading Source Doc...');
                 const ext = docFile.name.split('.').pop();
@@ -205,7 +203,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                 await supabase.storage.from('chapters').upload(docPath, docFile, { upsert: true });
             }
 
-            // 4. Update Chapter
             setProcessingStep('Finalizing...');
             const { data: updatedData, error: dbError } = await supabase
                 .from('chapters')
@@ -309,9 +306,28 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       alert("Could not load PDF view.");
     }
   };
+
+  const openDocViewer = async (chapter: Chapter) => {
+    if (!chapter.doc_path) return;
+    setIsProcessing(true);
+    setProcessingStep('Rendering Full Document...');
+    try {
+      const { data: blob, error } = await supabase.storage.from('chapters').download(chapter.doc_path);
+      if (error) throw error;
+      
+      const arrayBuffer = await blob.arrayBuffer();
+      const result = await (window as any).mammoth.convertToHtml({ arrayBuffer });
+      setDocViewer({ html: result.value, name: chapter.doc_name || chapter.name });
+    } catch (err: any) {
+      console.error("Doc viewer error", err);
+      alert("Could not render document view.");
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
   
   const isSearching = searchTerm.trim().length > 0;
-
   const filteredSubjects = isSearching 
     ? subjects.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()))
     : subjects.filter(s => s.class_id === selectedClass?.id);
@@ -340,9 +356,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         </div>
       )}
 
-      {/* Navigation Bars */}
       <div className="shrink-0 bg-white border-b border-slate-200 shadow-sm z-10 px-4">
-        {/* Classes Tabs & Global Search */}
         <div className="flex items-center justify-between py-3 gap-6">
           <div className="flex items-center gap-6 overflow-x-auto scrollbar-hide">
             <button 
@@ -386,7 +400,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
           </div>
         </div>
 
-        {/* Subject Tabs */}
         {!isSearching && (
           <div className="flex items-center gap-4 overflow-x-auto scrollbar-hide py-2 border-t border-slate-50">
             <button 
@@ -419,11 +432,9 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-        {/* Chapters Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
           {selectedSubject ? (
             <>
-              {/* Add Chapter Button */}
               <button 
                 onClick={() => setActiveModal('chapter')}
                 className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-2 hover:border-accent hover:bg-indigo-50/30 transition-all group"
@@ -457,6 +468,9 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                     {c.status === 'ready' && c.pdf_path && (
                         <button onClick={() => openPdfViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:eye" width="12" /> View PDF</button>
                     )}
+                    {c.status === 'ready' && c.doc_path && (
+                        <button onClick={() => openDocViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:file-document-outline" width="12" /> View Doc</button>
+                    )}
                     
                     <div className="flex gap-2 mt-1">
                       <button onClick={() => setRenamingItem({ type: 'chapter', item: c })} className="text-white/40 hover:text-white transition-colors"><iconify-icon icon="mdi:pencil" width="14" /></button>
@@ -475,7 +489,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         </div>
       </div>
 
-      {/* Primary Modals */}
       {(activeModal || renamingItem) && (
         <div className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => { setActiveModal(null); setRenamingItem(null); }}>
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200" onClick={e => e.stopPropagation()}>
@@ -506,10 +519,8 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                 />
               </div>
 
-              {/* Enhanced File Upload Section */}
               {activeModal === 'chapter' && !renamingItem && (
                  <div className="space-y-3 pt-2">
-                    {/* PDF Input */}
                     <div>
                         <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Context Material (PDF)</label>
                         <div 
@@ -524,12 +535,11 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                         <input type="file" accept=".pdf" ref={pdfInputRef} className="hidden" onChange={(e) => setPdfFile(e.target.files?.[0] || null)} />
                     </div>
 
-                    {/* Source Doc Input */}
                     <div>
                         <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Figure Source (Doc/HTML)</label>
                         <div 
                           onClick={() => docInputRef.current?.click()}
-                          className={`group border-2 border-dashed rounded-xl p-3 flex items-center justify-center gap-3 cursor-pointer transition-all ${docFile ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-100 bg-slate-50 hover:border-indigo-200'}`}
+                          className={`group border-2 border-dashed rounded-xl p-3 flex items-center justify-center gap-3 cursor-pointer transition-all ${docFile ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-100 bg-slate-50 hover:border-rose-200'}`}
                         >
                            <iconify-icon icon={docFile ? "mdi:file-check" : "mdi:file-document-outline"} className={`text-xl ${docFile ? 'text-indigo-500' : 'text-slate-300'}`} />
                            <p className={`text-[10px] font-bold ${docFile ? 'text-indigo-700' : 'text-slate-400'}`}>
@@ -564,6 +574,24 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
            </div>
            <div className="flex-1 w-full max-w-6xl mx-auto bg-white rounded-xl overflow-hidden shadow-2xl border border-white/10">
               <iframe src={pdfViewer.url} className="w-full h-full border-none" />
+           </div>
+        </div>
+      )}
+
+      {docViewer && (
+        <div className="fixed inset-0 z-[400] bg-slate-900/95 backdrop-blur-md flex flex-col p-4 animate-fade-in">
+           <div className="w-full max-w-5xl mx-auto flex justify-between items-center mb-3 text-white">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shadow-lg"><iconify-icon icon="mdi:file-document-outline" width="18"></iconify-icon></div>
+                <div>
+                  <h4 className="font-black text-xs truncate max-w-sm">{docViewer.name}</h4>
+                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Source Knowledge Explorer</p>
+                </div>
+              </div>
+              <button onClick={() => setDocViewer(null)} className="w-8 h-8 bg-white/10 hover:bg-white/20 rounded-lg flex items-center justify-center transition-all"><iconify-icon icon="mdi:close" width="16"></iconify-icon></button>
+           </div>
+           <div className="flex-1 w-full max-w-5xl mx-auto bg-white rounded-xl overflow-y-auto shadow-2xl border border-white/10 p-12 md:p-20 custom-scrollbar">
+              <div className="prose prose-slate max-w-none font-serif leading-relaxed text-lg text-slate-700" dangerouslySetInnerHTML={{ __html: docViewer.html }} />
            </div>
         </div>
       )}

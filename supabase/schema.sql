@@ -1,45 +1,57 @@
--- 1. Create the Storage Bucket for figures if it doesn't exist
-insert into storage.buckets (id, name, public)
-values ('question-figures', 'question-figures', true)
-on conflict (id) do nothing;
+-- Enable Row Level Security (RLS) for the tables.
+alter table if exists public.folders enable row level security;
+alter table if exists public.tests enable row level security;
 
--- 2. Storage Policies for 'question-figures' (Idempotent)
-drop policy if exists "Allow authenticated uploads" on storage.objects;
-create policy "Allow authenticated uploads"
-on storage.objects for insert
-to authenticated
-with check (bucket_id = 'question-figures');
+-- Drop existing policies if they exist, to prevent conflicts.
+drop policy if exists "Allow authenticated users to manage their own folders" on public.folders;
+drop policy if exists "Allow authenticated users to manage their own tests" on public.tests;
 
-drop policy if exists "Allow public read" on storage.objects;
-create policy "Allow public read"
-on storage.objects for select
-to public
-using (bucket_id = 'question-figures');
-
--- 3. Table Schema for question_bank_neet
-create table if not exists public.question_bank_neet (
+-- 1. Folders Table
+-- Stores user-created folders for organizing tests.
+create table if not exists public.folders (
   id uuid default gen_random_uuid() primary key,
-  chapter_id uuid references public.chapters on delete cascade,
-  chapter_name text,
-  subject_name text,
-  class_name text, -- Hierarchy tracking for storage paths
-  
-  question_text text not null,
-  options jsonb,
-  correct_index int, -- Snake case for Postgres
-  difficulty text,
-  question_type text,
-  explanation text,
-  figure_url text,
-  page_number int,
-  
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users on delete cascade not null,
+  parent_id uuid references public.folders on delete cascade,
+  name text not null
 );
 
--- 4. Table Policies for question_bank_neet (Idempotent)
-alter table public.question_bank_neet enable row level security;
+-- RLS Policy for Folders
+-- This policy allows users to perform any action (SELECT, INSERT, UPDATE, DELETE)
+-- on folders where their authenticated user ID matches the 'user_id' column.
+create policy "Allow authenticated users to manage their own folders"
+on public.folders for all
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
 
-drop policy if exists "Enable all access for authenticated users" on public.question_bank_neet;
-create policy "Enable all access for authenticated users" 
-on public.question_bank_neet for all 
-using (auth.role() = 'authenticated');
+
+-- 2. Tests Table
+-- Stores created tests, including draft blueprints and generated question sets.
+create table if not exists public.tests (
+  id uuid default gen_random_uuid() primary key,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users on delete cascade not null,
+  folder_id uuid references public.folders on delete set null,
+  
+  name text not null,
+  status text default 'draft', -- e.g., 'draft', 'generated', 'scheduled'
+  
+  questions jsonb default '[]'::jsonb,
+  question_ids text[] default array[]::text[], 
+  question_count int default 0,
+  
+  -- 'config' stores the test creation blueprint (source chapters, settings, etc.)
+  config jsonb default '{}'::jsonb,
+  layout_config jsonb default '{}'::jsonb,
+  
+  scheduled_at timestamp with time zone,
+  class_ids text[] default array[]::text[]
+);
+
+-- RLS Policy for Tests
+-- This policy allows users to perform any action on tests
+-- where their authenticated user ID matches the 'user_id' column.
+create policy "Allow authenticated users to manage their own tests"
+on public.tests for all
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);

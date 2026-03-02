@@ -1,3 +1,4 @@
+
 import '../../types';
 import React, { useState, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
@@ -71,21 +72,49 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
       if (!q.sourceChapterId) return alert("Cannot replace: Source chapter unknown.");
       setReplacingId(q.id);
       try {
-          const currentIds = localQuestions.map(item => item.originalId || item.id).filter(Boolean);
+          // Only filter out questions that actually have a database ID (UUID).
+          // AI generated questions have string IDs like 'forge-...' which cause UUID syntax errors in DB queries.
+          const currentIds = localQuestions
+            .map(item => item.originalId) // Only grab original DB UUIDs
+            .filter(id => id && typeof id === 'string'); // Ensure truthy strings
+
           let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', q.sourceChapterId);
-          if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
+          
+          if (currentIds.length > 0) {
+              query = query.not('id', 'in', `(${currentIds.join(',')})`);
+          }
+          
           const { data, error } = await query.limit(20);
+          
           if (error) throw error;
           if (!data || data.length === 0) return alert("No alternative questions found in this chapter.");
+          
           const raw = data[Math.floor(Math.random() * data.length)];
           const newQ: Question = {
-              id: raw.id, originalId: raw.id, text: raw.question_text, options: raw.options, correctIndex: raw.correct_index, 
-              explanation: raw.explanation, difficulty: raw.difficulty, type: raw.question_type || 'mcq', figureDataUrl: raw.figure_url,
-              columnA: raw.column_a, columnB: raw.column_b, correctMatches: raw.correct_matches, sourceChapterId: raw.chapter_id,
-              sourceChapterName: raw.chapter_name || q.sourceChapterName, sourceSubjectName: raw.subject_name || q.sourceSubjectName, pageNumber: raw.page_number
+              id: raw.id, 
+              originalId: raw.id, 
+              text: raw.question_text, 
+              options: raw.options, 
+              correctIndex: raw.correct_index, 
+              explanation: raw.explanation, 
+              difficulty: raw.difficulty, 
+              type: raw.question_type || 'mcq', 
+              figureDataUrl: raw.figure_url,
+              columnA: raw.column_a, 
+              columnB: raw.column_b, 
+              correctMatches: raw.correct_matches, 
+              sourceChapterId: raw.chapter_id,
+              sourceChapterName: raw.chapter_name || q.sourceChapterName, 
+              sourceSubjectName: raw.subject_name || q.sourceSubjectName, 
+              pageNumber: raw.page_number
           };
           setLocalQuestions(prev => prev.map(item => item.id === q.id ? newQ : item));
-      } catch (err: any) { alert("Replacement failed: " + err.message); } finally { setReplacingId(null); }
+      } catch (err: any) { 
+          console.error("Replace Error", err);
+          alert("Replacement failed: " + err.message); 
+      } finally { 
+          setReplacingId(null); 
+      }
   };
 
   const handleSave = async () => {

@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 
 type ViewMode = 'grid' | 'calendar' | 'kanban';
 type CalendarType = 'month' | 'week' | 'year';
-type TestStatus = 'draft' | 'scheduled' | 'over';
+type TestStatus = 'draft' | 'generated' | 'scheduled' | 'over';
 
 interface Test {
   id: string;
@@ -11,7 +11,7 @@ interface Test {
   questionCount: number;
   generatedAt: string;
   scheduledAt?: string | null;
-  status: 'scheduled' | 'generated';
+  status: 'draft' | 'scheduled' | 'generated';
   class_ids?: string[];
   config?: any;
   layout_config?: any; 
@@ -170,7 +170,10 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   };
 
   const getTestStatus = (t: Test): TestStatus => {
-      if (!t.scheduledAt) return 'draft';
+      if (t.status === 'draft') return 'draft';
+      if (t.status === 'generated') return 'generated';
+      if (!t.scheduledAt) return 'generated'; // Fallback for old data
+      
       const scheduleDate = new Date(t.scheduledAt);
       const today = new Date();
       today.setHours(0,0,0,0);
@@ -201,8 +204,9 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     }
 
     const styles = {
-        draft: { bg: 'bg-slate-50', border: 'border-slate-200', icon: 'mdi:file-document-edit-outline', text: 'text-slate-600', accent: 'bg-slate-400' },
-        scheduled: { bg: 'bg-white', border: 'border-indigo-100', icon: 'mdi:calendar-clock', text: 'text-indigo-900', accent: 'bg-indigo-500' },
+        draft: { bg: 'bg-white', border: 'border-slate-300 border-dashed', icon: 'mdi:pencil-ruler', text: 'text-slate-500', accent: 'bg-slate-400' },
+        generated: { bg: 'bg-white', border: 'border-slate-200', icon: 'mdi:file-document-outline', text: 'text-indigo-900', accent: 'bg-indigo-600' },
+        scheduled: { bg: 'bg-white', border: 'border-amber-200', icon: 'mdi:calendar-clock', text: 'text-amber-900', accent: 'bg-amber-500' },
         over: { bg: 'bg-emerald-50/30', border: 'border-emerald-100', icon: 'mdi:check-circle-outline', text: 'text-emerald-800', accent: 'bg-emerald-500' }
     }[status];
 
@@ -216,11 +220,16 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
             <div className={`absolute top-0 left-0 w-full h-1 ${styles.accent} opacity-20`}></div>
             <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all z-10" onClick={e => e.stopPropagation()}>
                 <button onClick={(e) => { e.stopPropagation(); onDuplicateTest(test); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-accent shadow-sm flex items-center justify-center" title="Duplicate"><iconify-icon icon="mdi:content-copy" width="12" /></button>
-                <button onClick={(e) => { e.stopPropagation(); setSchedulingTest(test); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-amber-500 shadow-sm flex items-center justify-center" title="Schedule"><iconify-icon icon="mdi:calendar-clock" width="12" /></button>
-                <button onClick={(e) => { e.stopPropagation(); setAssigningTest(test); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-emerald-500 shadow-sm flex items-center justify-center" title="Assign Class"><iconify-icon icon="mdi:folder-move" width="12" /></button>
+                {status !== 'draft' && (
+                    <>
+                        <button onClick={(e) => { e.stopPropagation(); setSchedulingTest(test); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-amber-500 shadow-sm flex items-center justify-center" title="Schedule"><iconify-icon icon="mdi:calendar-clock" width="12" /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setAssigningTest(test); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-emerald-500 shadow-sm flex items-center justify-center" title="Assign Class"><iconify-icon icon="mdi:folder-move" width="12" /></button>
+                    </>
+                )}
                 <button onClick={(e) => { e.stopPropagation(); setDeletingItem({ type: 'test', id: test.id, name: test.name }); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-red-500 shadow-sm flex items-center justify-center" title="Delete"><iconify-icon icon="mdi:trash-can-outline" width="12" /></button>
             </div>
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 shadow-sm bg-white text-slate-400`}>
+            
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 shadow-sm bg-slate-50 ${status === 'draft' ? 'text-slate-400' : 'text-indigo-500'}`}>
                 <iconify-icon icon={styles.icon} width="20" />
             </div>
             
@@ -249,7 +258,11 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
                 )}
             </div>
             
-            <span className="text-[8px] font-bold text-slate-400 mt-auto">{test.questionCount} Questions</span>
+            {status === 'draft' ? (
+                <span className="text-[8px] font-bold text-slate-400 mt-auto bg-slate-100 px-2 py-0.5 rounded-full uppercase tracking-widest">Blueprint</span>
+            ) : (
+                <span className="text-[8px] font-bold text-slate-400 mt-auto">{test.questionCount} Questions</span>
+            )}
         </div>
     );
   };
@@ -365,6 +378,29 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
           </div>
         </div>
       )}
+      
+      {deletingItem && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-slide-up">
+          <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-10 shadow-2xl">
+            <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-4 text-center">Confirm Deletion</h3>
+            <p className="text-center text-slate-500 mb-8">Are you sure you want to permanently delete <b className="text-slate-700">"{deletingItem.name}"</b>? This action cannot be undone.</p>
+            <div className="flex gap-4">
+              <button onClick={() => setDeletingItem(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all">
+                Cancel
+              </button>
+              <button 
+                onClick={() => {
+                  onDeleteItem(deletingItem.type, deletingItem.id, deletingItem.name);
+                  setDeletingItem(null);
+                }} 
+                className="flex-1 py-4 bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-rose-600/20 hover:bg-rose-700 transition-all"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {assigningTest && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
@@ -407,10 +443,13 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
 
 const KanbanBoard: React.FC<any> = ({ tests, getTestStatus, TestCard }) => {
     const columns = useMemo(() => {
-        const cols: any = { draft: [], scheduled: [], over: [] };
-        tests.forEach((t: any) => cols[getTestStatus(t)].push(t));
+        const cols: any = { draft: [], generated: [], scheduled: [], over: [] };
+        tests.forEach((t: any) => {
+            const status = getTestStatus(t);
+            if(cols[status]) cols[status].push(t);
+        });
         return cols;
-    }, [tests]);
+    }, [tests, getTestStatus]);
     return (
         <div className="flex gap-6 h-full overflow-x-auto pb-4 snap-x">
             {Object.entries(columns).map(([status, items]: [string, any]) => (

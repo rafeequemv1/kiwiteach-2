@@ -1,12 +1,15 @@
+
 import '../types';
 import React, { useState } from 'react';
 import KnowledgeSourceHome from './KnowledgeSource/KnowledgeSourceHome';
 import KnowledgeBaseExplorer from './KnowledgeSource/KnowledgeBaseExplorer';
-import QuestionDBHome from './QuestionDB/QuestionDBHome';
+import QuestionDBHome from './QuestionBank/QuestionBankHome';
 import PromptsHome from './Prompts/PromptsHome';
 import LabHome from './Lab/LabHome';
+import QualityLab from './Lab/QualityLab';
+import SyllabusManager from './Syllabus/SyllabusManager';
 
-type AdminSection = 'dashboard' | 'knowledge-source' | 'kb-explorer' | 'question-db' | 'prompts' | 'lab';
+type AdminSection = 'dashboard' | 'knowledge-source' | 'kb-explorer' | 'question-db' | 'prompts' | 'lab' | 'syllabus' | 'quality-lab';
 
 interface KnowledgeBase {
   id: string;
@@ -40,16 +43,36 @@ const AdminView: React.FC = () => {
         return <PromptsHome />;
       case 'lab':
         return <LabHome onBack={() => setActiveSection('dashboard')} />;
+      case 'quality-lab':
+        return <QualityLab onBack={() => setActiveSection('dashboard')} />;
+      case 'syllabus':
+        return <SyllabusManager />;
       default:
         return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
              <AdminCard 
-              title="Lab"
-              description="Rapid figure-test forging from HTML."
-              icon="mdi:test-tube"
+              title="Quality Lab"
+              description="Benchmark Gemini models & estimate INR costs."
+              icon="mdi:matrix"
+              color="text-indigo-600"
+              bg="bg-indigo-50"
+              onClick={() => setActiveSection('quality-lab')}
+            />
+             <AdminCard 
+              title="Batch Forge"
+              description="Rapid database population from files."
+              icon="mdi:factory"
               color="text-rose-600"
               bg="bg-rose-50"
               onClick={() => setActiveSection('lab')}
+            />
+             <AdminCard 
+              title="Syllabus"
+              description="Manage NEET authorized topic boundaries."
+              icon="mdi:book-check-outline"
+              color="text-emerald-600"
+              bg="bg-emerald-50"
+              onClick={() => setActiveSection('syllabus')}
             />
              <AdminCard 
               title="Question DB"
@@ -110,9 +133,12 @@ const AdminView: React.FC = () => {
       } else if (activeSection === 'prompts') {
           parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
           parts.push(<button className='text-slate-900'>System Logic</button>);
-      } else if (activeSection === 'lab') {
+      } else if (activeSection === 'lab' || activeSection === 'quality-lab') {
           parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button className='text-slate-900'>Forging Lab</button>);
+          parts.push(<button className='text-slate-900'>{activeSection === 'lab' ? 'Batch Forge' : 'Quality Lab'}</button>);
+      } else if (activeSection === 'syllabus') {
+          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
+          parts.push(<button className='text-slate-900'>Syllabus</button>);
       }
       return parts;
   };
@@ -124,6 +150,8 @@ const AdminView: React.FC = () => {
         case 'question-db': return 'Knowledge Database';
         case 'prompts': return 'System Configuration';
         case 'lab': return 'Rapid Forging Lab';
+        case 'quality-lab': return 'Model Benchmarking';
+        case 'syllabus': return 'NEET Syllabus Index';
         default: return activeSection.replace('-', ' ');
     }
   };

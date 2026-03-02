@@ -6,8 +6,10 @@ interface AuthUIProps {
     onDemoLogin?: () => void;
 }
 
+type AuthMode = 'login' | 'signup' | 'forgot-password';
+
 const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
-  const [isLogin, setIsLogin] = useState(true);
+  const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,13 +23,19 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
     setMessage(null);
 
     try {
-      if (isLogin) {
+      if (mode === 'login') {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-      } else {
+      } else if (mode === 'signup') {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
         setMessage('Verification email sent! Check your inbox.');
+      } else if (mode === 'forgot-password') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        });
+        if (error) throw error;
+        setMessage('Password reset link sent to your email!');
       }
     } catch (err: any) {
       console.error("Auth Failure Details:", err);
@@ -54,7 +62,7 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
             </div>
             <h1 className="text-3xl font-black text-slate-800 tracking-tight">KiwiTeach</h1>
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mt-2">
-              {isLogin ? 'Identity Verification' : 'Enroll in Platform'}
+              {mode === 'login' ? 'Identity Verification' : mode === 'signup' ? 'Enroll in Platform' : 'Reset Credentials'}
             </p>
           </div>
 
@@ -71,25 +79,38 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
               />
             </div>
 
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Secure Passkey</label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
-                placeholder="••••••••"
-              />
-            </div>
+            {mode !== 'forgot-password' && (
+              <div>
+                <div className="flex justify-between items-center mb-2 px-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Secure Passkey</label>
+                  {mode === 'login' && (
+                    <button 
+                      type="button"
+                      onClick={() => { setMode('forgot-password'); setError(null); setMessage(null); }}
+                      className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest hover:text-indigo-700 transition-colors"
+                    >
+                      Forgot?
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
+                  placeholder="••••••••"
+                />
+              </div>
+            )}
 
             {error && (
               <div className="bg-rose-50 text-rose-600 text-[11px] font-bold p-4 rounded-2xl border border-rose-100 animate-fade-in leading-relaxed">
                 <iconify-icon icon="mdi:alert-circle" className="mr-2"></iconify-icon>
                 {error}
-                {error.includes("Invalid login credentials") && (
+                {error.includes("Invalid login credentials") && mode === 'login' && (
                     <div className="mt-2 pt-2 border-t border-rose-200">
-                        <p className="font-normal">New here? Toggle to <span className="font-bold underline cursor-pointer" onClick={() => setIsLogin(false)}>Join System</span> or use Demo mode below.</p>
+                        <p className="font-normal">New here? Toggle to <span className="font-bold underline cursor-pointer" onClick={() => setMode('signup')}>Join System</span> or use Demo mode below.</p>
                     </div>
                 )}
               </div>
@@ -105,16 +126,16 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-4.5 rounded-2xl transition-all shadow-xl shadow-slate-900/10 disabled:opacity-50 flex items-center justify-center gap-3 uppercase tracking-[0.2em] text-xs"
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-slate-900/10 disabled:opacity-50 flex items-center justify-center gap-3 uppercase tracking-[0.2em] text-xs min-h-[56px]"
             >
               {loading ? (
                 <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin"></div>
               ) : (
-                isLogin ? 'Sign In' : 'Join System'
+                mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Join System' : 'Send Reset Link'
               )}
             </button>
 
-            {onDemoLogin && (
+            {onDemoLogin && mode !== 'forgot-password' && (
                 <button
                     type="button"
                     onClick={onDemoLogin}
@@ -126,13 +147,23 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
             )}
           </form>
 
-          <div className="mt-10 text-center pt-8 border-t border-slate-50">
-            <button
-              onClick={() => setIsLogin(!isLogin)}
-              className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 transition-colors"
-            >
-              {isLogin ? "Generate New Account?" : "Return to Log In?"}
-            </button>
+          <div className="mt-10 text-center pt-8 border-t border-slate-50 space-y-4">
+            {mode === 'forgot-password' ? (
+              <button
+                onClick={() => { setMode('login'); setError(null); setMessage(null); }}
+                className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 transition-colors flex items-center justify-center gap-2 mx-auto"
+              >
+                <iconify-icon icon="mdi:arrow-left" />
+                Return to Log In
+              </button>
+            ) : (
+              <button
+                onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(null); setMessage(null); }}
+                className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 transition-colors"
+              >
+                {mode === 'login' ? "Generate New Account?" : "Return to Log In?"}
+              </button>
+            )}
           </div>
         </div>
       </div>

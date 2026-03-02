@@ -6,7 +6,7 @@
     <title>KiwiTeach</title>
     <link rel="stylesheet" href="https://esm.sh/katex@0.16.9/dist/katex.min.css" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
     <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
     <script src="https://docs.opencv.org/4.8.0/opencv.js" async></script>
     <script type="text/javascript" src="https://unpkg.com/smiles-drawer@2.0.1/dist/smiles-drawer.min.js"></script>
@@ -25,6 +25,7 @@
             },
             fontFamily: {
               sans: ['Inter', 'sans-serif'],
+              lato: ['Lato', 'sans-serif'],
             },
             animation: {
               'fade-in': 'fadeIn 0.5s ease-out',
@@ -76,90 +77,77 @@
         scrollbar-color: #e2e8f0 transparent;
       }
 
-      /* --- NATIVE BROWSER PRINT ENGINE --- */
+      /* Force light theme for the question paper area regardless of system settings */
+      #printable-paper-area {
+        color-scheme: light !important;
+      }
+
+      /* --- MASTER PRINT ENGINE (Visibility Lockdown - Robust) --- */
       @media print {
         @page {
           size: A4;
           margin: 0;
         }
+
+        /* Rule 1: Reset ALL potential container elements to prevent clipping. */
+        html, body, #root, div {
+          overflow: visible !important;
+          position: static !important;
+          height: auto !important;
+        }
         
-        body {
-          background: white !important;
-          -webkit-print-color-adjust: exact !important;
-          print-color-adjust: exact !important;
+        /* Rule 2: Hide everything on the page by default. */
+        body * {
+          visibility: hidden;
         }
 
+        /* Rule 3: Reveal ONLY the designated printable area and all of its children. */
+        #printable-paper-area, #printable-paper-area * {
+          visibility: visible;
+        }
+
+        /* Rule 4: Position the printable content at the top-left of the print document. */
+        #printable-paper-area {
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+        }
+
+        /* Rule 5: Ensure each page within the printable area is sized correctly. */
+        .printable-quiz-page {
+          width: 210mm !important;
+          height: 297mm !important;
+          margin: 0 !important;
+          page-break-after: always !important;
+          box-shadow: none !important;
+          border: none !important;
+          overflow: hidden !important;
+        }
+
+        /* Rule 6: Restore essential positioning for internal page layout. */
+        .printable-quiz-page, .printable-quiz-page div[class*="relative"] {
+            position: relative !important;
+        }
+        .printable-quiz-page div[class*="absolute"] {
+            position: absolute !important;
+        }
+        
+        /* Rule 7: Hide elements specifically marked as non-printable. */
         .no-print {
           display: none !important;
         }
 
-        /* --- CORE FIX FOR MULTI-PAGE PDF EXPORT --- */
-
-        /* 1. Un-clip all parent containers */
-        /* This is the most important rule. It allows content to flow beyond the screen viewport. */
-        body, #root, .overflow-hidden {
-          overflow: visible !important;
-        }
-
-        /* 2. Let containers grow with the content */
-        .h-full, .flex-1 {
-          height: auto !important;
-        }
-
-        /* 3. Reset the main scrolling area to be a simple block container */
-        .overflow-y-auto {
-          overflow: visible !important;
-          padding: 0 !important;
-          margin: 0 !important;
-        }
-        
-        /* 4. Remove on-screen backgrounds and spacing that interfere with printing */
-        .bg-slate-300\/50 {
-           background: none !important;
-        }
-        .space-y-12 > :not([hidden]) ~ :not([hidden]) {
-           margin-top: 0 !important;
-        }
-        .pb-24 {
-           padding-bottom: 0 !important;
-        }
-
-        /* 5. Ensure each virtual page is treated as a real page */
-        .printable-quiz-page {
-          margin: 0 auto !important;
-          box-shadow: none !important;
-          page-break-after: always !important; /* This forces a new page in the PDF */
-          break-after: page !important;
-          break-inside: avoid !important; /* Prevent the browser from splitting our virtual page block */
-          overflow: hidden !important;   /* Clip any minor overflow from JS pagination logic. This is the key to preventing blank pages. */
-        }
-
-        /* 6. Prevent question content from splitting across a page break */
-        .group.text-black {
-          break-inside: avoid;
+        /* Rule 8: Force colors and backgrounds to print. */
+        * {
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
         }
       }
     </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
-    "katex": "https://esm.sh/katex@0.16.9",
-    "katex/": "https://esm.sh/katex@0.16.9/",
-    "pdfjs-dist": "https://esm.sh/pdfjs-dist@4.0.379",
-    "pdfjs-dist/": "https://esm.sh/pdfjs-dist@4.0.379/",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.45.1",
-    "jspdf": "https://esm.sh/jspdf@^4.0.0",
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
-  }
-}
-</script>
 </head>
   <body>
     <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>

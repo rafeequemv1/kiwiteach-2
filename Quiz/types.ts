@@ -1,4 +1,3 @@
-
 import '../types';
 import React from 'react';
 
@@ -21,15 +20,21 @@ export interface Question {
   sourceImageIndex?: number;
   figureDataUrl?: string;
   sourceFigureDataUrl?: string;
+  figure_url?: string;
+  source_figure_url?: string;
   figureDimensions?: { width: number; height: number; };
   pdfImageIndex?: number;
   columnA?: string[];
   columnB?: string[];
+  column_a?: string[];
+  column_b?: string[];
   correctMatches?: number[];
   sourceChapterId?: string;
   sourceChapterName?: string;
   sourceSubjectName?: string;
   pageNumber?: number | string;
+  // Metadata for syllabus alignment
+  topic_tag?: string;
 }
 
 export interface LayoutConfig {
@@ -40,6 +45,7 @@ export interface LayoutConfig {
   groupBySubject: boolean;
   showDifficulty: boolean;
   viewMode?: 'scroll' | 'grid';
+  figureSizes?: Record<string, 'small' | 'medium' | 'large'>;
 }
 
 export interface QuizState {
@@ -54,6 +60,8 @@ export interface BrandingConfig {
   logo: string | null;
   showOnTest: boolean;
   showOnOmr: boolean;
+  show_on_test?: boolean;
+  show_on_omr?: boolean;
 }
 
 export interface TypeDistribution {
@@ -81,6 +89,9 @@ export interface SelectedChapter {
   useStyleMix?: boolean;
   styleCounts?: Record<string, number>;
   selectionMode?: 'count' | 'percent';
+  isPending?: boolean; 
+  selectedFigures?: Record<number, number>; // Map of image index to desired frequency
+  visualMode?: 'image' | 'text';
 }
 
 export interface MultiChapterAIOptions {
@@ -96,6 +107,8 @@ export interface MultiChapterAIOptions {
   globalFigureCount?: number;
   totalQuestions?: number;
   useSmiles?: boolean;
+  useAsIsFigures?: boolean;
+  selectionMode?: 'auto' | 'manual';
 }
 
 export interface CreateTestOptions extends MultiChapterAIOptions {
