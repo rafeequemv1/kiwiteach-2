@@ -63,6 +63,7 @@ const Quiz: React.FC = () => {
   const [calendarType, setCalendarType] = useState<'month' | 'week' | 'year'>('month');
 
   const [brandConfig, setBrandConfig] = useState<BrandingConfig>({ name: 'KiwiTeach', logo: null, showOnTest: true, showOnOmr: true });
+  const [showLanding, setShowLanding] = useState(false);
 
   const [isCreatorOpen, setIsCreatorOpen] = useState(false);
   const [isOnlineExamCreatorOpen, setIsOnlineExamCreatorOpen] = useState(false);
@@ -570,7 +571,7 @@ const Quiz: React.FC = () => {
       } catch (e: any) { alert("Failed to load solutions: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
-  if (!session) {
+  if (!session || showLanding) {
     if (showAuth) {
       return (
         <div className="relative">
@@ -585,12 +586,25 @@ const Quiz: React.FC = () => {
         </div>
       );
     }
-    return <LandingPage onLoginClick={() => setShowAuth(true)} />;
+    return (
+      <LandingPage 
+        onLoginClick={() => setShowAuth(true)} 
+        isLoggedIn={!!session} 
+        onDashboardClick={() => setShowLanding(false)} 
+      />
+    );
   }
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
-      <LeftPanel activeView={activeView} setActiveView={setActiveView} isOpen={true} onClose={() => {}} brandConfig={brandConfig} />
+      <LeftPanel 
+        activeView={activeView} 
+        setActiveView={setActiveView} 
+        isOpen={true} 
+        onClose={() => {}} 
+        brandConfig={brandConfig} 
+        onHomeClick={() => setShowLanding(true)}
+      />
       <main className="flex-1 h-full overflow-hidden relative">
         {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div><h3 className="text-xl font-black uppercase tracking-tight">Syncing Hub</h3></div>}
         

@@ -9,9 +9,10 @@ interface LeftPanelProps {
   isOpen: boolean;
   onClose: () => void;
   brandConfig: BrandingConfig;
+  onHomeClick?: () => void;
 }
 
-const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen, onClose, brandConfig }) => {
+const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen, onClose, brandConfig, onHomeClick }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   
   // MOCK STUDENT BOOLEAN - In real implementation, this comes from Supabase auth profile
@@ -76,6 +77,17 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ activeView, setActiveView, isOpen
       {/* Nav - Compact */}
       <nav className="flex-1 overflow-y-auto px-4 pb-4 flex flex-col gap-1.5">
         
+        {/* Home Button */}
+        {onHomeClick && (
+          <button
+            onClick={onHomeClick}
+            className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors shrink-0 text-slate-400 hover:bg-slate-800 hover:text-white font-normal mb-2"
+          >
+            <iconify-icon icon="mdi:home-outline" className="w-5 h-5"></iconify-icon>
+            <span>Landing Page</span>
+          </button>
+        )}
+
         {/* Teacher Items */}
         {navItems.map(item => {
           const isActive = activeView === item.id;

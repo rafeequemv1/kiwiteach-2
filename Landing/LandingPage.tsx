@@ -27,9 +27,11 @@ import {
 
 interface LandingPageProps {
   onLoginClick: () => void;
+  isLoggedIn?: boolean;
+  onDashboardClick?: () => void;
 }
 
-const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick }) => {
+const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onDashboardClick }) => {
   const [activeTab, setActiveTab] = useState<'home' | 'test-prep'>('home');
 
   const containerVariants = {
@@ -342,15 +344,25 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick }) => {
               >
                 Test Prep
               </button>
+              {isLoggedIn && (
+                <button 
+                  onClick={onDashboardClick}
+                  className="text-sm font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-2"
+                >
+                  <Layout className="w-4 h-4" />
+                  Dashboard
+                </button>
+              )}
               <button className="text-sm font-bold text-slate-400 hover:text-white transition-colors">
                 Contact us
               </button>
             </div>
           </div>
           <button 
+            onClick={isLoggedIn ? onDashboardClick : onLoginClick}
             className="bg-white/10 text-white border border-white/20 px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-white/20 transition-all"
           >
-            Contact us
+            {isLoggedIn ? 'Go to Dashboard' : 'Contact us'}
           </button>
         </div>
       </nav>
