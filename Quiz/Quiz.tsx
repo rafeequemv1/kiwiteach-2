@@ -16,6 +16,8 @@ import InteractiveQuizSession from './components/InteractiveQuizSession';
 import StudentOnlineTestDashboard from '../Student/OnlineTest/StudentOnlineTestDashboard';
 import StudentMockTestDashboard from '../Student/MockTest/StudentMockTestDashboard';
 import SolutionViewer from '../Student/OnlineTest/SolutionViewer';
+import LandingPage from '../Landing/LandingPage';
+import { ChevronLeft } from 'lucide-react';
 import { BrandingConfig, Question, QuestionType, SelectedChapter, LayoutConfig, TypeDistribution, CreateTestOptions } from './types';
 import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractImagesFromDoc } from '../services/geminiService';
 
@@ -45,6 +47,7 @@ const sanitizeForPostgres = (obj: any): any => {
 
 const Quiz: React.FC = () => {
   const [session, setSession] = useState<any>(null);
+  const [showAuth, setShowAuth] = useState(false);
   const [activeView, setActiveView] = useState('test');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
@@ -567,7 +570,23 @@ const Quiz: React.FC = () => {
       } catch (e: any) { alert("Failed to load solutions: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
-  if (!session) return <AuthUI onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })} />;
+  if (!session) {
+    if (showAuth) {
+      return (
+        <div className="relative">
+          <button 
+            onClick={() => setShowAuth(false)}
+            className="fixed top-8 left-8 z-[100] bg-white p-3 rounded-2xl shadow-xl border border-slate-100 text-slate-400 hover:text-indigo-600 transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Back to Home
+          </button>
+          <AuthUI onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })} />
+        </div>
+      );
+    }
+    return <LandingPage onLoginClick={() => setShowAuth(true)} />;
+  }
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
