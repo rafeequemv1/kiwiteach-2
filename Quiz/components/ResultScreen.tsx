@@ -7,6 +7,7 @@ import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
+import { exportQuizPdfWithReactPdf } from './ReactPdfExporter';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -136,6 +137,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [editableTopic, setEditableTopic] = useState(topic);
   const [isPaginating, setIsPaginating] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [pdfExportProgress, setPdfExportProgress] = useState(0);
+  const [pdfExportStage, setPdfExportStage] = useState('');
   const [isReplacing, setIsReplacing] = useState<string | null>(null);
   const [saveComplete, setSaveComplete] = useState(false);
   const [isOmrOpen, setIsOmrOpen] = useState(false);
@@ -302,6 +306,76 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         alert("Key PDF generation failed: " + e.message);
     } finally {
         setIsSaving(false);
+    }
+  };
+
+  const handleDownloadSnapshotPDF = async () => {
+    if (isPaginating || isExportingPdf) return;
+    setIsExportingPdf(true);
+    setPdfExportProgress(2);
+    setPdfExportStage('Starting');
+    try {
+        // Fast path: offload render to Vercel serverless function in production.
+        setPdfExportProgress(12);
+        setPdfExportStage('Uploading data');
+        const apiPayload = {
+            topic: editableTopic,
+            questions: currentQuestions.map(q => ({
+                ...q,
+                // Keep payload small for faster serverless handling.
+                figureDataUrl: undefined,
+                sourceFigureDataUrl: undefined,
+            })),
+            pages,
+            brandConfig,
+        };
+
+        const response = await fetch('/api/pdf-generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(apiPayload),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server PDF failed (${response.status})`);
+        }
+
+        setPdfExportProgress(82);
+        setPdfExportStage('Downloading file');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const safeTitle = (editableTopic || 'quiz-paper')
+          .trim()
+          .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+          .replace(/\s+/g, ' ')
+          .slice(0, 80);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `${safeTitle}.pdf`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        setPdfExportProgress(100);
+        setPdfExportStage('Done');
+    } catch (e: any) {
+        // Fallback for local dev / API unavailability / server failure.
+        setPdfExportProgress(35);
+        setPdfExportStage('Local fallback');
+        await exportQuizPdfWithReactPdf({
+            topic: editableTopic,
+            questions: currentQuestions,
+            pages,
+            brandConfig,
+            onProgress: ({ percent, label }) => {
+                setPdfExportProgress(percent);
+                setPdfExportStage(label);
+            },
+        });
+    } finally {
+        setIsExportingPdf(false);
+        setTimeout(() => {
+            setPdfExportProgress(0);
+            setPdfExportStage('');
+        }, 900);
     }
   };
 
@@ -712,6 +786,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 <button onClick={() => window.print()} disabled={isPaginating} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50">
                     <iconify-icon icon="mdi:printer" width="18" /> Print
                 </button>
+                <button onClick={handleDownloadSnapshotPDF} disabled={isPaginating || isExportingPdf} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50">
+                    {isExportingPdf ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <iconify-icon icon="mdi:file-pdf-box" width="18" />}
+                    {isExportingPdf ? `PDF ${pdfExportProgress}%` : 'React PDF'}
+                </button>
                 
                 <div className="w-px h-6 bg-slate-200 mx-2"></div>
                 
@@ -722,6 +800,19 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               </div>
             </div>
           </div>
+          {isExportingPdf && (
+            <div className="px-6 pb-3">
+              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-200"
+                  style={{ width: `${Math.max(3, Math.min(100, pdfExportProgress))}%` }}
+                />
+              </div>
+              <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">
+                {pdfExportStage || 'Rendering PDF'}
+              </p>
+            </div>
+          )}
        </header>
 
        <div className="flex-1 flex overflow-hidden">
