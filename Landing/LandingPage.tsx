@@ -1,29 +1,8 @@
 
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Zap, 
-  Shield, 
-  BarChart3, 
-  FileText, 
-  ScanLine, 
-  ArrowRight,
-  CheckCircle2,
-  ChevronRight,
-  Bird,
-  Database,
-  Users,
-  Layout,
-  Monitor,
-  GraduationCap,
-  Mail,
-  Globe,
-  MessageSquare,
-  Sparkles,
-  BookOpen,
-  Settings,
-  Cpu
-} from 'lucide-react';
+import { ArrowRight, Bird, CheckCircle2, Layout, Sparkles } from 'lucide-react';
+import { footerColumns, homePills, landingNavLinks, landingTheme } from './theme';
 
 interface LandingPageProps {
   onLoginClick: () => void;
@@ -64,116 +43,102 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       variants={containerVariants}
       className="w-full"
     >
-      {/* Hero Section */}
-      <section className="relative min-h-screen bg-[#0A0F1C] flex items-center justify-center overflow-hidden pt-20">
-        {/* Abstract Shapes */}
-        <div className="absolute top-1/2 left-0 -translate-y-1/2 w-[40vw] h-[40vw] bg-blue-600 rounded-full blur-[120px] opacity-40 -translate-x-1/2" />
-        <div className="absolute top-1/2 right-0 -translate-y-1/2 w-[40vw] h-[40vw] bg-yellow-500 rounded-full blur-[120px] opacity-30 translate-x-1/2" />
-        
-        <div className="max-w-7xl mx-auto px-6 text-center relative z-10">
-          <motion.h1 variants={itemVariants} className="text-6xl md:text-8xl font-black text-white leading-tight tracking-tight mb-8">
-            KiwiTeach: Digital <br /> solutions for Educators
-          </motion.h1>
-          <motion.p variants={itemVariants} className="text-2xl text-slate-300 font-medium mb-12">
-            Your innovative STEM technology partner
-          </motion.p>
-
-          <motion.div variants={itemVariants} className="space-y-8">
-            <p className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">Choose your KiwiTeach solution</p>
-            <div className="flex flex-wrap justify-center gap-4">
-              {['LessonPlan', 'ExamPrep', 'FeedbackAI'].map((solution) => (
-                <div key={solution} className="bg-white px-8 py-4 rounded-xl flex items-center gap-3 shadow-xl">
-                  <span className="font-black text-slate-900">{solution}</span>
-                  <CheckCircle2 className="w-5 h-5 text-blue-600" />
-                </div>
-              ))}
+      <section
+        id="features"
+        className="relative pt-28 pb-24 px-6 border-b border-black/5"
+        style={{ background: landingTheme.gradients.hero }}
+      >
+        <div className="absolute inset-0 opacity-60" style={{ background: landingTheme.gradients.glow }} />
+        <div className="relative max-w-7xl mx-auto grid lg:grid-cols-2 gap-14 items-center">
+          <div className="space-y-7">
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/80 border border-white text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
+              <Sparkles className="w-4 h-4 text-teal-500" />
+              Building tools to enable teachers
             </div>
-          </motion.div>
-        </div>
-      </section>
-
-      {/* Products Section */}
-      <section className="py-32 px-6 bg-white">
-        <div className="max-w-7xl mx-auto">
-          <div className="text-center mb-24">
-            <h2 className="text-4xl font-black text-slate-900 mb-4">Our products</h2>
-          </div>
-
-          <div className="grid lg:grid-cols-2 gap-12">
-            {/* LessonPlan */}
-            <div className="bg-slate-50 rounded-[3rem] p-12 space-y-8 hover:shadow-2xl transition-shadow border border-slate-100">
-              <div className="space-y-4">
-                <h3 className="text-3xl font-black text-slate-900">LessonPlan</h3>
-                <p className="text-blue-600 font-bold">Intelligent lesson editor to design learning experiences</p>
-                <p className="text-slate-500 leading-relaxed">
-                  The leading lesson planner used worldwide by teachers and professionals. LessonPlan ensures a seamless experience in classroom management, curriculum alignment, and resource integration.
-                </p>
-              </div>
-              <button className="text-blue-600 font-black uppercase tracking-widest text-sm flex items-center gap-2 group">
-                More info <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </button>
-              <div className="aspect-video bg-slate-200 rounded-2xl overflow-hidden">
-                <img src="https://picsum.photos/seed/lesson/800/450" alt="LessonPlan Interface" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-              </div>
-            </div>
-
-            {/* ExamPrep */}
-            <div className="bg-slate-50 rounded-[3rem] p-12 space-y-8 hover:shadow-2xl transition-shadow border border-slate-100">
-              <div className="space-y-4">
-                <h3 className="text-3xl font-black text-slate-900">ExamPrep</h3>
-                <p className="text-blue-600 font-bold">Automated assessment generator for STEM subjects</p>
-                <p className="text-slate-500 leading-relaxed">
-                  Create high-quality tests and quizzes in seconds. Our AI-powered engine selects the best questions to match your syllabus and difficulty requirements.
-                </p>
-              </div>
-              <button 
-                onClick={() => setActiveTab('test-prep')}
-                className="text-blue-600 font-black uppercase tracking-widest text-sm flex items-center gap-2 group"
-              >
-                Explore ExamPrep <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </button>
-              <div className="aspect-video bg-slate-200 rounded-2xl overflow-hidden">
-                <img src="https://picsum.photos/seed/exam/800/450" alt="ExamPrep Interface" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Compatibility Section */}
-      <section className="py-32 px-6 bg-slate-900 text-white">
-        <div className="max-w-7xl mx-auto grid lg:grid-cols-2 gap-20 items-center">
-          <div className="space-y-8">
-            <h2 className="text-4xl font-black leading-tight">Where do you want to use KiwiTeach' tools?</h2>
-            <p className="text-slate-400 text-lg">
-              Compatible with LMS (Learning Management System), HTML tools, XML editors, CMS, and many more custom options.
+            <h1 className={`${landingTheme.fonts.heading} text-5xl md:text-7xl leading-[0.95] text-slate-900`}>
+              Reclaim Your Time.
+              <br />
+              <span className="text-teal-500">Reignite Teaching.</span>
+            </h1>
+            <p className={`${landingTheme.fonts.body} text-lg max-w-xl text-slate-600 leading-relaxed`}>
+              We build intelligent tools that help educators create lesson plans, automate exam prep, and deliver feedback in a fraction of the time.
             </p>
-            <div className="flex flex-wrap gap-4">
-              {['LMS', 'HTML', 'XML', 'CMS', 'Custom'].map(tag => (
-                <span key={tag} className="px-6 py-2 bg-white/10 rounded-full text-sm font-bold border border-white/10">{tag}</span>
+            <div className="flex flex-wrap gap-3">
+              {homePills.map((pill) => (
+                <span key={pill} className="inline-flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-slate-200 text-sm font-bold text-slate-700">
+                  {pill}
+                  <CheckCircle2 className="w-4 h-4 text-teal-500" />
+                </span>
               ))}
             </div>
+            <button
+              onClick={isLoggedIn ? onDashboardClick : onLoginClick}
+              className="inline-flex items-center gap-2 px-8 py-3.5 rounded-2xl text-white font-black active:scale-95 transition-transform"
+              style={{ background: landingTheme.colors.navy }}
+            >
+              Start For Free <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
+
           <div className="relative">
-            <div className="bg-blue-600/20 absolute inset-0 blur-[100px] rounded-full" />
-            <img src="https://picsum.photos/seed/laptop/800/600" alt="KiwiTeach on Laptop" className="relative rounded-3xl shadow-2xl border border-white/10" referrerPolicy="no-referrer" />
+            <div className="rounded-[2rem] border border-white/70 p-3 bg-white/80 backdrop-blur" style={{ boxShadow: landingTheme.shadow.card }}>
+              <img
+                src="https://images.unsplash.com/photo-1516534775068-ba3e7458af70?auto=format&fit=crop&w=1200&q=80"
+                alt="Teacher teaching in class"
+                className="rounded-[1.6rem] h-[420px] w-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            <div className="absolute left-8 bottom-5 bg-white/95 rounded-2xl border border-slate-200 px-5 py-3 flex items-center gap-3" style={{ boxShadow: landingTheme.shadow.soft }}>
+              <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 grid place-items-center">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-sm font-black text-slate-800">Lesson Plan Generated</p>
+                <p className="text-xs text-slate-500">Saved 2 hours of prep time</p>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      {/* Trust Section */}
-      <section className="py-32 px-6 bg-white">
-        <div className="max-w-4xl mx-auto text-center space-y-12">
-          <h2 className="text-5xl font-black text-slate-900">Discover why thousands trust KiwiTeach</h2>
-          <p className="text-xl text-slate-500">Enjoy 30 days of free access to KiwiTeach for Educators.</p>
-          <div className="flex flex-col sm:flex-row gap-6 justify-center">
-            <button className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20">
-              Start your free trial
-            </button>
-            <button className="bg-slate-900 text-white px-12 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 transition-all">
-              Talk to Sales
-            </button>
-          </div>
+      <section id="how-it-works" className="py-24 px-6" style={{ background: landingTheme.gradients.darkPanel }}>
+        <div className="max-w-5xl mx-auto text-center mb-10">
+          <h2 className={`${landingTheme.fonts.heading} text-5xl text-white`}>
+            Your Classroom <span className="text-teal-400">Command Center</span>
+          </h2>
+          <p className="text-slate-300 mt-4 text-xl">
+            See how easy it is to turn a simple idea into a complete, ready-to-teach lesson in seconds.
+          </p>
+        </div>
+        <div className="max-w-5xl mx-auto rounded-[2rem] border border-white/10 bg-[#0f1b37]/70 p-4" style={{ boxShadow: landingTheme.shadow.card }}>
+          <img
+            src="https://images.unsplash.com/photo-1513258496099-48168024aec0?auto=format&fit=crop&w=1400&q=80"
+            alt="Classroom dashboard visual"
+            className="rounded-[1.5rem] w-full h-[420px] object-cover"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+      </section>
+
+      <section className="py-24 px-6 bg-white">
+        <div className="max-w-5xl mx-auto rounded-[2.1rem] px-8 py-16 text-center border border-slate-200" style={{ background: landingTheme.gradients.darkPanel, boxShadow: landingTheme.shadow.card }}>
+          <h3 className={`${landingTheme.fonts.heading} text-6xl leading-tight text-white`}>
+            Ready to transform your
+            <br />
+            <span className="text-yellow-400">classroom?</span>
+          </h3>
+          <p className="text-slate-300 text-2xl mt-5 mb-9 max-w-3xl mx-auto">
+            Join thousands of teachers who are reclaiming their time and focusing on what matters most.
+          </p>
+          <button
+            onClick={isLoggedIn ? onDashboardClick : onLoginClick}
+            className="inline-flex items-center gap-2 px-10 py-4 rounded-full font-black text-white active:scale-95 transition-transform"
+            style={{ background: landingTheme.gradients.button }}
+          >
+            Start Saving Time <ArrowRight className="w-4 h-4" />
+          </button>
+          <p className="text-slate-400 text-sm mt-5">No credit card required. Free forever plan available.</p>
         </div>
       </section>
     </motion.div>
@@ -188,15 +153,14 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       variants={containerVariants}
       className="w-full"
     >
-      {/* Hero Section */}
-      <section className="relative min-h-[90vh] bg-[#0A0F1C] flex items-center overflow-hidden pt-20">
-        <div className="absolute top-1/2 left-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-blue-600 rounded-full blur-[100px] opacity-30 -translate-x-1/2" />
-        <div className="absolute top-1/2 right-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-yellow-500 rounded-full blur-[100px] opacity-20 translate-x-1/2" />
+      <section className="relative min-h-[90vh] flex items-center overflow-hidden pt-20" style={{ background: landingTheme.gradients.testPrepHero }}>
+        <div className="absolute top-1/2 left-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-blue-400 rounded-full blur-[110px] opacity-30 -translate-x-1/2" />
+        <div className="absolute top-1/2 right-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-cyan-400 rounded-full blur-[110px] opacity-20 translate-x-1/2" />
 
         <div className="max-w-7xl mx-auto px-6 grid lg:grid-cols-2 gap-20 items-center relative z-10">
           <div className="space-y-10">
             <div className="inline-flex items-center gap-3 px-5 py-2.5 bg-white/5 rounded-2xl border border-white/10">
-              <Cpu className="w-4 h-4 text-blue-500" />
+              <Sparkles className="w-4 h-4 text-blue-500" />
               <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">Institute-Grade Automation</span>
             </div>
             <h1 className="text-6xl md:text-7xl font-black text-white leading-[0.9] tracking-tight">
@@ -209,7 +173,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
             <div className="flex flex-col sm:flex-row gap-5">
               <button 
                 onClick={onLoginClick}
-                className="bg-white text-slate-900 px-10 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-500 hover:text-white transition-all shadow-2xl active:scale-95"
+                className="bg-white text-slate-900 px-10 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-500 hover:text-white transition-all active:scale-95"
               >
                 Get Started Now
               </button>
@@ -219,9 +183,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
             </div>
           </div>
           <div className="relative">
-            <div className="bg-blue-500/10 absolute -inset-10 blur-[80px] rounded-full" />
+            <div className="bg-blue-400/20 absolute -inset-10 blur-[80px] rounded-full" />
             <div className="relative bg-white/5 rounded-[3rem] p-4 border border-white/10 backdrop-blur-sm">
-              <img src="https://picsum.photos/seed/dashboard/800/600" alt="Exam Prep Dashboard" className="rounded-[2.5rem] shadow-2xl" referrerPolicy="no-referrer" />
+              <img src="https://picsum.photos/seed/dashboard/800/600" alt="Exam Prep Dashboard" className="rounded-[2.5rem]" style={{ boxShadow: landingTheme.shadow.card }} referrerPolicy="no-referrer" />
             </div>
           </div>
         </div>
@@ -267,7 +231,6 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         </div>
       </section>
 
-      {/* Founders Section */}
       <section className="py-32 px-6 bg-slate-50">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-24">
@@ -275,7 +238,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
           </div>
 
           <div className="grid md:grid-cols-2 gap-12 max-w-4xl mx-auto">
-            <div className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 text-center space-y-6">
+            <div className="bg-white p-10 rounded-[3rem] border border-slate-100 text-center space-y-6" style={{ boxShadow: landingTheme.shadow.soft }}>
               <div className="w-32 h-32 bg-slate-200 rounded-full mx-auto overflow-hidden">
                 <img src="https://picsum.photos/seed/rafeeque/200/200" alt="Rafeeque Mavoor" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               </div>
@@ -288,7 +251,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
               </p>
             </div>
 
-            <div className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 text-center space-y-6">
+            <div className="bg-white p-10 rounded-[3rem] border border-slate-100 text-center space-y-6" style={{ boxShadow: landingTheme.shadow.soft }}>
               <div className="w-32 h-32 bg-slate-200 rounded-full mx-auto overflow-hidden">
                 <img src="https://picsum.photos/seed/favaz/200/200" alt="Favaz Ahammed" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               </div>
@@ -304,11 +267,10 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         </div>
       </section>
 
-      {/* Final CTA */}
       <section className="py-32 px-6 bg-white">
         <div className="max-w-4xl mx-auto text-center space-y-12">
           <h2 className="text-5xl font-black text-slate-900">Ready to upgrade your institute?</h2>
-          <button className="bg-slate-900 text-white px-12 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-600 transition-all shadow-xl active:scale-95">
+          <button className="bg-slate-900 text-white px-12 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-600 transition-all active:scale-95">
             Contact Sales for Demo
           </button>
         </div>
@@ -317,33 +279,36 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
   );
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans selection:bg-blue-100 selection:text-blue-900">
+    <div
+      className="min-h-screen text-slate-900 font-sans selection:bg-blue-100 selection:text-blue-900"
+      style={{ backgroundColor: landingTheme.colors.page }}
+    >
       {/* Navigation */}
-      <nav className="fixed top-0 w-full z-50 bg-[#0A0F1C]/80 backdrop-blur-xl border-b border-white/5">
+      <nav className="fixed top-0 w-full z-50 bg-white/80 backdrop-blur-xl border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-12">
             <div 
               className="flex items-center gap-3 cursor-pointer"
               onClick={() => setActiveTab('home')}
             >
-              <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center">
+              <div className="w-10 h-10 bg-slate-100 rounded-xl flex items-center justify-center">
                 <Bird className="text-slate-900 w-6 h-6" />
               </div>
-              <span className="text-xl font-black tracking-tighter text-white">KiwiTeach</span>
+              <span className="text-xl font-black tracking-tighter text-slate-900">KiwiTeach</span>
             </div>
             <div className="hidden md:flex items-center gap-8">
-              <button 
-                onClick={() => setActiveTab('home')}
-                className={`text-sm font-bold transition-colors ${activeTab === 'home' ? 'text-white' : 'text-slate-400 hover:text-white'}`}
-              >
-                Home
-              </button>
-              <button 
-                onClick={() => setActiveTab('test-prep')}
-                className={`text-sm font-bold transition-colors ${activeTab === 'test-prep' ? 'text-white' : 'text-slate-400 hover:text-white'}`}
-              >
-                Test Prep
-              </button>
+              {landingNavLinks.map((link) => (
+                <button
+                  key={link.id}
+                  onClick={() => {
+                    if (link.id === 'test-prep') setActiveTab('test-prep');
+                    else setActiveTab('home');
+                  }}
+                  className={`text-sm font-bold transition-colors ${activeTab === 'test-prep' && link.id === 'test-prep' ? 'text-slate-900' : activeTab === 'home' && link.id !== 'test-prep' ? 'text-slate-900' : 'text-slate-500 hover:text-slate-900'}`}
+                >
+                  {link.label}
+                </button>
+              ))}
               {isLoggedIn && (
                 <button 
                   onClick={onDashboardClick}
@@ -353,16 +318,17 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
                   Dashboard
                 </button>
               )}
-              <button className="text-sm font-bold text-slate-400 hover:text-white transition-colors">
+              <button className="text-sm font-bold text-slate-500 hover:text-slate-900 transition-colors">
                 Contact us
               </button>
             </div>
           </div>
           <button 
             onClick={isLoggedIn ? onDashboardClick : onLoginClick}
-            className="bg-white/10 text-white border border-white/20 px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-white/20 transition-all"
+            className="text-white border px-6 py-2.5 rounded-full text-sm font-bold transition-all"
+            style={{ backgroundColor: landingTheme.colors.navy, borderColor: landingTheme.colors.navySoft }}
           >
-            {isLoggedIn ? 'Go to Dashboard' : 'Contact us'}
+            {isLoggedIn ? 'Go to Dashboard' : 'Get Started'}
           </button>
         </div>
       </nav>
@@ -373,61 +339,39 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         </AnimatePresence>
       </main>
 
-      {/* Footer */}
-      <footer className="bg-slate-900 text-white pt-32 pb-12 px-6">
+      <footer className="bg-white text-slate-900 pt-24 pb-10 px-6 border-t border-slate-200">
         <div className="max-w-7xl mx-auto">
-          <div className="grid md:grid-cols-2 lg:grid-cols-5 gap-16 mb-24">
-            <div className="lg:col-span-2 space-y-8">
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-14 mb-16">
+            <div className="lg:col-span-2 space-y-6">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center">
+                <div className="w-10 h-10 bg-slate-100 rounded-xl flex items-center justify-center">
                   <Bird className="text-slate-900 w-6 h-6" />
                 </div>
                 <span className="text-2xl font-black tracking-tighter">KiwiTeach</span>
               </div>
-              <p className="text-slate-400 text-lg leading-relaxed max-w-sm">
-                Empowering STEM education. We build intelligent tools that help educators create, manage, and inspire.
+              <p className="text-slate-500 text-lg leading-relaxed max-w-sm">
+                Empowering educators with AI-driven tools to create, manage, and inspire. Reclaim your time and reignite your passion for teaching.
               </p>
             </div>
-            
-            <div className="space-y-6">
-              <p className="text-xs font-black uppercase tracking-widest text-slate-500">KiwiTeach</p>
-              <ul className="space-y-4">
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">LessonPlan</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">ExamPrep</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">FeedbackAI</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Downloads</a></li>
-              </ul>
-            </div>
-
-            <div className="space-y-6">
-              <p className="text-xs font-black uppercase tracking-widest text-slate-500">Solutions</p>
-              <ul className="space-y-4">
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Education</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Publishing</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Technical writers</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Integrations</a></li>
-              </ul>
-            </div>
-
-            <div className="space-y-6">
-              <p className="text-xs font-black uppercase tracking-widest text-slate-500">Company</p>
-              <ul className="space-y-4">
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">About us</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Careers</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Partnerships</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Contact Us</a></li>
-                <li><a href="#" className="text-slate-400 hover:text-white transition-colors">Blog</a></li>
-              </ul>
-            </div>
+            {footerColumns.map((column) => (
+              <div key={column.title} className="space-y-4">
+                <p className="text-xs font-black uppercase tracking-widest text-slate-400">{column.title}</p>
+                <ul className="space-y-3">
+                  {column.links.map((link) => (
+                    <li key={link}>
+                      <a href="#" className="text-slate-600 hover:text-slate-900 transition-colors">{link}</a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
 
-          <div className="pt-12 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-8">
-            <p className="text-slate-500 text-sm font-bold">© 2026 KiwiTeach. All rights reserved.</p>
+          <div className="pt-8 border-t border-slate-200 flex flex-col md:flex-row justify-between items-center gap-6">
+            <p className="text-slate-400 text-sm font-bold">© 2026 KiwiTeach Learning. All rights reserved.</p>
             <div className="flex flex-wrap justify-center gap-8">
-              <a href="#" className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">Cookie Policy</a>
-              <a href="#" className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">Terms of Use</a>
-              <a href="#" className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">Privacy Policy</a>
-              <a href="#" className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors">Compliance</a>
+              <a href="#" className="text-slate-400 hover:text-slate-900 text-xs font-bold uppercase tracking-widest transition-colors">Privacy Policy</a>
+              <a href="#" className="text-slate-400 hover:text-slate-900 text-xs font-bold uppercase tracking-widest transition-colors">Terms of Service</a>
             </div>
           </div>
         </div>

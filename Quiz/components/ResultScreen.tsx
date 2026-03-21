@@ -1,13 +1,12 @@
 
 import '../../types';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../../supabase/client';
 import { Question, BrandingConfig, LayoutConfig } from '../types';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
-import { exportQuizPdfWithReactPdf } from './ReactPdfExporter';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -18,6 +17,13 @@ interface QuizBlock {
   globalIndex?: number;
   content?: string; 
   height: number; 
+}
+
+interface PaginationUnit {
+  blocks: QuizBlock[];
+  heightWithGap: number;
+  forceBreak: boolean;
+  questionCount: number;
 }
 
 interface PageLayout {
@@ -137,13 +143,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [editableTopic, setEditableTopic] = useState(topic);
   const [isPaginating, setIsPaginating] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [isExportingPdf, setIsExportingPdf] = useState(false);
-  const [pdfExportProgress, setPdfExportProgress] = useState(0);
-  const [pdfExportStage, setPdfExportStage] = useState('');
   const [isReplacing, setIsReplacing] = useState<string | null>(null);
   const [saveComplete, setSaveComplete] = useState(false);
   const [isOmrOpen, setIsOmrOpen] = useState(false);
   const [isControlsOpen, setIsControlsOpen] = useState(true);
+  const [pendingPrint, setPendingPrint] = useState(false);
   
   const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(initialLayoutConfig?.viewMode || 'scroll');
   const [showChoices, setShowChoices] = useState(true);
@@ -156,7 +160,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
   const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? true);
   const [showChapterListOnCover, setShowChapterListOnCover] = useState(initialLayoutConfig?.showChapterListOnCover ?? true);
-  const [groupBySubject, setGroupBySubject] = useState(initialLayoutConfig?.groupBySubject ?? true);
+  // Keep saved/imported question order by default; grouping can still be toggled manually.
+  const [groupBySubject, setGroupBySubject] = useState(initialLayoutConfig?.groupBySubject ?? false);
   const [forcedBreaks, setForcedBreaks] = useState<Set<string>>(new Set(initialLayoutConfig?.forcedBreaks || []));
   const [figureSizes, setFigureSizes] = useState<Record<string, FigureSize>>(initialLayoutConfig?.figureSizes || {});
 
@@ -309,75 +314,174 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     }
   };
 
-  const handleDownloadSnapshotPDF = async () => {
-    if (isPaginating || isExportingPdf) return;
-    setIsExportingPdf(true);
-    setPdfExportProgress(2);
-    setPdfExportStage('Starting');
-    try {
-        // Fast path: offload render to Vercel serverless function in production.
-        setPdfExportProgress(12);
-        setPdfExportStage('Uploading data');
-        const apiPayload = {
-            topic: editableTopic,
-            questions: currentQuestions.map(q => ({
-                ...q,
-                // Keep payload small for faster serverless handling.
-                figureDataUrl: undefined,
-                sourceFigureDataUrl: undefined,
-            })),
-            pages,
-            brandConfig,
-        };
+  const clearPendingPrint = useCallback(() => setPendingPrint(false), []);
 
-        const response = await fetch('/api/pdf-generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(apiPayload),
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server PDF failed (${response.status})`);
-        }
-
-        setPdfExportProgress(82);
-        setPdfExportStage('Downloading file');
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const safeTitle = (editableTopic || 'quiz-paper')
-          .trim()
-          .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-          .replace(/\s+/g, ' ')
-          .slice(0, 80);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = `${safeTitle}.pdf`;
-        anchor.click();
-        URL.revokeObjectURL(url);
-        setPdfExportProgress(100);
-        setPdfExportStage('Done');
-    } catch (e: any) {
-        // Fallback for local dev / API unavailability / server failure.
-        setPdfExportProgress(35);
-        setPdfExportStage('Local fallback');
-        await exportQuizPdfWithReactPdf({
-            topic: editableTopic,
-            questions: currentQuestions,
-            pages,
-            brandConfig,
-            onProgress: ({ percent, label }) => {
-                setPdfExportProgress(percent);
-                setPdfExportStage(label);
-            },
-        });
-    } finally {
-        setIsExportingPdf(false);
-        setTimeout(() => {
-            setPdfExportProgress(0);
-            setPdfExportStage('');
-        }, 900);
+  const printFromIsolatedFrame = useCallback(() => {
+    const printableArea = document.getElementById('printable-paper-area');
+    if (!printableArea) {
+      clearPendingPrint();
+      return;
     }
+
+    const styleAndLinks = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+      .map(node => node.outerHTML)
+      .join('\n');
+
+    const printFrame = document.createElement('iframe');
+    printFrame.setAttribute('aria-hidden', 'true');
+    printFrame.style.position = 'fixed';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    document.body.appendChild(printFrame);
+
+    const printDoc = printFrame.contentDocument;
+    if (!printDoc) {
+      document.body.removeChild(printFrame);
+      clearPendingPrint();
+      return;
+    }
+
+    const printHtml = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Print</title>
+          ${styleAndLinks}
+          <style>
+            @page { size: A4; margin: 0; }
+            html, body {
+              margin: 0 !important;
+              padding: 0 !important;
+              background: #fff !important;
+            }
+            #printable-paper-area {
+              width: 100% !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              display: block !important;
+            }
+            .printable-quiz-page {
+              width: 210mm !important;
+              height: 297mm !important;
+              margin: 0 !important;
+              page-break-after: always !important;
+              break-after: page !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid-page !important;
+              box-shadow: none !important;
+              border: none !important;
+              overflow: hidden !important;
+            }
+            .printable-quiz-page:last-child {
+              page-break-after: auto !important;
+              break-after: auto !important;
+            }
+            .no-print { display: none !important; }
+            * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          </style>
+        </head>
+        <body>${printableArea.outerHTML}</body>
+      </html>
+    `;
+
+    printDoc.open();
+    printDoc.write(printHtml);
+    printDoc.close();
+
+    const frameWindow = printFrame.contentWindow;
+    if (!frameWindow) {
+      document.body.removeChild(printFrame);
+      clearPendingPrint();
+      return;
+    }
+
+    const cleanup = () => {
+      clearPendingPrint();
+      if (document.body.contains(printFrame)) {
+        document.body.removeChild(printFrame);
+      }
+    };
+
+    frameWindow.addEventListener('afterprint', cleanup, { once: true });
+    setTimeout(() => {
+      try {
+        frameWindow.focus();
+        frameWindow.print();
+      } catch {
+        cleanup();
+      }
+    }, 150);
+    setTimeout(cleanup, 3000);
+  }, [clearPendingPrint]);
+
+  const handlePrint = () => {
+    // Keep browser print flow, but always request it from scroll mode.
+    if (viewMode !== 'scroll') {
+      setViewMode('scroll');
+    }
+    setPendingPrint(true);
   };
+
+  useEffect(() => {
+    const handleAfterPrint = () => clearPendingPrint();
+    window.addEventListener('afterprint', handleAfterPrint);
+
+    const mediaQueryList = window.matchMedia('print');
+    const handleMediaChange = (event: MediaQueryListEvent) => {
+      if (!event.matches) clearPendingPrint();
+    };
+
+    if (typeof mediaQueryList.addEventListener === 'function') {
+      mediaQueryList.addEventListener('change', handleMediaChange);
+    } else {
+      mediaQueryList.addListener(handleMediaChange);
+    }
+
+    return () => {
+      window.removeEventListener('afterprint', handleAfterPrint);
+      if (typeof mediaQueryList.removeEventListener === 'function') {
+        mediaQueryList.removeEventListener('change', handleMediaChange);
+      } else {
+        mediaQueryList.removeListener(handleMediaChange);
+      }
+    };
+  }, [clearPendingPrint]);
+
+  useEffect(() => {
+    if (!pendingPrint || viewMode !== 'scroll' || isPaginating) return;
+
+    let cancelled = false;
+    const waitForPaint = () => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+
+    const runPrint = async () => {
+      try {
+        if ('fonts' in document && document.fonts?.ready) {
+          await document.fonts.ready;
+        }
+      } catch (error) {
+        console.warn('Print font readiness check failed:', error);
+      }
+
+      await waitForPaint();
+      if (cancelled) return;
+      printFromIsolatedFrame();
+    };
+
+    runPrint();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingPrint, viewMode, isPaginating, printFromIsolatedFrame]);
 
   const handleDeleteQuestion = (id: string) => {
       if (!confirm("Are you sure you want to remove this question from the paper?")) return;
@@ -436,11 +540,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const MM_TO_PX = 3.78; 
   const PAGE_HEIGHT_PX = 297 * MM_TO_PX;
   
-  const HEADER_HEIGHT_FIRST = 80;
-  const HEADER_HEIGHT_OTHER = 55; 
-  const FOOTER_RESERVE_PX = 45; 
-  const SAFETY_BUFFER = 15;
-  const BLOCK_BUFFER = 6;
+  // Tuned for denser, safer packing in both logic ON/OFF layouts.
+  const HEADER_HEIGHT_FIRST = 74;
+  const HEADER_HEIGHT_OTHER = 50; 
+  const FOOTER_RESERVE_PX = 28; 
+  const SAFETY_BUFFER = 6;
+  const BLOCK_BUFFER = 2;
+  const INVISIBLE_FOOTER_FILL_LINES = 24;
 
   const getColumnHeightLimit = (pIdx: number) => {
       const marginYPx = paperConfig.marginY * MM_TO_PX;
@@ -473,49 +579,22 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         const newPages: PageLayout[] = [];
         if (showIntroPage) newPages.push({ leftCol: [], rightCol: [], isCover: true });
 
-        let currentLeft: QuizBlock[] = [];
-        let currentRight: QuizBlock[] = [];
-        let currentPageIdx = showIntroPage ? 1 : 0;
-        let isLeftCol = true;
-        let currentHeight = 0;
-        
         const heightMap: Record<FigureSize, number> = { small: 80, medium: 120, large: 180 };
-
-        const addBlockToCol = (block: QuizBlock) => {
-            const limit = getColumnHeightLimit(currentPageIdx);
-            const heightWithGap = block.height + BLOCK_BUFFER;
-            const isForced = block.type === 'question-core' && forcedBreaks.has(block.question?.id || '');
-
-            if (currentHeight + heightWithGap > limit || isForced) {
-                if (isLeftCol) { 
-                    isLeftCol = false; 
-                    currentHeight = block.height + BLOCK_BUFFER; 
-                    currentRight.push(block); 
-                } else { 
-                    newPages.push({ leftCol: currentLeft, rightCol: currentRight }); 
-                    currentLeft = [block]; 
-                    currentRight = []; 
-                    currentPageIdx++; 
-                    isLeftCol = true; 
-                    currentHeight = block.height + BLOCK_BUFFER; 
-                }
-            } else {
-                if (isLeftCol) currentLeft.push(block); else currentRight.push(block);
-                currentHeight += block.height + BLOCK_BUFFER;
-            }
-        };
+        const units: PaginationUnit[] = [];
 
         const sortedQuestions = groupBySubject ? [...currentQuestions].sort((a,b) => (a.sourceSubjectName||'').localeCompare(b.sourceSubjectName||'')) : currentQuestions;
         let lastSubject = "";
 
         sortedQuestions.forEach((q: any, qIndex) => {
-             if (groupBySubject && q.sourceSubjectName !== lastSubject) {
+             const unitBlocks: QuizBlock[] = [];
+             const subjectChanged = groupBySubject && q.sourceSubjectName !== lastSubject;
+             if (subjectChanged) {
                  const text = (q.sourceSubjectName || 'GENERAL').toUpperCase();
                  const div = document.createElement('div'); 
                  div.style.width = '100%'; div.style.padding = '2px 0'; div.style.fontSize = '0.9em'; div.style.fontWeight = '900'; div.style.borderTop = '0.5pt solid black'; div.style.borderBottom = '0.5pt solid black'; div.style.textAlign = 'center'; div.style.margin = '4px 0'; div.style.color = 'black';
                  div.innerHTML = `PART: ${text}`;
                  measureContainer.appendChild(div); const h = div.getBoundingClientRect().height; measureContainer.removeChild(div);
-                 addBlockToCol({ type: 'subject-header', content: text, height: h });
+                 unitBlocks.push({ type: 'subject-header', content: text, height: h });
                  lastSubject = q.sourceSubjectName || '';
              }
 
@@ -561,8 +640,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                  coreDiv.appendChild(opts); 
              }
 
-             measureContainer.appendChild(coreDiv); const coreH = coreDiv.getBoundingClientRect().height; measureContainer.removeChild(coreDiv);
-             addBlockToCol({ type: 'question-core', question: q, globalIndex: qIndex, height: coreH });
+            measureContainer.appendChild(coreDiv); const coreH = coreDiv.getBoundingClientRect().height; measureContainer.removeChild(coreDiv);
+            unitBlocks.push({ type: 'question-core', question: q, globalIndex: qIndex, height: coreH });
 
              if (includeExplanations) {
                  const renderedExp = parsePseudoLatexAndMath(q.explanation);
@@ -590,12 +669,110 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     <div style="color: black; font-size: 0.95em; line-height: 1.3;">${renderedExp}</div>
                     ${metaHtml}
                  `;
-                 measureContainer.appendChild(div); const expH = div.getBoundingClientRect().height; measureContainer.removeChild(div);
-                 addBlockToCol({ type: 'explanation-box', question: q, globalIndex: qIndex, content: div.innerHTML, height: expH });
+                measureContainer.appendChild(div); const expH = div.getBoundingClientRect().height; measureContainer.removeChild(div);
+                unitBlocks.push({ type: 'explanation-box', question: q, globalIndex: qIndex, content: div.innerHTML, height: expH });
              }
+
+             units.push({
+                blocks: unitBlocks,
+                heightWithGap: unitBlocks.reduce((sum, b) => sum + b.height + BLOCK_BUFFER, 0),
+                forceBreak: forcedBreaks.has(q.id),
+                questionCount: unitBlocks.filter(b => b.type === 'question-core').length
+             });
         });
 
-        if (currentLeft.length > 0 || currentRight.length > 0) newPages.push({ leftCol: currentLeft, rightCol: currentRight });
+        let cursor = 0;
+        let currentPageIdx = showIntroPage ? 1 : 0;
+        while (cursor < units.length) {
+            const limit = getColumnHeightLimit(currentPageIdx);
+            const start = cursor;
+            const remainingQuestions = units.slice(start).reduce((sum, u) => sum + u.questionCount, 0);
+            const enforceMinPerColumn = remainingQuestions >= 6;
+
+            const fillRight = (rightStart: number) => {
+                let rightHeight = 0;
+                let rightQuestions = 0;
+                let rightEnd = rightStart - 1;
+                for (let k = rightStart; k < units.length; k++) {
+                    const unit = units[k];
+                    if (unit.forceBreak && k !== rightStart) break;
+                    if (rightHeight + unit.heightWithGap > limit) break;
+                    rightHeight += unit.heightWithGap;
+                    rightQuestions += unit.questionCount;
+                    rightEnd = k;
+                }
+                return { rightHeight, rightQuestions, rightEnd };
+            };
+
+            let leftHeight = 0;
+            let leftQuestions = 0;
+            let bestLeftEnd = -1;
+            let bestRightEnd = -1;
+            let bestConsumed = 0;
+            let bestScore = -1;
+            let bestStrictLeftEnd = -1;
+            let bestStrictRightEnd = -1;
+            let bestStrictConsumed = 0;
+            let bestStrictScore = -1;
+
+            for (let leftEnd = start; leftEnd < units.length; leftEnd++) {
+                const leftUnit = units[leftEnd];
+                if (leftUnit.forceBreak && leftEnd !== start) break;
+                if (leftHeight + leftUnit.heightWithGap > limit) break;
+                leftHeight += leftUnit.heightWithGap;
+                leftQuestions += leftUnit.questionCount;
+
+                const rightStart = leftEnd + 1;
+                const { rightHeight, rightQuestions, rightEnd } = fillRight(rightStart);
+                const consumed = (leftEnd - start + 1) + Math.max(0, rightEnd - rightStart + 1);
+                const score = leftHeight + rightHeight;
+                const meetsMinimum = leftQuestions >= 3 && rightQuestions >= 3;
+
+                if (
+                    consumed > bestConsumed ||
+                    (consumed === bestConsumed && score > bestScore)
+                ) {
+                    bestConsumed = consumed;
+                    bestScore = score;
+                    bestLeftEnd = leftEnd;
+                    bestRightEnd = rightEnd;
+                }
+
+                if (
+                    meetsMinimum &&
+                    (
+                        consumed > bestStrictConsumed ||
+                        (consumed === bestStrictConsumed && score > bestStrictScore)
+                    )
+                ) {
+                    bestStrictConsumed = consumed;
+                    bestStrictScore = score;
+                    bestStrictLeftEnd = leftEnd;
+                    bestStrictRightEnd = rightEnd;
+                }
+            }
+
+            if (enforceMinPerColumn && bestStrictLeftEnd >= start) {
+                bestLeftEnd = bestStrictLeftEnd;
+                bestRightEnd = bestStrictRightEnd;
+            }
+
+            if (bestLeftEnd < start) {
+                bestLeftEnd = start;
+                bestRightEnd = start - 1;
+            }
+
+            const leftUnits = units.slice(start, bestLeftEnd + 1);
+            const rightStart = bestLeftEnd + 1;
+            const rightUnits = bestRightEnd >= rightStart ? units.slice(rightStart, bestRightEnd + 1) : [];
+
+            const leftCol = leftUnits.flatMap(unit => unit.blocks);
+            const rightCol = rightUnits.flatMap(unit => unit.blocks);
+            newPages.push({ leftCol, rightCol });
+
+            cursor = Math.max(bestRightEnd + 1, bestLeftEnd + 1);
+            currentPageIdx++;
+        }
         
         if (showAnswerKey) {
             newPages.push({
@@ -749,7 +926,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans" style={{ colorScheme: 'light' }}>
+    <div className="print-app-shell w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans" style={{ colorScheme: 'light' }}>
        {/* Inject dynamic styles for Math sizing consistency */}
        <style>{`
          .math-content .katex { font-size: 1em !important; }
@@ -783,12 +960,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     {isSaving ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <iconify-icon icon="mdi:cloud-upload" />}
                     {saveComplete ? "Saved" : "Sync Hub"}
                 </button>
-                <button onClick={() => window.print()} disabled={isPaginating} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50">
+                <button onClick={handlePrint} disabled={isPaginating} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50">
                     <iconify-icon icon="mdi:printer" width="18" /> Print
-                </button>
-                <button onClick={handleDownloadSnapshotPDF} disabled={isPaginating || isExportingPdf} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50">
-                    {isExportingPdf ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <iconify-icon icon="mdi:file-pdf-box" width="18" />}
-                    {isExportingPdf ? `PDF ${pdfExportProgress}%` : 'React PDF'}
                 </button>
                 
                 <div className="w-px h-6 bg-slate-200 mx-2"></div>
@@ -800,22 +973,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               </div>
             </div>
           </div>
-          {isExportingPdf && (
-            <div className="px-6 pb-3">
-              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
-                <div
-                  className="h-full bg-emerald-500 transition-all duration-200"
-                  style={{ width: `${Math.max(3, Math.min(100, pdfExportProgress))}%` }}
-                />
-              </div>
-              <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">
-                {pdfExportStage || 'Rendering PDF'}
-              </p>
-            </div>
-          )}
        </header>
 
-       <div className="flex-1 flex overflow-hidden">
+       <div className="print-content-shell flex-1 flex overflow-hidden">
             <aside className="no-print w-64 bg-white border-r border-slate-200 flex flex-col shrink-0 animate-fade-in">
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
                     
@@ -890,7 +1050,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 </div>
             </aside>
 
-            <main className="flex-1 overflow-y-auto bg-slate-200/50 p-8 custom-scrollbar">
+            <main className="print-main-host flex-1 overflow-y-auto bg-slate-200/50 p-8 custom-scrollbar">
                 <div id="printable-paper-area" className={`${viewMode === 'grid' ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-6' : 'max-w-[210mm] mx-auto space-y-12'} pb-40 print:space-y-0 print:pb-0`}>
                     {pages.map((p, idx) => {
                         const isAnswerKeyPage = p.leftCol.length > 0 && p.leftCol[0].type === 'answer-key';
@@ -907,7 +1067,28 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                     color: '#000000',
                                 }}
                             >
-                                <div className={`${viewMode === 'grid' ? 'origin-top-left' : ''} flex flex-col h-full`} style={viewMode === 'grid' ? { transform: `scale(calc(100 / ${210 * MM_TO_PX} * (100 / 100)))`, width: `${210}mm`, height: `${297}mm` } : {}}>
+                                <div className={`${viewMode === 'grid' ? 'origin-top-left' : ''} relative flex flex-col h-full`} style={viewMode === 'grid' ? { transform: `scale(calc(100 / ${210 * MM_TO_PX} * (100 / 100)))`, width: `${210}mm`, height: `${297}mm` } : {}}>
+                                {!isAnswerKeyPage && !p.isCover && (
+                                    <>
+                                        <div
+                                            aria-hidden="true"
+                                            className="absolute left-1/2 w-[0.5pt] bg-black -translate-x-1/2 z-10 pointer-events-none"
+                                            style={{
+                                                top: `${paperConfig.marginY + 3}mm`,
+                                                bottom: '7.25mm'
+                                            }}
+                                        />
+                                        <div
+                                            aria-hidden="true"
+                                            className="absolute h-[0.5pt] bg-black z-10 pointer-events-none"
+                                            style={{
+                                                left: `${paperConfig.marginX}mm`,
+                                                right: `${paperConfig.marginX}mm`,
+                                                bottom: '6.4mm'
+                                            }}
+                                        />
+                                    </>
+                                )}
                                 <div 
                                   className="flex-1 flex flex-col"
                                   style={{
@@ -990,29 +1171,41 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                         <div className="w-full h-[0.5pt] bg-black mb-3 shrink-0"></div>
                                         
                                         <div className="flex-1 relative flex" style={{ gap: `${paperConfig.gap}mm` }}>
-                                            <div className="absolute left-1/2 top-0 bottom-0 w-[0.5pt] bg-black -translate-x-1/2 z-0"></div>
                                             
-                                            <div className="flex-1 overflow-hidden space-y-2 relative z-10 pr-1">
+                                            <div className="flex-1 overflow-hidden space-y-1 relative z-10 pr-1">
                                                 {p.leftCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} />)}
                                             </div>
-                                            <div className="flex-1 overflow-hidden space-y-2 relative z-10 pl-1">
+                                            <div className="flex-1 overflow-hidden space-y-1 relative z-10 pl-1">
                                                 {p.rightCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} />)}
                                             </div>
                                         </div>
 
-                                        <div className="w-full h-[0.5pt] bg-black mt-3 shrink-0"></div>
+                                        <div
+                                            aria-hidden="true"
+                                            className="hidden print:block select-none pointer-events-none overflow-hidden"
+                                            style={{
+                                                color: 'transparent',
+                                                fontSize: `${paperConfig.fontSize}pt`,
+                                                lineHeight: `${paperConfig.lineHeight}`,
+                                                maxHeight: `${FOOTER_RESERVE_PX}px`
+                                            }}
+                                        >
+                                            {Array.from({ length: INVISIBLE_FOOTER_FILL_LINES }).map((_, fillIdx) => (
+                                                <div key={`footer-fill-${idx}-${fillIdx}`}>x</div>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
                                 </div>
-                                <div className="mt-auto pt-1 pb-2 px-6 flex justify-between items-center text-[6pt] font-black text-black/40 uppercase tracking-[0.15em] shrink-0">
-                                    <div className="flex flex-col items-start gap-0.5">
-                                        <div className="w-full h-[0.5pt] bg-black/10 mb-1"></div>
-                                        <span>{editableTopic}</span>
+                                <div className="mt-auto pt-0 pb-0 px-6 flex justify-between items-center text-[6pt] font-black text-black/40 uppercase tracking-[0.15em] leading-none shrink-0">
+                                    <div className="flex flex-col items-start gap-0">
+                                        <div className="w-full h-[0.5pt] bg-black/10 mb-0"></div>
+                                        <span className="leading-none">{editableTopic}</span>
                                     </div>
-                                    <span className="font-serif italic text-black font-normal normal-case pt-1">integrated assessment engine</span>
-                                    <div className="flex flex-col items-end gap-0.5">
-                                        <div className="w-full h-[0.5pt] bg-black/10 mb-1"></div>
-                                        <span>Page {idx + 1} / {pages.length}</span>
+                                    <span className="font-serif italic text-black font-normal normal-case pt-0 leading-none">integrated assessment engine</span>
+                                    <div className="flex flex-col items-end leading-none">
+                                        <div className="w-[22mm] h-[0.5pt] bg-black/20"></div>
+                                        <span className="mt-0">Page {idx + 1} / {pages.length}</span>
                                     </div>
                                 </div>
                                 </div>

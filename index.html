@@ -82,63 +82,72 @@
         color-scheme: light !important;
       }
 
-      /* --- MASTER PRINT ENGINE (Visibility Lockdown - Robust) --- */
+      /* --- MASTER PRINT ENGINE --- */
       @media print {
         @page {
           size: A4;
           margin: 0;
         }
 
-        /* Rule 1: Reset ALL potential container elements to prevent clipping. */
-        html, body, #root, div {
+        /* Keep top-level containers unclipped in print flow. */
+        html, body, #root {
           overflow: visible !important;
-          position: static !important;
           height: auto !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #fff !important;
         }
-        
-        /* Rule 2: Hide everything on the page by default. */
-        body * {
-          visibility: hidden;
-        }
-
-        /* Rule 3: Reveal ONLY the designated printable area and all of its children. */
-        #printable-paper-area, #printable-paper-area * {
-          visibility: visible;
-        }
-
-        /* Rule 4: Position the printable content at the top-left of the print document. */
+        .print-app-shell,
+        .print-content-shell,
+        .print-main-host,
         #printable-paper-area {
-          position: absolute;
-          left: 0;
-          top: 0;
-          width: 100%;
+          overflow: visible !important;
+          height: auto !important;
+          max-height: none !important;
+        }
+        .print-content-shell,
+        .print-main-host,
+        #printable-paper-area,
+        .printable-quiz-page {
+          display: block !important;
+        }
+        .print-main-host {
+          padding: 0 !important;
+          margin: 0 !important;
+          background: #fff !important;
+        }
+        #printable-paper-area {
+          width: 100% !important;
+          max-width: none !important;
+          margin: 0 !important;
+          padding: 0 !important;
         }
 
-        /* Rule 5: Ensure each page within the printable area is sized correctly. */
+        /* Ensure each page within the printable area is sized correctly. */
         .printable-quiz-page {
           width: 210mm !important;
           height: 297mm !important;
           margin: 0 !important;
           page-break-after: always !important;
+          break-after: page !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+          break-inside: avoid-page !important;
           box-shadow: none !important;
           border: none !important;
           overflow: hidden !important;
         }
+        .printable-quiz-page:last-child {
+          page-break-after: auto !important;
+          break-after: auto !important;
+        }
 
-        /* Rule 6: Restore essential positioning for internal page layout. */
-        .printable-quiz-page, .printable-quiz-page div[class*="relative"] {
-            position: relative !important;
-        }
-        .printable-quiz-page div[class*="absolute"] {
-            position: absolute !important;
-        }
-        
-        /* Rule 7: Hide elements specifically marked as non-printable. */
+        /* Hide app chrome; print only the paper pages. */
         .no-print {
           display: none !important;
         }
 
-        /* Rule 8: Force colors and backgrounds to print. */
+        /* Preserve paper colors/lines in PDF output. */
         * {
           -webkit-print-color-adjust: exact !important;
           print-color-adjust: exact !important;

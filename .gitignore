@@ -1,5 +1,18 @@
+# Dependencies
 node_modules/
+
+# Build
 dist/
-.vercel/
-artifacts/
+*.local
+
+# Env
+.env
+.env.*
+
+# OS / IDE
+.DS_Store
+Thumbs.db
 *.log
+
+# Optional local artifacts (keep out of repo unless needed)
+artifacts/
