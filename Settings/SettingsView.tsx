@@ -9,9 +9,7 @@ interface SettingsViewProps {
   brandConfig: BrandingConfig;
   onUpdateBranding: (config: BrandingConfig) => void;
   onSignOut: () => void;
-  // Updated Props
-  schools?: any[];
-  schoolClasses?: any[];
+  userId: string;
   onRefresh?: () => void;
   // Legacy props ignored
   folders?: any[]; 
@@ -23,8 +21,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({
   brandConfig, 
   onUpdateBranding, 
   onSignOut,
-  schools,
-  schoolClasses,
+  userId,
   onRefresh
 }) => {
   return (
@@ -49,11 +46,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({
         </section>
         
         <section>
-          <SchoolManager 
-            schools={schools} 
-            schoolClasses={schoolClasses} 
-            onRefresh={onRefresh} 
-          />
+          <SchoolManager userId={userId} onRefresh={onRefresh} />
         </section>
       </div>
     </div>

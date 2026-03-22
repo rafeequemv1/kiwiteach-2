@@ -24,7 +24,7 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
   // 1. Fetch Classes on mount
   useEffect(() => {
     const fetchClasses = async () => {
-        const { data } = await supabase.from('classes').select('id, name').order('name');
+        const { data } = await supabase.from('kb_classes').select('id, name').order('name');
         setClasses(data || []);
     };
     fetchClasses();
@@ -103,7 +103,7 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
                     <iconify-icon icon="mdi:flask-outline" width="24" />
                 </div>
                 <div>
-                    <h1 className="text-3xl font-black text-slate-800 tracking-tight">Mock Lab</h1>
+                    <h1 className="text-3xl font-black text-slate-800 tracking-tight">Mock Tests</h1>
                     <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Multi-Chapter Practice Engine</p>
                 </div>
             </div>

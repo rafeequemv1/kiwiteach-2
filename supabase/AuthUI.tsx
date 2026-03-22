@@ -1,20 +1,24 @@
 import '../types';
 import React, { useState } from 'react';
 import { supabase } from './client';
+import { appShellTheme, landingTheme } from '../Landing/theme';
 
 interface AuthUIProps {
     onDemoLogin?: () => void;
+    onBackHome?: () => void;
 }
 
 type AuthMode = 'login' | 'signup' | 'forgot-password';
+type SignupRole = 'student' | 'teacher';
 
-const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
+const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome }) => {
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [signupRole, setSignupRole] = useState<SignupRole>('student');
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,7 +31,15 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
       } else if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({ email, password });
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              role: signupRole,
+            },
+          },
+        });
         if (error) throw error;
         setMessage('Verification email sent! Check your inbox.');
       } else if (mode === 'forgot-password') {
@@ -52,118 +64,224 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin }) => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
-      <div className="w-full max-w-sm bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-slate-100 flex flex-col animate-slide-up">
-        
-        <div className="p-10">
-          <div className="flex flex-col items-center mb-10">
-            <div className="w-16 h-16 bg-indigo-600 text-white rounded-2xl flex items-center justify-center mb-6 shadow-xl shadow-indigo-600/20 transform -rotate-6">
-              <iconify-icon icon="mdi:feather" width="32"></iconify-icon>
+    <div
+      className="min-h-screen flex font-sans"
+      style={{ backgroundColor: landingTheme.colors.page }}
+    >
+      {/* Brand panel — matches homepage dark blue sections */}
+      <div
+        className="hidden lg:flex lg:w-[44%] xl:w-[40%] flex-col justify-between p-10 xl:p-14 text-white relative overflow-hidden border-r border-white/5"
+        style={{ background: appShellTheme.sidebar.gradient }}
+      >
+        <div className="absolute inset-0 opacity-[0.07] pointer-events-none bg-[linear-gradient(rgba(255,255,255,0.15)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.15)_1px,transparent_1px)] bg-[size:24px_24px]" />
+        <div className="relative z-10">
+          <div className="flex items-center gap-3 mb-10">
+            <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/15 flex items-center justify-center">
+              <iconify-icon icon="mdi:feather" width="28" className="text-indigo-200" />
             </div>
-            <h1 className="text-3xl font-black text-slate-800 tracking-tight">KiwiTeach</h1>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mt-2">
-              {mode === 'login' ? 'Identity Verification' : mode === 'signup' ? 'Enroll in Platform' : 'Reset Credentials'}
-            </p>
+            <span className="text-2xl font-black tracking-tight">KiwiTeach</span>
           </div>
+          <h2 className={`${landingTheme.fonts.heading} text-4xl xl:text-5xl leading-[1.05] text-white mb-6`}>
+            Reclaim your time.
+            <br />
+            <span className="text-indigo-300">Reignite teaching.</span>
+          </h2>
+          <p className="text-indigo-100/80 text-lg max-w-md leading-relaxed">
+            Sign in to your workspace — lesson plans, assessments, and insights in one place.
+          </p>
+        </div>
+        <p className="relative z-10 text-[11px] font-bold text-indigo-300/60 uppercase tracking-[0.2em]">
+          Integrated assessment engine
+        </p>
+      </div>
 
-          <form onSubmit={handleAuth} className="space-y-5">
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Email Domain</label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
-                placeholder="rebecca@kiwiteach.com"
-              />
-            </div>
-
-            {mode !== 'forgot-password' && (
-              <div>
-                <div className="flex justify-between items-center mb-2 px-1">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Secure Passkey</label>
-                  {mode === 'login' && (
-                    <button 
-                      type="button"
-                      onClick={() => { setMode('forgot-password'); setError(null); setMessage(null); }}
-                      className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest hover:text-indigo-700 transition-colors"
-                    >
-                      Forgot?
-                    </button>
-                  )}
-                </div>
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
-                  placeholder="••••••••"
-                />
-              </div>
-            )}
-
-            {error && (
-              <div className="bg-rose-50 text-rose-600 text-[11px] font-bold p-4 rounded-2xl border border-rose-100 animate-fade-in leading-relaxed">
-                <iconify-icon icon="mdi:alert-circle" className="mr-2"></iconify-icon>
-                {error}
-                {error.includes("Invalid login credentials") && mode === 'login' && (
-                    <div className="mt-2 pt-2 border-t border-rose-200">
-                        <p className="font-normal">New here? Toggle to <span className="font-bold underline cursor-pointer" onClick={() => setMode('signup')}>Join System</span> or use Demo mode below.</p>
-                    </div>
+      {/* Form */}
+      <div className="flex-1 flex items-center justify-center p-6 lg:p-10">
+        <div
+          className="w-full max-w-md bg-white rounded-[2rem] overflow-hidden border flex flex-col animate-slide-up pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
+          style={{
+            borderColor: landingTheme.colors.borderSoft,
+            boxShadow: landingTheme.shadow.card,
+          }}
+        >
+          <div className="p-8 sm:p-10">
+            {(onBackHome || mode !== 'login') && (
+              <div className="mb-6 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                {onBackHome && (
+                  <button
+                    type="button"
+                    onClick={onBackHome}
+                    className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-800 transition-colors"
+                  >
+                    <iconify-icon icon="mdi:arrow-left" />
+                    Back to Home
+                  </button>
+                )}
+                {mode !== 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('login');
+                      setError(null);
+                      setMessage(null);
+                    }}
+                    className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-800 transition-colors"
+                  >
+                    <iconify-icon icon="mdi:arrow-left" />
+                    Back to Sign In
+                  </button>
                 )}
               </div>
             )}
-
-            {message && (
-              <div className="bg-emerald-50 text-emerald-600 text-[11px] font-bold p-4 rounded-2xl border border-emerald-100 animate-fade-in">
-                <iconify-icon icon="mdi:check-circle" className="mr-2"></iconify-icon>
-                {message}
+            <div className="flex flex-col items-center mb-8 lg:hidden">
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4 border border-indigo-200"
+                style={{ background: appShellTheme.sidebar.gradient }}
+              >
+                <iconify-icon icon="mdi:feather" width="28" className="text-indigo-100" />
               </div>
-            )}
+              <h1 className="text-2xl font-black text-slate-800 tracking-tight">KiwiTeach</h1>
+            </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-slate-900/10 disabled:opacity-50 flex items-center justify-center gap-3 uppercase tracking-[0.2em] text-xs min-h-[56px]"
-            >
-              {loading ? (
-                <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin"></div>
-              ) : (
-                mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Join System' : 'Send Reset Link'
+            <div className="hidden lg:flex flex-col items-center mb-8">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
+                {mode === 'login' ? 'Identity Verification' : mode === 'signup' ? 'Enroll in Platform' : 'Reset Credentials'}
+              </p>
+            </div>
+            <div className="lg:hidden text-center mb-8">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
+                {mode === 'login' ? 'Identity Verification' : mode === 'signup' ? 'Enroll in Platform' : 'Reset Credentials'}
+              </p>
+            </div>
+
+            <form onSubmit={handleAuth} className="space-y-5">
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Email</label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
+                  placeholder="you@school.edu"
+                />
+              </div>
+
+              {mode !== 'forgot-password' && (
+                <div>
+                  <div className="flex justify-between items-center mb-2 px-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Password</label>
+                    {mode === 'login' && (
+                      <button 
+                        type="button"
+                        onClick={() => { setMode('forgot-password'); setError(null); setMessage(null); }}
+                        className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest hover:text-indigo-800 transition-colors"
+                      >
+                        Forgot?
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
+                    placeholder="••••••••"
+                  />
+                </div>
               )}
-            </button>
 
-            {onDemoLogin && mode !== 'forgot-password' && (
+              {mode === 'signup' && (
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">I am signing up as</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setSignupRole('student')}
+                      className={`py-3 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all ${
+                        signupRole === 'student'
+                          ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                          : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
+                      }`}
+                    >
+                      Student
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSignupRole('teacher')}
+                      className={`py-3 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all ${
+                        signupRole === 'teacher'
+                          ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                          : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
+                      }`}
+                    >
+                      Teacher
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {error && (
+                <div className="bg-rose-50 text-rose-600 text-[11px] font-bold p-4 rounded-2xl border border-rose-100 animate-fade-in leading-relaxed">
+                  <iconify-icon icon="mdi:alert-circle" className="mr-2"></iconify-icon>
+                  {error}
+                  {error.includes("Invalid login credentials") && mode === 'login' && (
+                      <div className="mt-2 pt-2 border-t border-rose-200">
+                          <p className="font-normal">New here? Switch to <span className="font-bold underline cursor-pointer" onClick={() => setMode('signup')}>Sign Up</span> or use Demo mode below.</p>
+                      </div>
+                  )}
+                </div>
+              )}
+
+              {message && (
+                <div className="bg-emerald-50 text-emerald-600 text-[11px] font-bold p-4 rounded-2xl border border-emerald-100 animate-fade-in">
+                  <iconify-icon icon="mdi:check-circle" className="mr-2"></iconify-icon>
+                  {message}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className={`w-full rounded-2xl py-4 transition-all disabled:opacity-50 flex items-center justify-center gap-3 uppercase tracking-[0.2em] text-xs min-h-[56px] ${appShellTheme.button.primary}`}
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-indigo-200/60 border-t-indigo-700 rounded-full animate-spin"></div>
+                ) : (
+                  mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Sign Up' : 'Send Reset Link'
+                )}
+              </button>
+
+              {onDemoLogin && mode !== 'forgot-password' && (
+                  <button
+                      type="button"
+                      onClick={onDemoLogin}
+                      className={`w-full font-bold py-3 rounded-2xl text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${appShellTheme.button.primarySubtle}`}
+                  >
+                      <iconify-icon icon="mdi:eye-outline" />
+                      Bypass to Demo Access
+                  </button>
+              )}
+            </form>
+
+            <div className="mt-10 text-center pt-8 border-t border-slate-100 space-y-4">
+              {mode === 'forgot-password' ? (
                 <button
-                    type="button"
-                    onClick={onDemoLogin}
-                    className="w-full bg-indigo-50 text-indigo-700 font-bold py-3 rounded-2xl text-[10px] uppercase tracking-widest hover:bg-indigo-100 transition-all border border-indigo-100 flex items-center justify-center gap-2"
+                  onClick={() => { setMode('login'); setError(null); setMessage(null); }}
+                  className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-700 transition-colors flex items-center justify-center gap-2 mx-auto"
                 >
-                    <iconify-icon icon="mdi:eye-outline" />
-                    Bypass to Demo Access
+                  <iconify-icon icon="mdi:arrow-left" />
+                  Return to Log In
                 </button>
-            )}
-          </form>
-
-          <div className="mt-10 text-center pt-8 border-t border-slate-50 space-y-4">
-            {mode === 'forgot-password' ? (
-              <button
-                onClick={() => { setMode('login'); setError(null); setMessage(null); }}
-                className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 transition-colors flex items-center justify-center gap-2 mx-auto"
-              >
-                <iconify-icon icon="mdi:arrow-left" />
-                Return to Log In
-              </button>
-            ) : (
-              <button
-                onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(null); setMessage(null); }}
-                className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 transition-colors"
-              >
-                {mode === 'login' ? "Generate New Account?" : "Return to Log In?"}
-              </button>
-            )}
+              ) : (
+                <button
+                  onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(null); setMessage(null); }}
+                  className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-700 transition-colors"
+                >
+                  {mode === 'login' ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

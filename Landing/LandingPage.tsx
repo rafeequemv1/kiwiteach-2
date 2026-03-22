@@ -1,8 +1,11 @@
 
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowRight, Bird, CheckCircle2, Layout, Sparkles } from 'lucide-react';
+import { ArrowRight, Bird, CheckCircle2, Layout, Menu, Sparkles, X } from 'lucide-react';
+import { BlogArticlePage, BlogIndexPage } from '../Blog';
 import { footerColumns, homePills, landingNavLinks, landingTheme } from './theme';
+
+type LandingTab = 'home' | 'test-prep' | 'blog' | 'blog-post';
 
 interface LandingPageProps {
   onLoginClick: () => void;
@@ -11,7 +14,9 @@ interface LandingPageProps {
 }
 
 const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onDashboardClick }) => {
-  const [activeTab, setActiveTab] = useState<'home' | 'test-prep'>('home');
+  const [activeTab, setActiveTab] = useState<LandingTab>('home');
+  const [blogSlug, setBlogSlug] = useState<string | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -45,7 +50,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
     >
       <section
         id="features"
-        className="relative pt-28 pb-24 px-6 border-b border-black/5"
+        className="relative pt-24 md:pt-28 pb-16 md:pb-24 px-4 md:px-6 border-b border-black/5"
         style={{ background: landingTheme.gradients.hero }}
       >
         <div className="absolute inset-0 opacity-60" style={{ background: landingTheme.gradients.glow }} />
@@ -55,7 +60,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
               <Sparkles className="w-4 h-4 text-teal-500" />
               Building tools to enable teachers
             </div>
-            <h1 className={`${landingTheme.fonts.heading} text-5xl md:text-7xl leading-[0.95] text-slate-900`}>
+            <h1 className={`${landingTheme.fonts.heading} text-4xl md:text-7xl leading-[0.95] text-slate-900`}>
               Reclaim Your Time.
               <br />
               <span className="text-teal-500">Reignite Teaching.</span>
@@ -85,7 +90,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
               <img
                 src="https://images.unsplash.com/photo-1516534775068-ba3e7458af70?auto=format&fit=crop&w=1200&q=80"
                 alt="Teacher teaching in class"
-                className="rounded-[1.6rem] h-[420px] w-full object-cover"
+                className="rounded-[1.6rem] h-[280px] md:h-[420px] w-full object-cover"
                 referrerPolicy="no-referrer"
               />
             </div>
@@ -102,9 +107,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         </div>
       </section>
 
-      <section id="how-it-works" className="py-24 px-6" style={{ background: landingTheme.gradients.darkPanel }}>
+      <section id="how-it-works" className="py-16 md:py-24 px-4 md:px-6" style={{ background: landingTheme.gradients.darkPanel }}>
         <div className="max-w-5xl mx-auto text-center mb-10">
-          <h2 className={`${landingTheme.fonts.heading} text-5xl text-white`}>
+          <h2 className={`${landingTheme.fonts.heading} text-3xl md:text-5xl text-white`}>
             Your Classroom <span className="text-teal-400">Command Center</span>
           </h2>
           <p className="text-slate-300 mt-4 text-xl">
@@ -115,15 +120,15 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
           <img
             src="https://images.unsplash.com/photo-1513258496099-48168024aec0?auto=format&fit=crop&w=1400&q=80"
             alt="Classroom dashboard visual"
-            className="rounded-[1.5rem] w-full h-[420px] object-cover"
+            className="rounded-[1.5rem] w-full h-[240px] md:h-[420px] object-cover"
             referrerPolicy="no-referrer"
           />
         </div>
       </section>
 
-      <section className="py-24 px-6 bg-white">
+      <section className="py-16 md:py-24 px-4 md:px-6 bg-white">
         <div className="max-w-5xl mx-auto rounded-[2.1rem] px-8 py-16 text-center border border-slate-200" style={{ background: landingTheme.gradients.darkPanel, boxShadow: landingTheme.shadow.card }}>
-          <h3 className={`${landingTheme.fonts.heading} text-6xl leading-tight text-white`}>
+          <h3 className={`${landingTheme.fonts.heading} text-3xl md:text-6xl leading-tight text-white`}>
             Ready to transform your
             <br />
             <span className="text-yellow-400">classroom?</span>
@@ -157,13 +162,13 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         <div className="absolute top-1/2 left-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-blue-400 rounded-full blur-[110px] opacity-30 -translate-x-1/2" />
         <div className="absolute top-1/2 right-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-cyan-400 rounded-full blur-[110px] opacity-20 translate-x-1/2" />
 
-        <div className="max-w-7xl mx-auto px-6 grid lg:grid-cols-2 gap-20 items-center relative z-10">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 grid lg:grid-cols-2 gap-12 lg:gap-20 items-center relative z-10">
           <div className="space-y-10">
             <div className="inline-flex items-center gap-3 px-5 py-2.5 bg-white/5 rounded-2xl border border-white/10">
               <Sparkles className="w-4 h-4 text-blue-500" />
               <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">Institute-Grade Automation</span>
             </div>
-            <h1 className="text-6xl md:text-7xl font-black text-white leading-[0.9] tracking-tight">
+            <h1 className="text-4xl md:text-7xl font-black text-white leading-[0.9] tracking-tight">
               The Operating System for <br />
               <span className="text-blue-500">NEET Test Series</span>
             </h1>
@@ -192,7 +197,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       </section>
 
       {/* How it Works */}
-      <section className="py-32 px-6 bg-white">
+      <section className="py-20 md:py-32 px-4 md:px-6 bg-white">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-24">
             <h2 className="text-4xl font-black text-slate-900">How it Works</h2>
@@ -231,7 +236,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         </div>
       </section>
 
-      <section className="py-32 px-6 bg-slate-50">
+      <section className="py-20 md:py-32 px-4 md:px-6 bg-slate-50">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-24">
             <h2 className="text-4xl font-black text-slate-900">Meet the Founders</h2>
@@ -267,7 +272,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
         </div>
       </section>
 
-      <section className="py-32 px-6 bg-white">
+      <section className="py-20 md:py-32 px-4 md:px-6 bg-white">
         <div className="max-w-4xl mx-auto text-center space-y-12">
           <h2 className="text-5xl font-black text-slate-900">Ready to upgrade your institute?</h2>
           <button className="bg-slate-900 text-white px-12 py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-600 transition-all active:scale-95">
@@ -285,11 +290,11 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
     >
       {/* Navigation */}
       <nav className="fixed top-0 w-full z-50 bg-white/80 backdrop-blur-xl border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-12">
             <div 
               className="flex items-center gap-3 cursor-pointer"
-              onClick={() => setActiveTab('home')}
+              onClick={() => { setActiveTab('home'); setBlogSlug(null); setMobileMenuOpen(false); }}
             >
               <div className="w-10 h-10 bg-slate-100 rounded-xl flex items-center justify-center">
                 <Bird className="text-slate-900 w-6 h-6" />
@@ -297,45 +302,136 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
               <span className="text-xl font-black tracking-tighter text-slate-900">KiwiTeach</span>
             </div>
             <div className="hidden md:flex items-center gap-8">
-              {landingNavLinks.map((link) => (
-                <button
-                  key={link.id}
-                  onClick={() => {
-                    if (link.id === 'test-prep') setActiveTab('test-prep');
-                    else setActiveTab('home');
-                  }}
-                  className={`text-sm font-bold transition-colors ${activeTab === 'test-prep' && link.id === 'test-prep' ? 'text-slate-900' : activeTab === 'home' && link.id !== 'test-prep' ? 'text-slate-900' : 'text-slate-500 hover:text-slate-900'}`}
-                >
-                  {link.label}
-                </button>
-              ))}
+              {landingNavLinks.map((link) => {
+                const isActive =
+                  (link.id === 'home' && activeTab === 'home') ||
+                  (link.id === 'test-prep' && activeTab === 'test-prep');
+                return (
+                  <button
+                    key={link.id}
+                    type="button"
+                    onClick={() => {
+                      setBlogSlug(null);
+                      setActiveTab(link.id === 'test-prep' ? 'test-prep' : 'home');
+                    }}
+                    className={`text-sm font-bold transition-colors ${isActive ? 'text-slate-900' : 'text-slate-500 hover:text-slate-900'}`}
+                  >
+                    {link.label}
+                  </button>
+                );
+              })}
               {isLoggedIn && (
                 <button 
                   onClick={onDashboardClick}
-                  className="text-sm font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-2"
+                  className="text-sm font-bold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-2"
                 >
                   <Layout className="w-4 h-4" />
                   Dashboard
                 </button>
               )}
-              <button className="text-sm font-bold text-slate-500 hover:text-slate-900 transition-colors">
-                Contact us
-              </button>
             </div>
           </div>
-          <button 
-            onClick={isLoggedIn ? onDashboardClick : onLoginClick}
-            className="text-white border px-6 py-2.5 rounded-full text-sm font-bold transition-all"
-            style={{ backgroundColor: landingTheme.colors.navy, borderColor: landingTheme.colors.navySoft }}
-          >
-            {isLoggedIn ? 'Go to Dashboard' : 'Get Started'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={isLoggedIn ? onDashboardClick : onLoginClick}
+              className="hidden md:inline-flex text-white border px-6 py-2.5 rounded-full text-sm font-bold transition-all"
+              style={{ backgroundColor: landingTheme.colors.navy, borderColor: landingTheme.colors.navySoft }}
+            >
+              {isLoggedIn ? 'Go to Dashboard' : 'Get Started'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((v) => !v)}
+              className="md:hidden w-10 h-10 rounded-xl border border-slate-200 bg-white text-slate-700 grid place-items-center"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          </div>
         </div>
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-slate-200 bg-white px-4 py-3 space-y-2">
+            {landingNavLinks.map((link) => (
+              <button
+                key={link.id}
+                type="button"
+                onClick={() => {
+                  setBlogSlug(null);
+                  setActiveTab(link.id === 'test-prep' ? 'test-prep' : 'home');
+                  setMobileMenuOpen(false);
+                }}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-slate-700 hover:bg-slate-50"
+              >
+                {link.label}
+              </button>
+            ))}
+            {isLoggedIn && onDashboardClick && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onDashboardClick();
+                }}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 flex items-center gap-2"
+              >
+                <Layout className="w-4 h-4 shrink-0" />
+                Dashboard
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                isLoggedIn ? onDashboardClick?.() : onLoginClick();
+              }}
+              className="w-full text-center px-3 py-2 rounded-lg text-sm font-bold text-white"
+              style={{ backgroundColor: landingTheme.colors.navy }}
+            >
+              {isLoggedIn ? 'Go to Dashboard' : 'Get Started'}
+            </button>
+          </div>
+        )}
       </nav>
 
       <main>
         <AnimatePresence mode="wait">
-          {activeTab === 'home' ? renderHome() : renderTestPrep()}
+          {activeTab === 'home' && renderHome()}
+          {activeTab === 'test-prep' && renderTestPrep()}
+          {activeTab === 'blog' && (
+            <motion.div
+              key="blog"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -16 }}
+              transition={{ duration: 0.28 }}
+              className="w-full"
+            >
+              <BlogIndexPage
+                onBack={() => { setActiveTab('home'); setBlogSlug(null); }}
+                onSelectPost={(slug) => {
+                  setBlogSlug(slug);
+                  setActiveTab('blog-post');
+                }}
+              />
+            </motion.div>
+          )}
+          {activeTab === 'blog-post' && blogSlug && (
+            <motion.div
+              key={`blog-post-${blogSlug}`}
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -16 }}
+              transition={{ duration: 0.28 }}
+              className="w-full"
+            >
+              <BlogArticlePage
+                slug={blogSlug}
+                onBack={() => {
+                  setActiveTab('blog');
+                  setBlogSlug(null);
+                }}
+              />
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -359,7 +455,20 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
                 <ul className="space-y-3">
                   {column.links.map((link) => (
                     <li key={link}>
-                      <a href="#" className="text-slate-600 hover:text-slate-900 transition-colors">{link}</a>
+                      {link === 'Blog' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBlogSlug(null);
+                            setActiveTab('blog');
+                          }}
+                          className="text-slate-600 hover:text-slate-900 transition-colors text-left"
+                        >
+                          {link}
+                        </button>
+                      ) : (
+                        <a href="#" className="text-slate-600 hover:text-slate-900 transition-colors">{link}</a>
+                      )}
                     </li>
                   ))}
                 </ul>

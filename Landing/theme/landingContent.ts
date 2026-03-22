@@ -1,6 +1,6 @@
+/** Top nav on marketing site — Home + Test Prep only */
 export const landingNavLinks = [
-  { id: 'features', label: 'Features' },
-  { id: 'how-it-works', label: 'How it Works' },
+  { id: 'home', label: 'Home' },
   { id: 'test-prep', label: 'Test Prep' },
 ];
 

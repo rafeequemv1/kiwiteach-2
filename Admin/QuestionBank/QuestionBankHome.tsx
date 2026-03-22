@@ -3,6 +3,7 @@ import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractImagesFromDoc, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
+import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
 import { QuestionType, Question } from '../../Quiz/types';
 import { GoogleGenAI, Type } from "@google/genai";
 import QuestionPaperItem from '../../Quiz/components/QuestionPaperItem';
@@ -103,6 +104,7 @@ const QuestionBankHome: React.FC = () => {
 
   const [activeChapterSyllabus, setActiveChapterSyllabus] = useState<string[]>([]);
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
+  const [bankUserId, setBankUserId] = useState<string | null>(null);
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
   const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
 
@@ -140,6 +142,7 @@ const QuestionBankHome: React.FC = () => {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
         if (!session) return;
+        setBankUserId(session.user.id);
         fetchKbs();
     });
   }, []);
@@ -232,12 +235,11 @@ const QuestionBankHome: React.FC = () => {
     }
     setIsFetchingSyllabus(true);
     try {
-        let query = supabase.from('NEET_syllabus').select('topic_list').ilike('chapter_name', `%${chapter.name.trim()}%`);
-        if (chapter.subject_name) query = query.ilike('subject_name', `%${chapter.subject_name.trim()}%`);
-        const { data, error } = await query;
-        if (error) throw error;
-        const allTopicsStr = data?.map(d => d.topic_list).join(', ') || '';
-        const topics: string[] = Array.from(new Set(allTopicsStr.split(',').map((t: any) => t.trim()).filter(Boolean)));
+        const topics = await fetchSyllabusTopicsForChapter({
+            kbId: selectedKbId,
+            chapterName: chapter.name.trim(),
+            subjectName: chapter.subject_name || null,
+        });
         setActiveChapterSyllabus(topics);
         setChapterConfigs(prev => {
             const cfg = { ...(prev[activeEditingChapterId!] || { total: 10, diff: { easy: 0, medium: 8, hard: 2 }, types: { mcq: 6, reasoning: 2, matching: 1, statements: 1 }, visualMode: 'text', selectedFigures: {}, syntheticFigureCount: 0, synthesisMode: 'syllabus', topicCounts: {}, syllabusDifficulty: 'Medium', isProportional: true }) };
@@ -339,6 +341,18 @@ const QuestionBankHome: React.FC = () => {
       setIsForgingBatch(true); 
       stopForgingRef.current = false;
       try {
+          let excludedTopicLabelsNormalized: string[] = [];
+          if (bankUserId) {
+              try {
+                  excludedTopicLabelsNormalized = await fetchUserExcludedTopicLabels(
+                      supabase,
+                      bankUserId,
+                      selectedKbId
+                  );
+              } catch (e) {
+                  console.warn('Exclusions fetch failed', e);
+              }
+          }
           for (let i = 0; i < chapterIds.length; i++) {
               if (stopForgingRef.current) break;
               const chapId = chapterIds[i];
@@ -351,8 +365,16 @@ const QuestionBankHome: React.FC = () => {
               try {
                   // ... (Syllabus boundary code) ...
                   let boundariesContext = "";
-                  const { data: syllabusData } = await supabase.from('NEET_syllabus').select('topic_list').ilike('chapter_name', `%${chapter.name.trim()}%`);
-                  if (syllabusData && syllabusData.length > 0) { const combinedTopics = Array.from(new Set(syllabusData.flatMap(d => d.topic_list.split(',').map((t:any) => t.trim())))).join(', '); boundariesContext = `[STRICT BOUNDARIES]: Topics: ${combinedTopics}.`; }
+                  try {
+                    const boundaryTopics = await fetchSyllabusTopicsForChapter({
+                      kbId: selectedKbId,
+                      chapterName: String(chapter.name).trim(),
+                      subjectName: chapter.subject_name || null,
+                    });
+                    if (boundaryTopics.length > 0) {
+                      boundariesContext = `[STRICT BOUNDARIES]: Topics: ${boundaryTopics.join(', ')}.`;
+                    }
+                  } catch { /* ignore */ }
                   const contentRes = await supabase.from('chapters').select('raw_text, doc_path').eq('id', chapId).single();
                   const rawText = (contentRes.data?.raw_text || "") + "\n\n" + boundariesContext;
                   const docPath = contentRes.data?.doc_path || chapter.doc_path; 
@@ -363,7 +385,7 @@ const QuestionBankHome: React.FC = () => {
                       for (const [topicName, topicConfig] of enabledTopics) {
                           if (stopForgingRef.current) break;
                           setForgeProgress(`${progressPrefix}: ${topicName}`);
-                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)]);
+                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)], undefined, undefined, undefined, excludedTopicLabelsNormalized);
                           chapterGeneratedQs.push(...gen);
                       }
                   } else {
@@ -372,7 +394,7 @@ const QuestionBankHome: React.FC = () => {
                       if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); if (docPath) { setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractImagesFromDoc(docPath); } } else figureCount = config.syntheticFigureCount || 0;
                       
                       setForgeProgress(`${progressPrefix}: Synthesizing Questions...`);
-                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), config.diff, config.total, { text: rawText, images: sourceImages }, config.types, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode);
+                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), config.diff, config.total, { text: rawText, images: sourceImages }, config.types, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized);
                       const figureQs = gen.filter(q => q.figurePrompt);
                       if (figureQs.length > 0 && figureCount > 0) {
                           setForgeProgress(`${progressPrefix}: Processing Visuals...`);

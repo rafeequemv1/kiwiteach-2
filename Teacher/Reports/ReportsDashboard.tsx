@@ -2,17 +2,16 @@
 import '../../types';
 import React, { useState, useMemo, useEffect } from 'react';
 
-interface School {
+interface Institute {
   id: string;
   name: string;
-  // Fix: Make color optional to match the School interface defined in Quiz.tsx and prevent assignability errors.
   color?: string;
 }
 
-interface SchoolClass {
+interface OrgClass {
   id: string;
   name: string;
-  school_id: string;
+  institute_id: string;
 }
 
 interface Student {
@@ -36,11 +35,11 @@ interface TestResult {
 }
 
 interface ReportsDashboardProps {
-  schoolsList: School[];
-  classesList: SchoolClass[];
+  institutesList: Institute[];
+  classesList: OrgClass[];
 }
 
-const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classesList }) => {
+const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, classesList }) => {
   const [students, setStudents] = useState<Student[]>([]);
   const [results, setResults] = useState<TestResult[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -62,7 +61,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
       const totalScore = studentResults.reduce((acc, r) => acc + r.score, 0);
       
       const sClass = classesList.find(c => c.id === student.class_id);
-      const sSchool = schoolsList.find(s => s.id === sClass?.school_id);
+      const sSchool = institutesList.find(s => s.id === sClass?.institute_id);
 
       return {
         ...student,
@@ -74,10 +73,10 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
         schoolId: sSchool?.id || 'none'
       };
     });
-  }, [students, results, classesList, schoolsList]);
+  }, [students, results, classesList, institutesList]);
 
   const schoolStats = useMemo(() => {
-    return schoolsList.map(school => {
+    return institutesList.map(school => {
       const schoolStudents = studentStats.filter(s => s.schoolId === school.id);
       const avgAccuracy = schoolStudents.length > 0
         ? Math.round(schoolStudents.reduce((acc, s) => acc + s.avgAccuracy, 0) / schoolStudents.length)
@@ -89,7 +88,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
         avgAccuracy
       };
     });
-  }, [schoolsList, studentStats]);
+  }, [institutesList, studentStats]);
 
   const globalStats = useMemo(() => {
     const totalAcc = studentStats.reduce((acc, s) => acc + s.avgAccuracy, 0);
@@ -120,7 +119,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
         <div className="flex bg-white p-1 rounded-2xl border border-slate-200 shadow-sm">
             <div className="px-5 py-3 border-r border-slate-100 flex flex-col items-center min-w-[100px]">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Students</span>
-                <span className="text-xl font-black text-indigo-600">{globalStats.totalStudents}</span>
+                <span className="text-xl font-black text-sky-700">{globalStats.totalStudents}</span>
             </div>
             <div className="px-5 py-3 border-r border-slate-100 flex flex-col items-center min-w-[100px]">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Tests</span>
@@ -167,7 +166,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
       <section className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden pb-10">
         <div className="px-8 py-8 border-b border-slate-50 flex flex-col lg:flex-row justify-between items-center gap-6">
             <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg">
+                <div className="w-10 h-10 bg-sky-600 rounded-xl flex items-center justify-center text-white shadow-lg">
                     <iconify-icon icon="mdi:trophy-outline" width="24" />
                 </div>
                 <div>
@@ -184,16 +183,16 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
                         placeholder="Search students..." 
                         value={searchQuery}
                         onChange={e => setSearchQuery(e.target.value)}
-                        className="bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-xs font-bold outline-none focus:border-indigo-500 w-full sm:w-64 transition-all"
+                        className="bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-xs font-bold outline-none focus:border-sky-400 w-full sm:w-64 transition-all"
                     />
                 </div>
                 <select 
                     value={filterSchool}
                     onChange={e => setFilterSchool(e.target.value)}
-                    className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold outline-none focus:border-indigo-500 appearance-none cursor-pointer pr-10 relative"
+                    className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold outline-none focus:border-sky-400 appearance-none cursor-pointer pr-10 relative"
                 >
                     <option value="all">All Campuses</option>
-                    {schoolsList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {institutesList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
             </div>
         </div>
@@ -233,7 +232,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
                                 </div>
                             </td>
                             <td className="px-4 py-5">
-                                <span className="text-[10px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-1 rounded-lg block w-fit mb-1">{s.className}</span>
+                                <span className="text-[10px] font-black uppercase text-sky-600 bg-sky-50 px-2 py-1 rounded-lg block w-fit mb-1">{s.className}</span>
                                 <span className="text-[9px] font-bold text-slate-400 uppercase">{s.schoolName}</span>
                             </td>
                             <td className="px-4 py-5 text-center">
@@ -258,7 +257,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schoolsList, classe
                                 {s.avgAccuracy >= 80 ? (
                                     <span className="text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100 shadow-sm">Distinction</span>
                                 ) : s.avgAccuracy >= 60 ? (
-                                    <span className="text-[9px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-100 shadow-sm">Proficient</span>
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-sky-700 bg-sky-50 px-3 py-1.5 rounded-xl border border-sky-100 shadow-sm">Proficient</span>
                                 ) : (
                                     <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">Foundational</span>
                                 )}

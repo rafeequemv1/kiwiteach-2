@@ -2,11 +2,14 @@ import '../types';
 import React, { useState, useMemo, useEffect } from 'react';
 import StudentProfile from './StudentProfile';
 
-export interface SchoolClass {
+export interface OrgClassRow {
   id: string;
   name: string;
-  school_id: string | null;
+  institute_id: string | null;
 }
+
+/** @deprecated Use OrgClassRow */
+export type SchoolClass = OrgClassRow;
 
 export interface Student {
   id: string;
@@ -21,11 +24,11 @@ export interface Student {
 const ITEMS_PER_PAGE = 25;
 
 interface StudentDirectoryProps {
-  schoolsList?: any[];
-  classesList?: any[];
+  institutesList?: any[];
+  classesList?: OrgClassRow[];
 }
 
-const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], classesList = [] }) => {
+const StudentDirectory: React.FC<StudentDirectoryProps> = ({ institutesList = [], classesList = [] }) => {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
   const [students, setStudents] = useState<Student[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,9 +38,17 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
   
   const [isLoading, setIsLoading] = useState(true);
   const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   
   const [csvInput, setCsvInput] = useState('');
+  const [addForm, setAddForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    exams: '',
+    classId: '' as string,
+  });
 
   useEffect(() => {
     fetchData();
@@ -54,6 +65,8 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
                 avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${s.name.replace(/\s+/g, '')}`
             }));
             setStudents(mappedStudents);
+        } else {
+            setStudents([]);
         }
     } catch (err: any) {
         console.error("Error fetching student data:", err);
@@ -70,7 +83,7 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
       if (selectedSchoolId === 'all') return matchesSearch;
       
       const studentClass = classesList.find(c => c.id === s.class_id);
-      const matchesSchool = studentClass?.school_id === selectedSchoolId;
+      const matchesSchool = studentClass?.institute_id === selectedSchoolId;
       
       return matchesSearch && matchesSchool;
     });
@@ -133,10 +146,40 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
     }
   };
 
+  const resetAddForm = () =>
+    setAddForm({ name: '', email: '', phone: '', exams: '', classId: '' });
+
+  const handleAddStudent = (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = addForm.name.trim();
+    if (!name) return;
+
+    const attending = addForm.exams.trim()
+      ? addForm.exams.split(',').map((x) => x.trim()).filter(Boolean)
+      : null;
+
+    const newStudent: Student = {
+      id: `st-new-${Date.now()}`,
+      name,
+      email: addForm.email.trim() || null,
+      mobile_phone: addForm.phone.trim() || null,
+      attending_exams: attending,
+      class_id: addForm.classId || null,
+      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(/\s+/g, '')}`,
+    };
+
+    const updated = [...students, newStudent];
+    localStorage.setItem('kt_students', JSON.stringify(updated));
+    setStudents(updated);
+    resetAddForm();
+    setIsAddModalOpen(false);
+    setCurrentPage(1);
+  };
+
   if (selectedStudent) {
     const scList = [
-        ...schoolsList.map(s => ({ id: s.id, name: s.name, type: 'school', parent_id: null })),
-        ...classesList.map(c => ({ id: c.id, name: c.name, type: 'class', parent_id: c.school_id }))
+        ...institutesList.map(s => ({ id: s.id, name: s.name, type: 'school', parent_id: null })),
+        ...classesList.map(c => ({ id: c.id, name: c.name, type: 'class', parent_id: c.institute_id }))
     ];
     return <StudentProfile student={selectedStudent} schoolsAndClasses={scList as any} onBack={() => setSelectedStudent(null)} onUpdate={fetchData} />;
   }
@@ -165,7 +208,7 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
                 <button onClick={() => setViewMode('list')} className={`p-1.5 rounded-md transition-all ${viewMode === 'list' ? 'bg-white text-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><iconify-icon icon="mdi:view-list" className="w-4 h-4"></iconify-icon></button>
             </div>
             <button onClick={() => setIsCsvModalOpen(true)} className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-600 font-medium text-xs hover:bg-slate-50 transition-all flex items-center gap-1.5 shadow-sm"><iconify-icon icon="mdi:file-import-outline" className="text-emerald-500"></iconify-icon>Bulk Import</button>
-            <button onClick={() => alert("Add Student functionality")} className="px-4 py-2 rounded-lg bg-accent text-white font-medium text-xs hover:bg-indigo-700 transition-all shadow-md flex items-center gap-1.5"><iconify-icon icon="mdi:plus"></iconify-icon>Student</button>
+            <button type="button" onClick={() => setIsAddModalOpen(true)} className="px-4 py-2 rounded-lg bg-accent text-white font-medium text-xs hover:bg-indigo-700 transition-all shadow-md flex items-center gap-1.5"><iconify-icon icon="mdi:plus"></iconify-icon>Student</button>
         </div>
       </header>
 
@@ -176,7 +219,7 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
           </div>
           <select value={selectedSchoolId} onChange={e => { setSelectedSchoolId(e.target.value); setCurrentPage(1); }} className="bg-white border border-slate-200 rounded-xl px-4 py-2 outline-none focus:border-accent font-medium text-xs text-slate-600 shadow-sm appearance-none min-w-[200px]">
               <option value="all">All Campuses</option>
-              {schoolsList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {institutesList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
       </div>
 
@@ -187,7 +230,7 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 p-0.5">
                           {paginatedStudents.map(student => {
                               const sClass = classesList.find(c => c.id === student.class_id);
-                              const school = schoolsList.find(s => s.id === sClass?.school_id);
+                              const school = institutesList.find(s => s.id === sClass?.institute_id);
                               const isSelected = selectedIds.has(student.id);
                               return (
                                   <div key={student.id} onClick={() => setSelectedStudent(student)} className={`bg-white rounded-2xl p-4 border transition-all cursor-pointer relative group flex flex-col items-center ${isSelected ? 'border-accent ring-1 ring-accent bg-accent/5 shadow-md' : 'border-slate-100 hover:border-slate-200 shadow-sm'}`}>
@@ -217,7 +260,7 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
                                   {paginatedStudents.map(student => {
                                       const isSelected = selectedIds.has(student.id);
                                       const sClass = classesList.find(c => c.id === student.class_id);
-                                      const school = schoolsList.find(s => s.id === sClass?.school_id);
+                                      const school = institutesList.find(s => s.id === sClass?.institute_id);
                                       return (
                                           <tr key={student.id} className={`hover:bg-slate-50/50 transition-colors group cursor-pointer ${isSelected ? 'bg-accent/[0.03]' : ''}`} onClick={() => setSelectedStudent(student)}>
                                               <td className="px-4 py-2 text-center" onClick={e => e.stopPropagation()}><input type="checkbox" checked={isSelected} onChange={() => handleToggleSelect(student.id)} className="rounded border-slate-300 text-accent focus:ring-accent w-4 h-4 cursor-pointer"/></td>
@@ -249,6 +292,50 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ schoolsList = [], c
           </footer>
       )}
       
+      {isAddModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/30 backdrop-blur-[2px] animate-fade-in">
+              <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 border border-white max-h-[90vh] overflow-y-auto">
+                  <div className="flex justify-between items-center mb-5">
+                    <h2 className="text-lg font-semibold text-slate-800">Add Student</h2>
+                    <button type="button" onClick={() => { setIsAddModalOpen(false); resetAddForm(); }} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">
+                      <iconify-icon icon="mdi:close" className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <form onSubmit={handleAddStudent} className="space-y-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Name <span className="text-rose-500">*</span></label>
+                      <input required value={addForm.name} onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-accent" placeholder="Full name" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Email</label>
+                      <input type="email" value={addForm.email} onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-accent" placeholder="student@school.edu" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Mobile phone</label>
+                      <input value={addForm.phone} onChange={(e) => setAddForm((f) => ({ ...f, phone: e.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-accent" placeholder="+1-555-0101" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Class</label>
+                      <select value={addForm.classId} onChange={(e) => setAddForm((f) => ({ ...f, classId: e.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-accent">
+                        <option value="">No class</option>
+                        {classesList.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Focus exams</label>
+                      <input value={addForm.exams} onChange={(e) => setAddForm((f) => ({ ...f, exams: e.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-accent" placeholder="NEET, JEE (comma-separated)" />
+                    </div>
+                    <div className="flex gap-3 pt-2">
+                      <button type="button" onClick={() => { setIsAddModalOpen(false); resetAddForm(); }} className="flex-1 font-medium text-xs text-slate-500 py-3 rounded-lg border border-slate-200 hover:bg-slate-50">Cancel</button>
+                      <button type="submit" disabled={!addForm.name.trim()} className="flex-1 bg-accent text-white py-3 rounded-lg font-bold text-sm shadow-md disabled:opacity-40">Save student</button>
+                    </div>
+                  </form>
+              </div>
+          </div>
+      )}
+
       {isCsvModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/30 backdrop-blur-[2px] animate-fade-in">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl p-6 border border-white">

@@ -4,9 +4,17 @@ import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from "@google/genai";
 import { ensureApiKey } from '../../services/geminiService';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
+import {
+    createSyllabusSet,
+    deleteSyllabusSet,
+    fetchSyllabusEntries,
+    fetchSyllabusSetsForUser,
+    type SyllabusSetRow,
+} from '../../services/syllabusService';
 
 interface SyllabusEntry {
     id?: string;
+    syllabus_set_id?: string;
     class_name: string;
     subject_name: string;
     chapter_name: string;
@@ -16,7 +24,12 @@ interface SyllabusEntry {
     unit_name?: string;
 }
 
-const SyllabusManager: React.FC = () => {
+interface SyllabusManagerProps {
+    /** Platform syllabus rows (user_id null) are editable only when true. */
+    isDeveloper?: boolean;
+}
+
+const SyllabusManager: React.FC<SyllabusManagerProps> = ({ isDeveloper = false }) => {
     const [entries, setEntries] = useState<SyllabusEntry[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isParsing, setIsParsing] = useState(false);
@@ -35,6 +48,16 @@ const SyllabusManager: React.FC = () => {
     const [topicEditMode, setTopicEditMode] = useState<'list' | 'paragraph'>('list');
     const [newTopicInput, setNewTopicInput] = useState('');
 
+    const [kbList, setKbList] = useState<{ id: string; name: string }[]>([]);
+    const [filterKbId, setFilterKbId] = useState<string>('');
+    const [syllabusSets, setSyllabusSets] = useState<SyllabusSetRow[]>([]);
+    const [activeSetId, setActiveSetId] = useState<string>('');
+    const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+    const [newSyllabusModalOpen, setNewSyllabusModalOpen] = useState(false);
+    const [newSyllabusName, setNewSyllabusName] = useState('');
+    const [isCreatingSet, setIsCreatingSet] = useState(false);
+
     // Chat Assistant State
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [chatQuery, setChatQuery] = useState('');
@@ -43,8 +66,42 @@ const SyllabusManager: React.FC = () => {
     const chatScrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        fetchSyllabus();
+        supabase
+            .from('knowledge_bases')
+            .select('id, name')
+            .order('name')
+            .then(({ data }) => setKbList(data || []));
+        supabase.auth.getUser().then(({ data }) => setCurrentUserId(data.user?.id ?? null));
     }, []);
+
+    useEffect(() => {
+        if (!currentUserId) return;
+        (async () => {
+            try {
+                const sets = await fetchSyllabusSetsForUser(supabase, currentUserId, filterKbId || null);
+                setSyllabusSets(sets);
+                setActiveSetId((prev) => {
+                    if (prev && sets.some((s) => s.id === prev)) return prev;
+                    const preferred =
+                        sets.find((s) => s.slug === 'neet-migrated') ||
+                        sets.find((s) => s.slug === 'neet-default') ||
+                        sets[0];
+                    return preferred?.id || '';
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        })();
+    }, [currentUserId, filterKbId]);
+
+    useEffect(() => {
+        if (!activeSetId) {
+            setEntries([]);
+            setIsLoading(false);
+            return;
+        }
+        fetchSyllabus();
+    }, [activeSetId]);
 
     useEffect(() => {
         if (chatScrollRef.current) {
@@ -53,10 +110,85 @@ const SyllabusManager: React.FC = () => {
     }, [chatHistory, isChatThinking]);
 
     const fetchSyllabus = async () => {
+        if (!activeSetId) return;
         setIsLoading(true);
-        const { data } = await supabase.from('NEET_syllabus').select('*');
-        setEntries(data || []);
-        setIsLoading(false);
+        try {
+            const data = await fetchSyllabusEntries(supabase, activeSetId);
+            setEntries(data as SyllabusEntry[]);
+        } catch (e) {
+            console.error(e);
+            setEntries([]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const activeSet = useMemo(
+        () => syllabusSets.find((s) => s.id === activeSetId),
+        [syllabusSets, activeSetId]
+    );
+
+    const canEditActiveSet = !!(
+        activeSet &&
+        currentUserId &&
+        (activeSet.user_id === currentUserId || (activeSet.user_id == null && isDeveloper))
+    );
+
+    const reloadSyllabusSets = async (preferSelectId?: string) => {
+        if (!currentUserId) return;
+        const sets = await fetchSyllabusSetsForUser(supabase, currentUserId, filterKbId || null);
+        setSyllabusSets(sets);
+        setActiveSetId((prev) => {
+            if (preferSelectId && sets.some((x) => x.id === preferSelectId)) return preferSelectId;
+            if (prev && sets.some((x) => x.id === prev)) return prev;
+            const preferred =
+                sets.find((s) => s.slug === 'neet-migrated') ||
+                sets.find((s) => s.slug === 'neet-default') ||
+                sets[0];
+            return preferred?.id || '';
+        });
+    };
+
+    const openNewSyllabusModal = () => {
+        setNewSyllabusName('');
+        setNewSyllabusModalOpen(true);
+    };
+
+    const submitNewSyllabus = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newSyllabusName.trim() || !currentUserId) return;
+        setIsCreatingSet(true);
+        try {
+            const kb = filterKbId.trim() ? filterKbId : null;
+            const s = await createSyllabusSet(supabase, {
+                userId: currentUserId,
+                name: newSyllabusName.trim(),
+                knowledgeBaseId: kb,
+            });
+            setNewSyllabusModalOpen(false);
+            setNewSyllabusName('');
+            await reloadSyllabusSets(s.id);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : 'Could not create syllabus';
+            alert(msg);
+        } finally {
+            setIsCreatingSet(false);
+        }
+    };
+
+    const handleDeleteSyllabusSet = async () => {
+        if (!activeSet || !currentUserId) return;
+        if (activeSet.user_id !== currentUserId) {
+            alert('You can only delete syllabi you created.');
+            return;
+        }
+        if (!confirm(`Delete syllabus "${activeSet.name}" and all its entries?`)) return;
+        try {
+            await deleteSyllabusSet(supabase, activeSet.id);
+            await reloadSyllabusSets();
+        } catch (e: any) {
+            alert(e.message || 'Delete failed');
+        }
     };
 
     /**
@@ -170,10 +302,18 @@ const SyllabusManager: React.FC = () => {
     };
 
     const handleConfirmAIParsing = async () => {
-        if (!parsedPreview) return;
+        if (!parsedPreview || !activeSetId) return;
+        if (!canEditActiveSet) {
+            alert('You cannot edit this syllabus.');
+            return;
+        }
         setIsSaving(true);
         try {
-            const { error } = await supabase.from('NEET_syllabus').insert(parsedPreview);
+            const rows = parsedPreview.map(({ id: _drop, ...p }) => ({
+                ...p,
+                syllabus_set_id: activeSetId,
+            }));
+            const { error } = await supabase.from('syllabus_entries').insert(rows);
             if (error) throw error;
             alert(`Ingested ${parsedPreview.length} nodes.`);
             setRawInput('');
@@ -188,26 +328,33 @@ const SyllabusManager: React.FC = () => {
 
     const handleSaveSyllabus = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!editingEntry) return;
+        if (!editingEntry || !activeSetId) return;
+        if (!canEditActiveSet) {
+            alert('You cannot edit this syllabus.');
+            return;
+        }
         setIsSaving(true);
         try {
             if (editingEntry.id) {
                 const { error } = await supabase
-                    .from('NEET_syllabus')
-                    .update({ 
+                    .from('syllabus_entries')
+                    .update({
                         class_name: editingEntry.class_name,
                         subject_name: editingEntry.subject_name,
                         unit_name: editingEntry.unit_name,
                         unit_number: editingEntry.unit_number,
                         chapter_name: editingEntry.chapter_name,
                         chapter_number: editingEntry.chapter_number,
-                        topic_list: editingEntry.topic_list
-                     })
+                        topic_list: editingEntry.topic_list,
+                    })
                     .eq('id', editingEntry.id);
                 if (error) throw error;
             } else {
-                const { id, ...payload } = editingEntry;
-                await supabase.from('NEET_syllabus').insert(payload);
+                const { id, syllabus_set_id: _s, ...payload } = editingEntry;
+                await supabase.from('syllabus_entries').insert({
+                    ...payload,
+                    syllabus_set_id: activeSetId,
+                });
             }
             fetchSyllabus();
             handleCloseModal();
@@ -219,8 +366,9 @@ const SyllabusManager: React.FC = () => {
     };
 
     const deleteEntry = async (id: string) => {
+        if (!canEditActiveSet) return;
         if (!confirm("Remove this syllabus node?")) return;
-        await supabase.from('NEET_syllabus').delete().eq('id', id);
+        await supabase.from('syllabus_entries').delete().eq('id', id);
         fetchSyllabus();
     };
     
@@ -267,13 +415,77 @@ const SyllabusManager: React.FC = () => {
     return (
         <div className="animate-fade-in p-6 space-y-6 relative h-full flex flex-col overflow-hidden bg-slate-50/50">
             <div className="bg-white p-8 rounded-[3rem] border border-slate-200 shadow-sm flex flex-col gap-6 shrink-0">
-                <div className="flex justify-between items-center">
+                <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-start">
                     <div>
-                        <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Authorized NEET Topics</h2>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Master Filter Index for AI Forge</p>
+                        <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Syllabus sets</h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
+                            Linked to a knowledge base · drives Question Bank & AI boundaries
+                        </p>
+                        <div className="flex flex-wrap gap-3 mt-4 items-center">
+                            <select
+                                value={filterKbId}
+                                onChange={(e) => setFilterKbId(e.target.value)}
+                                className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-black uppercase text-slate-600 outline-none"
+                            >
+                                <option value="">All KBs (show every syllabus you can see)</option>
+                                {kbList.map((k) => (
+                                    <option key={k.id} value={k.id}>
+                                        {k.name}
+                                    </option>
+                                ))}
+                            </select>
+                            <select
+                                value={activeSetId}
+                                onChange={(e) => setActiveSetId(e.target.value)}
+                                className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-black uppercase text-indigo-700 outline-none min-w-[200px]"
+                            >
+                                <option value="">Select syllabus…</option>
+                                {syllabusSets.map((s) => (
+                                    <option key={s.id} value={s.id}>
+                                        {s.name}
+                                        {s.user_id ? ' (yours)' : ' (platform)'}
+                                    </option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                disabled={!currentUserId}
+                                onClick={openNewSyllabusModal}
+                                title={!currentUserId ? 'Loading account…' : 'Create a syllabus for this knowledge base filter'}
+                                className="px-4 py-2 rounded-xl text-[9px] font-black uppercase bg-indigo-100 text-indigo-700 border border-indigo-200 disabled:opacity-40 disabled:pointer-events-none"
+                            >
+                                + New syllabus
+                            </button>
+                            {activeSet?.user_id === currentUserId && (
+                                <button
+                                    type="button"
+                                    onClick={handleDeleteSyllabusSet}
+                                    className="px-4 py-2 rounded-xl text-[9px] font-black uppercase bg-rose-50 text-rose-600 border border-rose-100"
+                                >
+                                    Delete syllabus
+                                </button>
+                            )}
+                        </div>
+                        {!canEditActiveSet && activeSetId && (
+                            <p className="text-[9px] font-bold text-amber-600 mt-2 uppercase tracking-wide">
+                                This syllabus is read-only (platform). Ask a developer to edit, or duplicate into your own syllabus.
+                            </p>
+                        )}
                     </div>
                     <div className="flex items-center gap-3">
-                         <button onClick={() => setEditingEntry({ class_name: '', subject_name: '', chapter_name: '', topic_list: '' })} className="bg-accent text-white px-5 py-2.5 rounded-2xl font-black text-xs uppercase tracking-widest flex items-center gap-2 shadow-xl shadow-accent/20 hover:bg-indigo-700 active:scale-95 transition-all">
+                         <button
+                             type="button"
+                             disabled={!canEditActiveSet}
+                             onClick={() =>
+                                 setEditingEntry({
+                                     class_name: '',
+                                     subject_name: '',
+                                     chapter_name: '',
+                                     topic_list: '',
+                                 })
+                             }
+                             className="bg-accent text-white px-5 py-2.5 rounded-2xl font-black text-xs uppercase tracking-widest flex items-center gap-2 shadow-xl shadow-accent/20 hover:bg-indigo-700 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
+                         >
                              <iconify-icon icon="mdi:plus" /> New Chapter
                          </button>
                          <div className="flex bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
@@ -313,7 +525,9 @@ const SyllabusManager: React.FC = () => {
                                         </div>
                                         {entry.chapter_number && <span className="text-[10px] font-black text-slate-300">CH.{entry.chapter_number}</span>}
                                     </div>
-                                    <button onClick={(e) => { e.stopPropagation(); deleteEntry(entry.id!); }} className="text-slate-200 hover:text-rose-500 transition-colors"><iconify-icon icon="mdi:trash-can-outline" width="18" /></button>
+                                    {canEditActiveSet && (
+                                        <button onClick={(e) => { e.stopPropagation(); deleteEntry(entry.id!); }} className="text-slate-200 hover:text-rose-500 transition-colors"><iconify-icon icon="mdi:trash-can-outline" width="18" /></button>
+                                    )}
                                 </div>
                                 <div className="flex-1">
                                     <h4 className="text-base font-black text-slate-800 uppercase tracking-tight leading-tight mb-2">{entry.chapter_name}</h4>
@@ -429,6 +643,58 @@ const SyllabusManager: React.FC = () => {
                     </button>
                 )}
             </div>
+
+            {/* New syllabus set */}
+            {newSyllabusModalOpen && (
+                <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl border border-slate-200 overflow-hidden">
+                        <form onSubmit={submitNewSyllabus}>
+                            <header className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                                <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">New syllabus</h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setNewSyllabusModalOpen(false)}
+                                    className="w-9 h-9 rounded-full bg-white text-slate-400 hover:text-rose-500 shadow-sm border border-slate-100 flex items-center justify-center"
+                                >
+                                    <iconify-icon icon="mdi:close" width="18" />
+                                </button>
+                            </header>
+                            <div className="p-6 space-y-4">
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide leading-relaxed">
+                                    Uses the <strong>knowledge base</strong> chosen in the filter above (or unscoped if &quot;All KBs&quot;).
+                                </p>
+                                <label className="block">
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Name</span>
+                                    <input
+                                        autoFocus
+                                        required
+                                        value={newSyllabusName}
+                                        onChange={(e) => setNewSyllabusName(e.target.value)}
+                                        placeholder="e.g. NEET 2026 — My centre"
+                                        className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:border-indigo-500"
+                                    />
+                                </label>
+                            </div>
+                            <footer className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setNewSyllabusModalOpen(false)}
+                                    className="px-6 py-2.5 text-[10px] font-black uppercase text-slate-500"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={isCreatingSet || !newSyllabusName.trim()}
+                                    className="px-8 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                                >
+                                    {isCreatingSet ? 'Creating…' : 'Create'}
+                                </button>
+                            </footer>
+                        </form>
+                    </div>
+                </div>
+            )}
 
             {/* Editing Modal (Reuse established styles) */}
             {editingEntry && (

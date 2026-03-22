@@ -17,12 +17,34 @@ import StudentOnlineTestDashboard from '../Student/OnlineTest/StudentOnlineTestD
 import StudentMockTestDashboard from '../Student/MockTest/StudentMockTestDashboard';
 import SolutionViewer from '../Student/OnlineTest/SolutionViewer';
 import LandingPage from '../Landing/LandingPage';
-import { ChevronLeft } from 'lucide-react';
+import { appShellTheme, landingTheme } from '../Landing/theme';
+import {
+  resolveAppRole,
+  canAccessView,
+  defaultViewForRole,
+  type AppRole,
+} from '../auth/roles';
 import { BrandingConfig, Question, QuestionType, SelectedChapter, LayoutConfig, TypeDistribution, CreateTestOptions } from './types';
 import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractImagesFromDoc } from '../services/geminiService';
+import {
+  fetchEligibleQuestions,
+  isUuid,
+  recordQuestionUsageForTest,
+} from './services/questionUsageService';
+import { fetchUserExcludedTopicLabels } from '../services/syllabusService';
+import { sanitizeQuestionsForStudentExam, setStudentClass as enrollStudentClass } from './services/studentTestService';
+import { Menu } from 'lucide-react';
 
-interface School { id: string; name: string; color?: string; }
-interface SchoolClass { id: string; name: string; school_id: string; }
+interface Institute {
+  id: string;
+  name: string;
+  color?: string;
+}
+interface OrgClass {
+  id: string;
+  name: string;
+  institute_id: string;
+}
 interface Folder { id: string; name: string; parent_id?: string | null; tests: any[]; }
 
 /**
@@ -49,16 +71,19 @@ const Quiz: React.FC = () => {
   const [session, setSession] = useState<any>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [activeView, setActiveView] = useState('test');
+  const [appRole, setAppRole] = useState<AppRole>('student');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(''); // New state for loading text
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const fetchingRef = useRef(false);
   const lastFetchTime = useRef<number>(0);
   
-  const [schools, setSchools] = useState<School[]>([]);
-  const [schoolClasses, setSchoolClasses] = useState<SchoolClass[]>([]);
+  const [institutes, setInstitutes] = useState<Institute[]>([]);
+  const [orgClasses, setOrgClasses] = useState<OrgClass[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [allTests, setAllTests] = useState<any[]>([]);
+  const [studentClassId, setStudentClassId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'calendar' | 'kanban'>('grid');
   const [calendarType, setCalendarType] = useState<'month' | 'week' | 'year'>('month');
 
@@ -69,7 +94,12 @@ const Quiz: React.FC = () => {
   const [isOnlineExamCreatorOpen, setIsOnlineExamCreatorOpen] = useState(false);
   const [onlineExamResult, setOnlineExamResult] = useState<{ topic: string, questions: Question[], config?: any } | null>(null);
 
-  const [activeStudentExam, setActiveStudentExam] = useState<{ topic: string, questions: Question[] } | null>(null);
+  const [activeStudentExam, setActiveStudentExam] = useState<{
+    topic: string;
+    questions: Question[];
+    testId?: string;
+    examDurationSeconds?: number;
+  } | null>(null);
   const [activeStudentSolution, setActiveStudentSolution] = useState<{ topic: string, questions: Question[], showAnswers?: boolean } | null>(null);
 
   const [creatorFolderId, setCreatorFolderId] = useState<string | null>(null);
@@ -83,36 +113,86 @@ const Quiz: React.FC = () => {
   const [editInitialSettings, setEditInitialSettings] = useState<any>(undefined);
   const [editInitialManualQuestions, setEditInitialManualQuestions] = useState<Question[] | undefined>(undefined);
 
-  useEffect(() => {
-    let localSchools = localStorage.getItem('kt_schools');
-    let localClasses = localStorage.getItem('kt_classes');
-    if (localSchools) setSchools(JSON.parse(localSchools));
-    if (localClasses) setSchoolClasses(JSON.parse(localClasses));
-  }, []);
+  const loadProfileAndOrg = async (user: { id: string; email?: string | null }) => {
+    const email = user.email ?? '';
+    let { data: prof, error: profErr } = await supabase
+      .from('profiles')
+      .select('role, class_id')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profErr) console.warn('profiles:', profErr.message);
+    if (!prof) {
+      const initialRole = resolveAppRole(email, null);
+      await supabase.from('profiles').upsert(
+        {
+          id: user.id,
+          role: initialRole,
+          full_name: email.split('@')[0] || 'User',
+        },
+        { onConflict: 'id' }
+      );
+      const refetch = await supabase.from('profiles').select('role, class_id').eq('id', user.id).maybeSingle();
+      prof = refetch.data;
+    }
+    const role = resolveAppRole(email, prof?.role ?? null);
+    setAppRole(role);
+    setStudentClassId(prof?.class_id ? String(prof.class_id) : null);
+    if (role === 'developer' && prof?.role !== 'developer') {
+      await supabase.from('profiles').update({ role: 'developer' }).eq('id', user.id);
+    }
+
+    const { data: instRows } = await supabase
+      .from('institutes')
+      .select('id, name')
+      .eq('user_id', user.id)
+      .order('name');
+    const { data: classRows } = await supabase
+      .from('classes')
+      .select('id, name, institute_id')
+      .eq('user_id', user.id)
+      .order('name');
+    const colors = ['indigo', 'rose', 'emerald', 'amber', 'violet'] as const;
+    if (instRows?.length) {
+      setInstitutes(
+        instRows.map((row, i) => ({
+          ...row,
+          color: colors[i % colors.length],
+        }))
+      );
+    } else {
+      setInstitutes([]);
+    }
+    setOrgClasses((classRows as OrgClass[]) || []);
+  };
 
   const refreshOrgData = () => {
-    const localSchools = localStorage.getItem('kt_schools');
-    const localClasses = localStorage.getItem('kt_classes');
-    if (localSchools) setSchools(JSON.parse(localSchools));
-    if (localClasses) setSchoolClasses(JSON.parse(localClasses));
+    if (session?.user) void loadProfileAndOrg(session.user);
   };
+
+  useEffect(() => {
+    if (!canAccessView(appRole, activeView)) {
+      setActiveView(defaultViewForRole(appRole));
+    }
+  }, [appRole, activeView]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session?.user) { 
-        fetchWorkspace(session.user); 
-        fetchBranding(session.user.id); 
-      } else { 
+      if (session?.user) {
+        fetchWorkspace(session.user);
+        fetchBranding(session.user.id);
+        void loadProfileAndOrg(session.user);
+      } else {
         setIsLoadingWorkspace(false); 
       }
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
-      if (session?.user && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) { 
-        fetchWorkspace(session.user); 
-        fetchBranding(session.user.id); 
+      if (session?.user && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+        fetchWorkspace(session.user);
+        fetchBranding(session.user.id);
+        void loadProfileAndOrg(session.user);
       } else if (event === 'SIGNED_OUT') {
         setFolders([]); 
         setAllTests([]); 
@@ -152,6 +232,44 @@ const Quiz: React.FC = () => {
         let user = currentUser || session?.user;
         if (!user) { const { data } = await supabase.auth.getUser(); user = data.user; }
         if (!user) return;
+
+        const { data: profileRow } = await supabase
+          .from('profiles')
+          .select('role, class_id')
+          .eq('id', user.id)
+          .maybeSingle();
+        const email = user.email ?? '';
+        const resolvedRole = resolveAppRole(email, profileRow?.role ?? null);
+        if (profileRow?.class_id) setStudentClassId(String(profileRow.class_id));
+        else setStudentClassId(null);
+
+        if (resolvedRole === 'student') {
+          setFolders([]);
+          const cid = profileRow?.class_id ? String(profileRow.class_id) : null;
+          if (!cid) {
+            setAllTests([]);
+            return;
+          }
+          const { data: assignedTests, error: stuErr } = await supabase
+            .from('tests')
+            .select('id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids, config')
+            .contains('class_ids', [cid])
+            .order('created_at', { ascending: false })
+            .limit(80);
+          if (stuErr) console.warn('Student tests fetch:', stuErr.message);
+          const filtered = (assignedTests || []).filter(
+            (t: any) => t.config?.mode === 'online' && t.status !== 'draft'
+          );
+          const processedTests = filtered.map((t: any) => ({
+            ...t,
+            questionCount: t.question_count || 0,
+            generatedAt: t.created_at,
+            scheduledAt: t.scheduled_at,
+            class_ids: t.class_ids || [],
+          }));
+          setAllTests(processedTests);
+          return;
+        }
 
         const [foldersRes, testsRes] = await Promise.all([
             supabase.from('folders').select('id, name, parent_id').eq('user_id', user.id).order('created_at'),
@@ -287,6 +405,21 @@ const Quiz: React.FC = () => {
 
   const generateQuestionsLogic = async (options: CreateTestOptions, setStatus: (s: string) => void) => {
       await ensureApiKey();
+
+      const { data: authData } = await supabase.auth.getUser();
+      const uid = authData.user?.id;
+      let excludedTopicLabelsNormalized: string[] = [];
+      if (uid) {
+          try {
+              excludedTopicLabelsNormalized = await fetchUserExcludedTopicLabels(
+                  supabase,
+                  uid,
+                  options.knowledgeBaseId ?? null
+              );
+          } catch (e) {
+              console.warn('Topic exclusions fetch failed', e);
+          }
+      }
       
       const manualQs = options.manualQuestions || [];
       let finalQuestions: Question[] = [...manualQs]; 
@@ -328,18 +461,27 @@ const Quiz: React.FC = () => {
           const sourceContext = { text: rawText, images: filteredImgs };
 
           if (effectiveSource === 'db') {
-              const currentIds = finalQuestions.map(q => q.originalId || q.id).filter(id => id && id.length === 36 && !id.startsWith('forge-'));
-              let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', chap.id);
-              if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
-              const { data } = await query.limit(neededFromAi);
-              if (data && data.length > 0) {
-                  newBatch = data.map(bq => ({ 
-                      id: bq.id, originalId: bq.id, text: bq.question_text, type: (bq.question_type || 'mcq') as any, difficulty: bq.difficulty as any, options: bq.options, 
-                      correctIndex: bq.correct_index, explanation: bq.explanation, figureDataUrl: bq.figure_url, sourceFigureDataUrl: bq.source_figure_url, columnA: bq.column_a, 
-                      columnB: bq.column_b, correctMatches: bq.correct_matches, sourceChapterId: bq.chapter_id, sourceSubjectName: bq.subject_name,
-                      sourceChapterName: bq.chapter_name || chap.name, pageNumber: bq.page_number, topic_tag: bq.topic_tag
-                  }));
-              } else { effectiveSource = 'ai'; }
+              const currentIds = finalQuestions
+                .map((q) => q.originalId || q.id)
+                .filter((id): id is string => isUuid(id));
+              const eligible = await fetchEligibleQuestions({
+                classId: options.targetClassId || null,
+                chapterId: chap.id,
+                difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                excludeIds: currentIds,
+                limit: neededFromAi,
+                allowRepeats: !!options.allowPastQuestions,
+                includeUsedQuestionIds: options.includeUsedQuestionIds || [],
+                excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+              });
+              if (eligible.length > 0) {
+                newBatch = eligible.map((bq) => ({
+                  ...bq,
+                  sourceChapterName: bq.sourceChapterName || chap.name,
+                }));
+              } else {
+                effectiveSource = 'ai';
+              }
           }
           
           if (effectiveSource === 'ai') {
@@ -348,7 +490,8 @@ const Quiz: React.FC = () => {
               
               const gen = await generateQuizQuestions(
                   chap.name, diffConfig, neededFromAi, sourceContext, options.questionType || 'mcq', 
-                  setStatus, chap.figureCount, options.useSmiles, breakdownJson, 'gemini-3-pro-preview', chap.visualMode
+                  setStatus, chap.figureCount, options.useSmiles, breakdownJson, 'gemini-3-pro-preview', chap.visualMode,
+                  undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized
               );
               
               const figureQs = gen.filter(q => q.figurePrompt);
@@ -457,8 +600,20 @@ const Quiz: React.FC = () => {
           scheduled_at: safeConfig.scheduledAt || null, 
           class_ids: safeConfig.classIds || [] 
       };
-      if (editingTestId) { await supabase.from('tests').update(payload).eq('id', editingTestId); } 
-      else { await supabase.from('tests').insert([payload]); }
+      let savedTestId = editingTestId || null;
+      if (editingTestId) {
+        await supabase.from('tests').update(payload).eq('id', editingTestId);
+      } else {
+        const { data, error } = await supabase.from('tests').insert([payload]).select('id').single();
+        if (error) throw error;
+        savedTestId = data?.id || null;
+      }
+
+      await recordQuestionUsageForTest({
+        testId: savedTestId,
+        classIds: payload.class_ids || [],
+        questionIds: payload.question_ids || [],
+      });
       await fetchWorkspace();
   };
 
@@ -510,8 +665,9 @@ const Quiz: React.FC = () => {
       setIsForging(true);
       setForgeStep('Generating Mock Exam...');
       try {
-          const { data: chaptersData } = await supabase.from('chapters').select('id, name, subject_name, class_name').in('id', chapterIds);
+          const { data: chaptersData } = await supabase.from('chapters').select('id, name, subject_name, class_name, kb_id').in('id', chapterIds);
           if (!chaptersData) throw new Error("Chapters not found");
+          const mockKbId = chaptersData[0]?.kb_id ?? null;
           
           const selectedChapters: SelectedChapter[] = chaptersData.map(c => ({
               id: c.id, name: c.name, subjectName: c.subject_name || 'General', className: c.class_name || 'General',
@@ -530,7 +686,8 @@ const Quiz: React.FC = () => {
               globalTypeMix: { mcq: 100, reasoning: 0, matching: 0, statements: 0 },
               totalQuestions: totalQ,
               selectionMode: 'auto',
-              questionType: type as any
+              questionType: type as any,
+              knowledgeBaseId: mockKbId,
           };
           
           if (difficulty === 'Easy') options.globalDifficultyMix = { easy: 80, medium: 20, hard: 0 };
@@ -555,10 +712,33 @@ const Quiz: React.FC = () => {
       setLoadingMessage('Loading Exam Environment...');
       setIsLoadingTest(true);
       try {
-          const { data, error } = await supabase.from('tests').select('name, questions').eq('id', test.id).single();
+          const { data, error } = await supabase.from('tests').select('name, questions, config').eq('id', test.id).single();
           if (error) throw error;
-          setActiveStudentExam({ topic: data.name, questions: data.questions });
+          const rawQs = Array.isArray(data.questions) ? data.questions : [];
+          const safeQs = sanitizeQuestionsForStudentExam(rawQs as Question[]);
+          const durationMin = typeof data.config?.duration === 'number' ? data.config.duration : 60;
+          setActiveStudentExam({
+            testId: test.id,
+            topic: data.name,
+            questions: safeQs,
+            examDurationSeconds: Math.max(300, Math.round(durationMin * 60)),
+          });
       } catch (e: any) { alert("Failed to load exam: " + e.message); } finally { setIsLoadingTest(false); }
+  };
+
+  const handleStudentEnrollClass = async (classUuid: string) => {
+    try {
+      await enrollStudentClass(classUuid.trim());
+      if (session?.user) {
+        await loadProfileAndOrg(session.user);
+        lastFetchTime.current = 0;
+        await fetchWorkspace(session.user);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not join class';
+      alert(msg);
+      throw e;
+    }
   };
 
   const handleStudentViewSolutions = async (test: any) => {
@@ -574,16 +754,10 @@ const Quiz: React.FC = () => {
   if (!session || showLanding) {
     if (showAuth) {
       return (
-        <div className="relative">
-          <button 
-            onClick={() => setShowAuth(false)}
-            className="fixed top-8 left-8 z-[100] bg-white p-3 rounded-2xl shadow-xl border border-slate-100 text-slate-400 hover:text-indigo-600 transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            Back to Home
-          </button>
-          <AuthUI onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })} />
-        </div>
+        <AuthUI
+          onBackHome={() => setShowAuth(false)}
+          onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })}
+        />
       );
     }
     return (
@@ -596,26 +770,45 @@ const Quiz: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
+    <div className="flex h-screen overflow-hidden font-sans" style={{ backgroundColor: appShellTheme.mainBackground }}>
       <LeftPanel 
         activeView={activeView} 
         setActiveView={setActiveView} 
-        isOpen={true} 
-        onClose={() => {}} 
+        isOpen={isSidebarOpen} 
+        onClose={() => setIsSidebarOpen(false)} 
         brandConfig={brandConfig} 
+        appRole={appRole}
         onHomeClick={() => setShowLanding(true)}
+        onSignOut={() => supabase.auth.signOut()}
       />
+      {isSidebarOpen && (
+        <button
+          type="button"
+          className="lg:hidden fixed inset-0 bg-slate-900/45 z-40"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
       <main className="flex-1 h-full overflow-hidden relative">
-        {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div><h3 className="text-xl font-black uppercase tracking-tight">Syncing Hub</h3></div>}
+        <div className="lg:hidden px-4 py-3 border-b border-slate-200 bg-white/90 backdrop-blur-sm flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen(true)}
+            className="w-10 h-10 rounded-xl border border-slate-200 bg-white text-slate-700 grid place-items-center"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <span className="text-sm font-black text-slate-700 truncate">{brandConfig.name}</span>
+        </div>
+        {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className={`w-12 h-12 border-4 border-slate-100 rounded-full animate-spin mb-4 ${appShellTheme.accent.spinner}`}></div><h3 className="text-xl font-black uppercase tracking-tight text-slate-800">Syncing Hub</h3></div>}
         
         {isLoadingTest && (
             <div className="absolute inset-0 z-[100] bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
-                <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-slate-100 flex flex-col items-center gap-5 transform scale-100 animate-slide-up">
+                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 flex flex-col items-center gap-5 transform scale-100 animate-slide-up" style={{ boxShadow: landingTheme.shadow.card }}>
                     <div className="relative w-16 h-16">
                         <div className="absolute inset-0 rounded-full border-4 border-slate-50"></div>
-                        <div className="absolute inset-0 rounded-full border-4 border-indigo-600 border-t-transparent animate-spin"></div>
+                        <div className={`absolute inset-0 rounded-full border-4 border-t-transparent animate-spin ${appShellTheme.accent.spinner}`}></div>
                         <div className="absolute inset-0 flex items-center justify-center">
-                            <iconify-icon icon="mdi:lightning-bolt" className="text-indigo-600 text-xl animate-pulse" />
+                            <iconify-icon icon="mdi:lightning-bolt" className={`${appShellTheme.accent.icon} text-xl animate-pulse`} />
                         </div>
                     </div>
                     <div className="text-center">
@@ -626,21 +819,30 @@ const Quiz: React.FC = () => {
             </div>
         )}
 
-        {activeView === 'test' && <TestDashboard username={session.user.email} schoolsList={schools} classesList={schoolClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewTest={handleStartTestCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
-        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} schoolsList={schools} classesList={schoolClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
-        {activeView === 'students' && <StudentDirectory schoolsList={schools} classesList={schoolClasses} />}
-        {activeView === 'reports' && <ReportsDashboard schoolsList={schools} classesList={schoolClasses} />}
-        {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} schools={schools} schoolClasses={schoolClasses} onRefresh={refreshOrgData} />}
-        {activeView === 'admin' && <AdminView />}
-        {activeView === 'omr-lab' && <OMRAccuracyTester />}
-        {activeView === 'student-online-test' && <StudentOnlineTestDashboard availableTests={allTests} onTakeExam={handleStudentTakeExam} onViewSolutions={handleStudentViewSolutions} />}
+        {activeView === 'test' && <TestDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewTest={handleStartTestCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
+        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
+        {activeView === 'students' && <StudentDirectory institutesList={institutes} classesList={orgClasses} />}
+        {activeView === 'reports' && <ReportsDashboard institutesList={institutes} classesList={orgClasses} />}
+        {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} userId={session.user.id} onRefresh={refreshOrgData} />}
+        {activeView === 'admin' && <AdminView appRole={appRole} userId={session.user.id} onRefreshOrg={refreshOrgData} />}
+        {activeView === 'student-online-test' && (
+          <StudentOnlineTestDashboard
+            availableTests={allTests}
+            hasAssignedClass={!!studentClassId}
+            onEnrollClass={handleStudentEnrollClass}
+            onTakeExam={handleStudentTakeExam}
+            onViewSolutions={handleStudentViewSolutions}
+          />
+        )}
         {activeView === 'student-mock-test' && <StudentMockTestDashboard onStartMock={handleStudentMockStart} isLoading={isForging} />}
       </main>
       
       {activeStudentExam && (
           <InteractiveQuizSession 
               questions={activeStudentExam.questions} 
-              topic={activeStudentExam.topic} 
+              topic={activeStudentExam.topic}
+              testId={activeStudentExam.testId ?? null}
+              examDurationSeconds={activeStudentExam.examDurationSeconds}
               onExit={() => setActiveStudentExam(null)} 
           />
       )}
@@ -655,7 +857,7 @@ const Quiz: React.FC = () => {
       )}
 
       {isCreatorOpen && <div className="fixed inset-0 z-[100] bg-white"><TestCreatorView onClose={() => setIsCreatorOpen(false)} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} /></div>}
-      {forgedResult && <div className="fixed inset-0 z-[150] bg-white"><QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} onRestart={() => setForgedResult(null)} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} initialLayoutConfig={forgedResult.layoutConfig} /></div>}
+      {forgedResult && <div className="fixed inset-0 z-[150] bg-white"><QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} onRestart={() => setForgedResult(null)} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} initialLayoutConfig={forgedResult.layoutConfig} sourceOptions={forgedResult.sourceOptions} /></div>}
       {isOnlineExamCreatorOpen && (
           <div className="fixed inset-0 z-[100] bg-white">
               <TestCreatorView 
@@ -688,8 +890,8 @@ const Quiz: React.FC = () => {
                       await commitTestToHub(examData.title, examData.questions, 'online', { ...examData, mode: 'online', sourceOptions: onlineExamResult.config?.sourceOptions || onlineExamResult.config });
                       setOnlineExamResult(null); setEditingTestId(null);
                   }} 
-                  schoolsList={schools}
-                  classesList={schoolClasses}
+                  institutesList={institutes}
+                  classesList={orgClasses}
               />
           </div>
       )}

@@ -7,6 +7,7 @@ import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
+import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -43,6 +44,10 @@ interface ResultScreenProps {
   onEditBlueprint?: (questions: Question[]) => void;
   brandConfig: BrandingConfig;
   initialLayoutConfig?: LayoutConfig;
+  sourceOptions?: {
+    targetClassId?: string | null;
+    allowPastQuestions?: boolean;
+  };
 }
 
 const AnswerKeyPage: React.FC<{ questions: Question[]; brandConfig: BrandingConfig; topic: string }> = ({ questions, brandConfig, topic }) => {
@@ -138,7 +143,7 @@ const NumberControl: React.FC<{ label: string; value: number; onChange: (v: numb
     </div>
 );
 
-const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onSave, onEditBlueprint, questions, brandConfig, initialLayoutConfig }) => {
+const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onSave, onEditBlueprint, questions, brandConfig, initialLayoutConfig, sourceOptions }) => {
   const [currentQuestions, setCurrentQuestions] = useState<Question[]>(questions);
   const [editableTopic, setEditableTopic] = useState(topic);
   const [isPaginating, setIsPaginating] = useState(true);
@@ -148,6 +153,34 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [isOmrOpen, setIsOmrOpen] = useState(false);
   const [isControlsOpen, setIsControlsOpen] = useState(true);
   const [pendingPrint, setPendingPrint] = useState(false);
+
+  type ResultMobileSheet = null | 'insights' | 'layout';
+  const [resultMobileSheet, setResultMobileSheet] = useState<ResultMobileSheet>(null);
+  const [isLgLayout, setIsLgLayout] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 1024px)').matches : true
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => setIsLgLayout(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (isLgLayout) setResultMobileSheet(null);
+  }, [isLgLayout]);
+
+  useEffect(() => {
+    if (!resultMobileSheet || isLgLayout) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setResultMobileSheet(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [resultMobileSheet, isLgLayout]);
   
   const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(initialLayoutConfig?.viewMode || 'scroll');
   const [showChoices, setShowChoices] = useState(true);
@@ -157,6 +190,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [showChapters, setShowChapters] = useState(false);
   const [showDifficulty, setShowDifficulty] = useState(initialLayoutConfig?.showDifficulty ?? false);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
+  const [allowPastReplacements, setAllowPastReplacements] = useState(sourceOptions?.allowPastQuestions ?? false);
 
   const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? true);
   const [showChapterListOnCover, setShowChapterListOnCover] = useState(initialLayoutConfig?.showChapterListOnCover ?? true);
@@ -492,42 +526,22 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     if (!q.sourceChapterId) return alert("Source metadata missing for replacement.");
     setIsReplacing(q.id);
     try {
-        const currentIds = currentQuestions.map(item => item.originalId || item.id).filter(id => id && id.length === 36);
-        let query = supabase.from('question_bank_neet')
-            .select('*')
-            .eq('chapter_id', q.sourceChapterId)
-            .eq('difficulty', q.difficulty);
-            
-        if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
-        
-        const { data, error } = await query.limit(10);
-        if (error) throw error;
-        
-        if (!data || data.length === 0) {
+        const currentIds = currentQuestions
+          .map((item) => item.originalId || item.id)
+          .filter((id): id is string => isUuid(id));
+        const eligible = await fetchEligibleQuestions({
+          classId: sourceOptions?.targetClassId || null,
+          chapterId: q.sourceChapterId,
+          difficulty: q.difficulty,
+          excludeIds: currentIds,
+          limit: 16,
+          allowRepeats: allowPastReplacements,
+        });
+        if (!eligible.length) {
             alert("No more similar questions found in the database for this chapter and difficulty.");
             return;
         }
-
-        const raw = data[Math.floor(Math.random() * data.length)];
-        const newQ: Question = {
-            id: raw.id, 
-            originalId: raw.id, 
-            text: raw.question_text, 
-            options: raw.options, 
-            correctIndex: raw.correct_index, 
-            explanation: raw.explanation, 
-            difficulty: raw.difficulty, 
-            type: raw.question_type || 'mcq', 
-            figureDataUrl: raw.figure_url,
-            columnA: raw.column_a, 
-            columnB: raw.column_b, 
-            correctMatches: raw.correct_matches, 
-            sourceChapterId: raw.chapter_id,
-            sourceChapterName: raw.chapter_name || q.sourceChapterName, 
-            sourceSubjectName: raw.subject_name || q.sourceSubjectName, 
-            pageNumber: raw.page_number,
-            topic_tag: raw.topic_tag
-        };
+        const newQ = eligible[Math.floor(Math.random() * eligible.length)];
         
         setCurrentQuestions(prev => prev.map(item => item.id === q.id ? newQ : item));
     } catch (e: any) {
@@ -537,9 +551,73 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     }
   };
 
-  const MM_TO_PX = 3.78; 
+  const MM_TO_PX = 3.78;
+  const PAGE_WIDTH_PX = 210 * MM_TO_PX;
   const PAGE_HEIGHT_PX = 297 * MM_TO_PX;
-  
+
+  const mainHostRef = useRef<HTMLElement>(null);
+  const [scrollPreviewScale, setScrollPreviewScale] = useState(1);
+  /** Scale A4 page content to fill each grid cell (matches Tailwind grid-cols-2 / md:3 / lg:4 / xl:6 + gaps). */
+  const [gridPreviewScale, setGridPreviewScale] = useState(0.32);
+
+  useEffect(() => {
+    if (viewMode !== 'scroll') {
+      setScrollPreviewScale(1);
+      return;
+    }
+    const el = mainHostRef.current;
+    if (!el) return;
+    const pageW = 210 * MM_TO_PX;
+    const update = () => {
+      const w = el.clientWidth;
+      const avail = Math.max(160, w - 12);
+      const s = Math.min(1, Math.max(0.22, avail / pageW));
+      setScrollPreviewScale(s);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewMode, MM_TO_PX]);
+
+  useEffect(() => {
+    if (viewMode !== 'grid') return;
+    const compute = () => {
+      const node = document.getElementById('printable-paper-area');
+      if (!node) return;
+      const areaW = node.clientWidth;
+      const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
+      let cols = 2;
+      let gap = 16;
+      if (vw >= 1280) {
+        cols = 6;
+        gap = 24;
+      } else if (vw >= 1024) {
+        cols = 4;
+        gap = 24;
+      } else if (vw >= 768) {
+        cols = 3;
+        gap = 24;
+      }
+      const cellW = Math.max(48, (areaW - gap * (cols - 1)) / cols);
+      const s = Math.min(1, Math.max(0.06, cellW / PAGE_WIDTH_PX));
+      setGridPreviewScale(s);
+    };
+    const run = () => {
+      requestAnimationFrame(() => requestAnimationFrame(compute));
+    };
+    run();
+    const area = document.getElementById('printable-paper-area');
+    if (!area) return undefined;
+    const ro = new ResizeObserver(run);
+    ro.observe(area);
+    window.addEventListener('resize', run);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', run);
+    };
+  }, [viewMode, PAGE_WIDTH_PX, pages.length]);
+
   // Tuned for denser, safer packing in both logic ON/OFF layouts.
   const HEADER_HEIGHT_FIRST = 74;
   const HEADER_HEIGHT_OTHER = 50; 
@@ -925,6 +1003,157 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       );
   };
 
+  const layoutControlsActive = isLgLayout ? isControlsOpen : resultMobileSheet === 'layout';
+  const scrollPageScaled = viewMode === 'scroll' && scrollPreviewScale < 0.998;
+  const previewScale = scrollPageScaled ? scrollPreviewScale : 1;
+
+  const insightsPanelScroll = (
+    <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
+      <div className="mb-6 bg-slate-900 rounded-2xl p-4 shadow-lg border border-slate-800">
+        <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Paper Matrix</h3>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
+            <span className="text-[7px] font-black text-emerald-400 uppercase">Easy</span>
+            <span className="text-sm font-black text-white">{globalStats.Easy}</span>
+          </div>
+          <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
+            <span className="text-[7px] font-black text-amber-400 uppercase">Med</span>
+            <span className="text-sm font-black text-white">{globalStats.Medium}</span>
+          </div>
+          <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
+            <span className="text-[7px] font-black text-rose-400 uppercase">Hard</span>
+            <span className="text-sm font-black text-white">{globalStats.Hard}</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 pt-2 border-t border-white/10">
+          <span className="text-[7px] font-black text-slate-400 uppercase">MCQ: {globalStats.mcq}</span>
+          <span className="text-[7px] font-black text-slate-400 uppercase">ASR: {globalStats.reasoning}</span>
+          <span className="text-[7px] font-black text-slate-400 uppercase">MT: {globalStats.matching}</span>
+          <span className="text-[7px] font-black text-slate-400 uppercase">ST: {globalStats.statements}</span>
+        </div>
+      </div>
+
+      <div className="mb-8">
+        <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><iconify-icon icon="mdi:chart-box-outline" /> Breakdown</h3>
+        <div className="space-y-1.5">
+          {subjectBreakdown.map(([sub, count]) => (
+            <div key={sub} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-100 group hover:border-indigo-200 transition-all">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0"></div>
+                <span className="text-[8px] font-black text-slate-500 uppercase truncate">{sub}</span>
+              </div>
+              <span className="text-xl font-black text-indigo-600">{count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><iconify-icon icon="mdi:layers-triple-outline" /> Navigator</h3>
+
+      <div className="space-y-6">
+        {showIntroPage && pages.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[7px] font-black text-slate-300 uppercase tracking-widest">PREFACE</span>
+              <div className="h-px bg-slate-100 flex-1"></div>
+            </div>
+            <div className="w-1/3">
+              <PageThumbnail idx={0} label="P1" />
+            </div>
+          </div>
+        )}
+
+        {Object.entries(subjectToPages).map(([sub, pageIndices]) => (
+          <div key={sub}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[7px] font-black text-indigo-400 uppercase tracking-widest truncate">{sub}</span>
+              <div className="h-px bg-slate-100 flex-1"></div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {pageIndices.map((pIdx) => (
+                <PageThumbnail key={pIdx} idx={pIdx} label={`P${pIdx + 1}`} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const layoutControlsPanel = (
+    <>
+      <div className="p-6 border-b border-slate-100 bg-slate-50/50">
+        <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">Layout Controls</h3>
+        <p className="text-[10px] font-bold text-slate-400">Paper & Content Settings</p>
+      </div>
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
+        <div>
+          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">View Mode</h4>
+          <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-inner">
+            <button
+              type="button"
+              onClick={() => setViewMode('scroll')}
+              className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${viewMode === 'scroll' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
+            >
+              <iconify-icon icon="mdi:view-day-outline" /> Scroll
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${viewMode === 'grid' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
+            >
+              <iconify-icon icon="mdi:view-grid-outline" /> Grid
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Content Options</h4>
+          <div className="flex flex-wrap gap-2">
+            <Toggle label="Cover" checked={showIntroPage} onChange={() => setShowIntroPage(!showIntroPage)} color="indigo" />
+            <Toggle label="Logic" checked={includeExplanations} onChange={() => setIncludeExplanations(!includeExplanations)} color="amber" />
+            <Toggle label="Source" checked={showSourceFigure} onChange={() => setShowSourceFigure(!showSourceFigure)} color="cyan" />
+            <Toggle label="Answer Key" checked={showAnswerKey} onChange={() => setShowAnswerKey(!showAnswerKey)} color="cyan" />
+            <Toggle label="Topics" checked={showTopics} onChange={() => setShowTopics(!showTopics)} color="emerald" />
+            <Toggle label="Chapters" checked={showChapters} onChange={() => setShowChapters(!showChapters)} color="slate" />
+            <Toggle label="Difficulty" checked={showDifficulty} onChange={() => setShowDifficulty(!showDifficulty)} color="rose" />
+            <Toggle label="Choices" checked={showChoices} onChange={() => setShowChoices(!showChoices)} color="rose" />
+            <Toggle label="Sections" checked={groupBySubject} onChange={() => setGroupBySubject(!groupBySubject)} color="slate" />
+            <Toggle label="Past Replace" checked={allowPastReplacements} onChange={() => setAllowPastReplacements(!allowPastReplacements)} color="amber" />
+          </div>
+        </div>
+
+        <div>
+          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Paper Formatting</h4>
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2">
+              <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider ml-1">Font Face</label>
+              <select value={paperConfig.fontFamily} onChange={(e) => setPaperConfig({ ...paperConfig, fontFamily: e.target.value })} className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none shadow-sm w-full">
+                <option value="'Times New Roman', Times, serif">Times New Roman (Serif)</option>
+                <option value="Georgia, serif">Georgia (Serif)</option>
+                <option value="Helvetica, Arial, sans-serif">Helvetica (Sans-Serif)</option>
+                <option value="'Lato', sans-serif">Lato (Sans-Serif)</option>
+              </select>
+            </div>
+            <NumberControl label="Font Size" value={paperConfig.fontSize} onChange={(v) => setPaperConfig({ ...paperConfig, fontSize: v })} min={8} max={14} unit="pt" />
+            <NumberControl label="Line Spacing" value={paperConfig.lineHeight} onChange={(v) => setPaperConfig({ ...paperConfig, lineHeight: v })} min={1} max={2.5} step={0.05} />
+            <NumberControl label="Margin (H)" value={paperConfig.marginX} onChange={(v) => setPaperConfig({ ...paperConfig, marginX: v })} min={5} max={30} unit="mm" />
+            <NumberControl label="Margin (V)" value={paperConfig.marginY} onChange={(v) => setPaperConfig({ ...paperConfig, marginY: v })} min={5} max={30} unit="mm" />
+            <NumberControl label="Column Gap" value={paperConfig.gap} onChange={(v) => setPaperConfig({ ...paperConfig, gap: v })} min={2} max={20} unit="mm" />
+          </div>
+        </div>
+
+        <div>
+          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Utilities</h4>
+          <button type="button" onClick={handleDownloadKeys} disabled={isPaginating || isSaving} className="w-full bg-cyan-50 text-cyan-700 px-4 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:bg-cyan-100 transition-all flex items-center justify-center gap-2 disabled:opacity-50">
+            {isSaving ? <div className="w-4 h-4 border-2 border-cyan-200 border-t-cyan-600 rounded-full animate-spin"></div> : <iconify-icon icon="mdi:key-download-outline" width="16" />}
+            Download Answer Key
+          </button>
+        </div>
+      </div>
+    </>
+  );
+
   return (
     <div className="print-app-shell w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans" style={{ colorScheme: 'light' }}>
        {/* Inject dynamic styles for Math sizing consistency */}
@@ -932,142 +1161,149 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
          .math-content .katex { font-size: 1em !important; }
          .math-content .katex .base { margin-top: 2px; margin-bottom: 2px; }
          .math-content .katex-display { margin: 0.2em 0 !important; }
+         @media print {
+           .print-preview-scale-wrap,
+           .print-preview-scale-inner { display: contents !important; width: auto !important; height: auto !important; }
+           .printable-quiz-page { position: relative !important; transform: none !important; left: auto !important; top: auto !important; }
+         }
        `}</style>
 
-       {/* ... Header and other components remain unchanged ... */}
-       <header className="no-print bg-white border-b border-slate-200 z-30 shadow-sm shrink-0">
-          <div className="px-6 py-3 flex justify-between items-center">
-            <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-xl shadow-indigo-600/20 group cursor-pointer" onClick={onRestart}>
-                    <iconify-icon icon="mdi:flask" width="24" className="group-hover:rotate-12 transition-transform" />
+       <header className="no-print z-30 shrink-0 border-b border-slate-200 bg-white pt-[env(safe-area-inset-top)] shadow-sm">
+          <div className="flex flex-col gap-2 px-3 py-2 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:gap-3 lg:px-6 lg:py-3">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-3 lg:gap-4">
+                <div
+                    className="group flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-indigo-600 text-white shadow-xl shadow-indigo-600/20 lg:h-10 lg:w-10"
+                    onClick={onRestart}
+                    onKeyDown={(e) => e.key === 'Enter' && onRestart()}
+                    role="button"
+                    tabIndex={0}
+                >
+                    <iconify-icon icon="mdi:flask" width="22" className="transition-transform group-hover:rotate-12 lg:w-[24px]" />
                 </div>
-                <div>
-                    <input type="text" value={editableTopic} onChange={(e) => setEditableTopic(e.target.value)} className="text-lg font-black text-slate-800 tracking-tight leading-tight bg-transparent border-b-2 border-transparent hover:border-slate-200 focus:border-indigo-500 outline-none px-1 rounded transition-all" />
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{currentQuestions.length} Items Validated</p>
+                <div className="min-w-0 flex-1">
+                    <input
+                        type="text"
+                        value={editableTopic}
+                        onChange={(e) => setEditableTopic(e.target.value)}
+                        className="w-full min-w-0 max-w-full border-b-2 border-transparent bg-transparent px-1 text-base font-black leading-tight tracking-tight text-slate-800 outline-none transition-all hover:border-slate-200 focus:border-indigo-500 sm:text-lg lg:text-lg"
+                    />
+                    <p className="mt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400 sm:text-[10px]">{currentQuestions.length} Items Validated</p>
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-1 lg:hidden">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            if (isLgLayout) setIsControlsOpen((o) => !o);
+                            else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
+                        }}
+                        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-600' : 'border-slate-200 bg-slate-100 text-slate-400 hover:text-indigo-600'}`}
+                        title="Layout controls"
+                    >
+                        <iconify-icon icon="mdi:tune-variant" width="18" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onRestart}
+                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-400 transition-colors hover:text-rose-500"
+                        title="Close"
+                    >
+                        <iconify-icon icon="mdi:close" width="18" />
+                    </button>
                 </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button onClick={() => onEditBlueprint && onEditBlueprint(currentQuestions)} className="px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 text-slate-400 hover:text-indigo-600 bg-slate-50 border border-slate-100">
-                <iconify-icon icon="mdi:playlist-edit" /> Edit
+            <div className="-mx-1 flex min-w-0 items-center gap-1.5 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] lg:mx-0 lg:gap-3 lg:overflow-visible lg:px-0 lg:pb-0 [&::-webkit-scrollbar]:hidden">
+              <button
+                type="button"
+                onClick={() => onEditBlueprint && onEditBlueprint(currentQuestions)}
+                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-slate-400 transition-all hover:text-indigo-600 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
+                title="Edit blueprint"
+              >
+                <iconify-icon icon="mdi:playlist-edit" width="16" />
+                <span>Edit</span>
               </button>
 
-              <div className="flex items-center gap-2">
-                <button onClick={() => setIsOmrOpen(true)} className="bg-rose-50 text-rose-600 border border-rose-100 px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-md flex items-center gap-2 hover:bg-rose-100 transition-all">
-                    <iconify-icon icon="mdi:camera-metering-spot" width="18" /> Evaluate
-                </button>
-                <button onClick={handleSaveToCloud} disabled={isSaving || saveComplete} className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-md flex items-center gap-2 ${saveComplete ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-slate-900 text-white hover:bg-slate-800'}`}>
-                    {isSaving ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <iconify-icon icon="mdi:cloud-upload" />}
-                    {saveComplete ? "Saved" : "Sync Hub"}
-                </button>
-                <button onClick={handlePrint} disabled={isPaginating} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50">
-                    <iconify-icon icon="mdi:printer" width="18" /> Print
-                </button>
-                
-                <div className="w-px h-6 bg-slate-200 mx-2"></div>
-                
-                <button onClick={() => setIsControlsOpen(!isControlsOpen)} className={`w-10 h-10 rounded-xl flex items-center justify-center border transition-colors ${isControlsOpen ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : 'bg-slate-100 text-slate-400 hover:text-indigo-600 border-slate-200'}`} title="Toggle Layout Controls">
+              <button
+                type="button"
+                onClick={() => setIsOmrOpen(true)}
+                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-600 shadow-md transition-all hover:bg-rose-100 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
+                title="Evaluate (OMR)"
+              >
+                <iconify-icon icon="mdi:camera-metering-spot" width="16" />
+                <span className="max-[340px]:sr-only sm:inline">Evaluate</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveToCloud}
+                disabled={isSaving || saveComplete}
+                className={`flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-widest shadow-md transition-all sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5 ${saveComplete ? 'border border-emerald-100 bg-emerald-50 text-emerald-600' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                title="Sync to hub"
+              >
+                {isSaving ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <iconify-icon icon="mdi:cloud-upload" width="16" />}
+                <span className="max-[380px]:sr-only sm:inline">{saveComplete ? 'Saved' : 'Sync'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                disabled={isPaginating}
+                className="flex shrink-0 items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white shadow-xl shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-95 disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
+                title="Print"
+              >
+                <iconify-icon icon="mdi:printer" width="16" />
+                Print
+              </button>
+
+              <div className="mx-1 hidden h-6 w-px shrink-0 bg-slate-200 lg:block" />
+
+              <div className="hidden items-center gap-2 lg:flex">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isLgLayout) setIsControlsOpen((o) => !o);
+                    else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
+                  }}
+                  className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-600' : 'border-slate-200 bg-slate-100 text-slate-400 hover:text-indigo-600'}`}
+                  title="Toggle Layout Controls"
+                >
                     <iconify-icon icon="mdi:tune-variant" width="20" />
                 </button>
-                <button onClick={onRestart} className="w-10 h-10 bg-slate-100 text-slate-400 hover:text-rose-500 rounded-xl flex items-center justify-center border border-slate-200 transition-colors"><iconify-icon icon="mdi:close" width="20" /></button>
+                <button
+                    type="button"
+                    onClick={onRestart}
+                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-400 transition-colors hover:text-rose-500"
+                    title="Close"
+                >
+                    <iconify-icon icon="mdi:close" width="20" />
+                </button>
               </div>
             </div>
           </div>
        </header>
 
-       <div className="print-content-shell flex-1 flex overflow-hidden">
-            <aside className="no-print w-64 bg-white border-r border-slate-200 flex flex-col shrink-0 animate-fade-in">
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
-                    
-                    <div className="mb-6 bg-slate-900 rounded-2xl p-4 shadow-lg border border-slate-800">
-                        <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Paper Matrix</h3>
-                        <div className="grid grid-cols-3 gap-2 mb-3">
-                            <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
-                                <span className="text-[7px] font-black text-emerald-400 uppercase">Easy</span>
-                                <span className="text-sm font-black text-white">{globalStats.Easy}</span>
-                            </div>
-                            <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
-                                <span className="text-[7px] font-black text-amber-400 uppercase">Med</span>
-                                <span className="text-sm font-black text-white">{globalStats.Medium}</span>
-                            </div>
-                            <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
-                                <span className="text-[7px] font-black text-rose-400 uppercase">Hard</span>
-                                <span className="text-sm font-black text-white">{globalStats.Hard}</span>
-                            </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2 pt-2 border-t border-white/10">
-                            <span className="text-[7px] font-black text-slate-400 uppercase">MCQ: {globalStats.mcq}</span>
-                            <span className="text-[7px] font-black text-slate-400 uppercase">ASR: {globalStats.reasoning}</span>
-                            <span className="text-[7px] font-black text-slate-400 uppercase">MT: {globalStats.matching}</span>
-                            <span className="text-[7px] font-black text-slate-400 uppercase">ST: {globalStats.statements}</span>
-                        </div>
-                    </div>
-
-                    <div className="mb-8">
-                        <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><iconify-icon icon="mdi:chart-box-outline" /> Breakdown</h3>
-                        <div className="space-y-1.5">
-                            {subjectBreakdown.map(([sub, count]) => (
-                                <div key={sub} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-100 group hover:border-indigo-200 transition-all">
-                                    <div className="flex items-center gap-2 overflow-hidden">
-                                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0"></div>
-                                        <span className="text-[8px] font-black text-slate-500 uppercase truncate">{sub}</span>
-                                    </div>
-                                    <span className="text-xl font-black text-indigo-600">{count}</span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><iconify-icon icon="mdi:layers-triple-outline" /> Navigator</h3>
-                    
-                    <div className="space-y-6">
-                        {showIntroPage && pages.length > 0 && (
-                            <div>
-                                <div className="flex items-center gap-2 mb-2">
-                                    <span className="text-[7px] font-black text-slate-300 uppercase tracking-widest">PREFACE</span>
-                                    <div className="h-px bg-slate-100 flex-1"></div>
-                                </div>
-                                <div className="w-1/3">
-                                    <PageThumbnail idx={0} label="P1" />
-                                </div>
-                            </div>
-                        )}
-
-                        {Object.entries(subjectToPages).map(([sub, pageIndices]) => (
-                            <div key={sub}>
-                                <div className="flex items-center gap-2 mb-2">
-                                    <span className="text-[7px] font-black text-indigo-400 uppercase tracking-widest truncate">{sub}</span>
-                                    <div className="h-px bg-slate-100 flex-1"></div>
-                                </div>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {pageIndices.map(pIdx => (
-                                        <PageThumbnail key={pIdx} idx={pIdx} label={`P${pIdx + 1}`} />
-                                    ))}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
+       <div className="print-content-shell flex-1 flex min-h-0 overflow-hidden">
+            <aside className="no-print hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white animate-fade-in lg:flex">
+                {insightsPanelScroll}
             </aside>
 
-            <main className="print-main-host flex-1 overflow-y-auto bg-slate-200/50 p-8 custom-scrollbar">
-                <div id="printable-paper-area" className={`${viewMode === 'grid' ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-6' : 'max-w-[210mm] mx-auto space-y-12'} pb-40 print:space-y-0 print:pb-0`}>
+            <main ref={mainHostRef} className="print-main-host min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-slate-200/50 p-3 pb-24 custom-scrollbar sm:p-4 sm:pb-24 lg:p-8 lg:pb-8">
+                <div
+                    id="printable-paper-area"
+                    className={`${
+                        viewMode === 'grid'
+                            ? 'grid grid-cols-2 gap-4 md:grid-cols-3 md:gap-6 lg:grid-cols-4 xl:grid-cols-6'
+                            : 'flex w-full max-w-full flex-col items-center space-y-6 sm:space-y-10 lg:space-y-12'
+                    } pb-32 sm:pb-40 print:block print:space-y-0 print:pb-0`}
+                >
                     {pages.map((p, idx) => {
                         const isAnswerKeyPage = p.leftCol.length > 0 && p.leftCol[0].type === 'answer-key';
-                        return (
-                            <div 
-                                key={idx} 
-                                ref={el => { pageRefs.current[idx] = el; }}
-                                onClick={() => viewMode === 'grid' && setViewMode('scroll')}
-                                className={`printable-quiz-page mx-auto bg-white shadow-2xl relative overflow-hidden flex flex-col border border-slate-200 text-black box-border transition-all ${viewMode === 'grid' ? 'cursor-zoom-in hover:scale-[1.03] hover:ring-4 hover:ring-indigo-50/20 w-full aspect-[210/297] h-auto' : 'w-[210mm] h-[297mm]'}`} 
-                                style={{ 
-                                    fontFamily: paperConfig.fontFamily, 
-                                    colorScheme: 'light', 
-                                    backgroundColor: '#ffffff', 
-                                    color: '#000000',
-                                }}
-                            >
-                                <div className={`${viewMode === 'grid' ? 'origin-top-left' : ''} relative flex flex-col h-full`} style={viewMode === 'grid' ? { transform: `scale(calc(100 / ${210 * MM_TO_PX} * (100 / 100)))`, width: `${210}mm`, height: `${297}mm` } : {}}>
+                        const pageShellStyle: React.CSSProperties = {
+                            fontFamily: paperConfig.fontFamily,
+                            colorScheme: 'light',
+                            backgroundColor: '#ffffff',
+                            color: '#000000',
+                        };
+                        const innerCol = (
+                                <div className="relative flex h-full min-h-0 flex-col">
                                 {!isAnswerKeyPage && !p.isCover && (
                                     <>
                                         <div
@@ -1209,88 +1445,163 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                     </div>
                                 </div>
                                 </div>
+                        );
+
+                        const pageClassGrid =
+                            'printable-quiz-page mx-auto bg-white shadow-2xl relative overflow-hidden flex flex-col border border-slate-200 text-black box-border transition-all cursor-zoom-in hover:scale-[1.03] hover:ring-4 hover:ring-indigo-50/20 w-full aspect-[210/297] h-auto';
+                        const pageClassScroll =
+                            'printable-quiz-page mx-auto bg-white shadow-2xl relative overflow-hidden flex flex-col border border-slate-200 text-black box-border transition-all w-[210mm] h-[297mm]';
+
+                        if (viewMode === 'grid') {
+                            const g = gridPreviewScale;
+                            return (
+                                <div
+                                    key={idx}
+                                    ref={(el) => { pageRefs.current[idx] = el; }}
+                                    onClick={() => setViewMode('scroll')}
+                                    className={pageClassGrid}
+                                    style={pageShellStyle}
+                                >
+                                    <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]">
+                                        <div
+                                            className="absolute left-0 top-0 overflow-hidden"
+                                            style={{
+                                                width: PAGE_WIDTH_PX * g,
+                                                height: PAGE_HEIGHT_PX * g,
+                                            }}
+                                        >
+                                            <div
+                                                className="flex flex-col"
+                                                style={{
+                                                    width: '210mm',
+                                                    height: '297mm',
+                                                    transform: `scale(${g})`,
+                                                    transformOrigin: 'top left',
+                                                }}
+                                            >
+                                                {innerCol}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        }
+
+                        if (scrollPageScaled) {
+                            return (
+                                <div key={idx} className="print-preview-scale-wrap mb-6 flex w-full justify-center sm:mb-10 print:contents">
+                                    <div
+                                        className="print-preview-scale-inner relative shrink-0 print:contents"
+                                        style={{ width: PAGE_WIDTH_PX * previewScale, height: PAGE_HEIGHT_PX * previewScale }}
+                                    >
+                                        <div
+                                            ref={(el) => { pageRefs.current[idx] = el; }}
+                                            className={`${pageClassScroll} absolute left-0 top-0`}
+                                            style={{
+                                                ...pageShellStyle,
+                                                transform: `scale(${previewScale})`,
+                                                transformOrigin: 'top left',
+                                            }}
+                                        >
+                                            {innerCol}
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        }
+
+                        return (
+                            <div key={idx} className="mb-6 flex w-full justify-center sm:mb-10 print:block print:mb-0">
+                                <div
+                                    ref={(el) => { pageRefs.current[idx] = el; }}
+                                    className={pageClassScroll}
+                                    style={pageShellStyle}
+                                >
+                                    {innerCol}
+                                </div>
                             </div>
-                        )
+                        );
                     })}
                 </div>
             </main>
 
             {isControlsOpen && (
-                <aside className="no-print w-72 bg-white border-l border-slate-200 flex flex-col shrink-0 animate-fade-in">
-                    <div className="p-6 border-b border-slate-100 bg-slate-50/50">
-                        <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">Layout Controls</h3>
-                        <p className="text-[10px] font-bold text-slate-400">Paper & Content Settings</p>
-                    </div>
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
-                        <div>
-                            <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">View Mode</h4>
-                            <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-inner">
-                                <button 
-                                    onClick={() => setViewMode('scroll')}
-                                    className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${viewMode === 'scroll' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
-                                >
-                                    <iconify-icon icon="mdi:view-day-outline" /> Scroll
-                                </button>
-                                <button 
-                                    onClick={() => setViewMode('grid')}
-                                    className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${viewMode === 'grid' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
-                                >
-                                    <iconify-icon icon="mdi:view-grid-outline" /> Grid
-                                </button>
-                            </div>
-                        </div>
-
-                        <div>
-                            <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Content Options</h4>
-                            <div className="flex flex-wrap gap-2">
-                                <Toggle label="Cover" checked={showIntroPage} onChange={() => setShowIntroPage(!showIntroPage)} color="indigo" />
-                                <Toggle label="Logic" checked={includeExplanations} onChange={() => setIncludeExplanations(!includeExplanations)} color="amber" />
-                                <Toggle label="Source" checked={showSourceFigure} onChange={() => setShowSourceFigure(!showSourceFigure)} color="cyan" />
-                                <Toggle label="Answer Key" checked={showAnswerKey} onChange={() => setShowAnswerKey(!showAnswerKey)} color="cyan" />
-                                <Toggle label="Topics" checked={showTopics} onChange={() => setShowTopics(!showTopics)} color="emerald" />
-                                <Toggle label="Chapters" checked={showChapters} onChange={() => setShowChapters(!showChapters)} color="slate" />
-                                <Toggle label="Difficulty" checked={showDifficulty} onChange={() => setShowDifficulty(!showDifficulty)} color="rose" />
-                                <Toggle label="Choices" checked={showChoices} onChange={() => setShowChoices(!showChoices)} color="rose" />
-                                <Toggle label="Sections" checked={groupBySubject} onChange={() => setGroupBySubject(!groupBySubject)} color="slate" />
-                            </div>
-                        </div>
-
-                        <div>
-                            <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Paper Formatting</h4>
-                            <div className="space-y-3">
-                                <div className="flex flex-col gap-2">
-                                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider ml-1">Font Face</label>
-                                    <select value={paperConfig.fontFamily} onChange={e => setPaperConfig({...paperConfig, fontFamily: e.target.value})} className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none shadow-sm w-full">
-                                        <option value="'Times New Roman', Times, serif">Times New Roman (Serif)</option>
-                                        <option value="Georgia, serif">Georgia (Serif)</option>
-                                        <option value="Helvetica, Arial, sans-serif">Helvetica (Sans-Serif)</option>
-                                        <option value="'Lato', sans-serif">Lato (Sans-Serif)</option>
-                                    </select>
-                                </div>
-                                <NumberControl label="Font Size" value={paperConfig.fontSize} onChange={v => setPaperConfig({...paperConfig, fontSize: v})} min={8} max={14} unit="pt" />
-                                <NumberControl label="Line Spacing" value={paperConfig.lineHeight} onChange={v => setPaperConfig({...paperConfig, lineHeight: v})} min={1} max={2.5} step={0.05} />
-                                <NumberControl label="Margin (H)" value={paperConfig.marginX} onChange={v => setPaperConfig({...paperConfig, marginX: v})} min={5} max={30} unit="mm" />
-                                <NumberControl label="Margin (V)" value={paperConfig.marginY} onChange={v => setPaperConfig({...paperConfig, marginY: v})} min={5} max={30} unit="mm" />
-                                <NumberControl label="Column Gap" value={paperConfig.gap} onChange={v => setPaperConfig({...paperConfig, gap: v})} min={2} max={20} unit="mm" />
-                            </div>
-                        </div>
-
-                        <div>
-                            <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Utilities</h4>
-                            <button onClick={handleDownloadKeys} disabled={isPaginating || isSaving} className="w-full bg-cyan-50 text-cyan-700 px-4 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:bg-cyan-100 transition-all flex items-center justify-center gap-2 disabled:opacity-50">
-                                {isSaving ? <div className="w-4 h-4 border-2 border-cyan-200 border-t-cyan-600 rounded-full animate-spin"></div> : <iconify-icon icon="mdi:key-download-outline" width="16" />}
-                                Download Answer Key
-                            </button>
-                        </div>
-                    </div>
+                <aside className="no-print hidden w-72 shrink-0 flex-col border-l border-slate-200 bg-white animate-fade-in lg:flex">
+                    {layoutControlsPanel}
                 </aside>
             )}
        </div>
 
+            {!isLgLayout && (
+                <div className="no-print flex shrink-0 gap-2 border-t border-slate-200 bg-white/95 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm">
+                    <button
+                        type="button"
+                        onClick={() => setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'))}
+                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                            resultMobileSheet === 'insights' ? 'bg-slate-900 text-white shadow-md' : 'border border-slate-200 bg-slate-50 text-slate-600'
+                        }`}
+                    >
+                        <iconify-icon icon="mdi:chart-box-outline" width="20" />
+                        Insights
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'))}
+                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                            resultMobileSheet === 'layout' ? 'bg-indigo-600 text-white shadow-md' : 'border border-slate-200 bg-slate-50 text-slate-600'
+                        }`}
+                    >
+                        <iconify-icon icon="mdi:tune-variant" width="20" />
+                        Layout
+                    </button>
+                </div>
+            )}
+
+            {!isLgLayout && resultMobileSheet && (
+                <>
+                    <button
+                        type="button"
+                        aria-label="Close panel"
+                        className="no-print animate-fade-in fixed inset-0 z-[55] bg-slate-900/50"
+                        onClick={() => setResultMobileSheet(null)}
+                    />
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="result-sheet-title"
+                        className="no-print animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-2xl border border-slate-200 border-b-0 bg-white shadow-[0_-12px_48px_rgba(0,0,0,0.15)]"
+                    >
+                        <div className="flex justify-center pt-2 pb-1" aria-hidden>
+                            <div className="h-1 w-10 rounded-full bg-slate-300" />
+                        </div>
+                        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-2.5">
+                            <span id="result-sheet-title" className="text-xs font-black uppercase tracking-widest text-slate-800">
+                                {resultMobileSheet === 'insights' ? 'Paper insights' : 'Layout controls'}
+                            </span>
+                            <button
+                                type="button"
+                                className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                                onClick={() => setResultMobileSheet(null)}
+                                aria-label="Close"
+                            >
+                                <iconify-icon icon="mdi:close" width="22" />
+                            </button>
+                        </div>
+                        <div className="flex max-h-[min(72vh,calc(90vh-5.5rem))] min-h-[36vh] flex-1 flex-col overflow-hidden">
+                            {resultMobileSheet === 'insights' ? (
+                                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{insightsPanelScroll}</div>
+                            ) : (
+                                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{layoutControlsPanel}</div>
+                            )}
+                        </div>
+                    </div>
+                </>
+            )}
+
        {isOmrOpen && (
-           <OMRScannerModal 
-                questions={currentQuestions} 
-                onClose={() => setIsOmrOpen(false)} 
+           <OMRScannerModal
+                questions={currentQuestions}
+                onClose={() => setIsOmrOpen(false)}
            />
        )}
     </div>

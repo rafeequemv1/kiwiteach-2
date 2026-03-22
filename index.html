@@ -2,11 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>KiwiTeach</title>
     <link rel="stylesheet" href="https://esm.sh/katex@0.16.9/dist/katex.min.css" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Lato:wght@400;700;900&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
     <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
     <script src="https://docs.opencv.org/4.8.0/opencv.js" async></script>
     <script type="text/javascript" src="https://unpkg.com/smiles-drawer@2.0.1/dist/smiles-drawer.min.js"></script>
@@ -26,6 +26,7 @@
             fontFamily: {
               sans: ['Inter', 'sans-serif'],
               lato: ['Lato', 'sans-serif'],
+              serif: ['Lora', 'Georgia', 'serif'],
             },
             animation: {
               'fade-in': 'fadeIn 0.5s ease-out',
@@ -54,6 +55,13 @@
       body {
         margin: 0;
         overflow-x: hidden;
+      }
+
+      .blog-prose p {
+        margin-bottom: 1.5rem;
+      }
+      .blog-prose p:last-child {
+        margin-bottom: 0;
       }
       
       .custom-scrollbar::-webkit-scrollbar {

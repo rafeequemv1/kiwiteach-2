@@ -7,16 +7,42 @@ import QuestionDBHome from './QuestionBank/QuestionBankHome';
 import PromptsHome from './Prompts/PromptsHome';
 import LabHome from './Lab/LabHome';
 import QualityLab from './Lab/QualityLab';
-import SyllabusManager from './Syllabus/SyllabusManager';
+import TeacherSyllabusHub from '../Teacher/Syllabus/TeacherSyllabusHub';
+import OMRAccuracyTester from '../Quiz/components/OMR/OMRAccuracyTester';
+import InstituteOrgPanel from '../Settings/Institutes/InstituteOrgPanel';
+import UsersRoleManager from './Users/UsersRoleManager';
+import type { AppRole } from '../auth/roles';
 
-type AdminSection = 'dashboard' | 'knowledge-source' | 'kb-explorer' | 'question-db' | 'prompts' | 'lab' | 'syllabus' | 'quality-lab';
+type AdminSection =
+  | 'dashboard'
+  | 'institutes'
+  | 'users'
+  | 'knowledge-source'
+  | 'kb-explorer'
+  | 'question-db'
+  | 'prompts'
+  | 'lab'
+  | 'syllabus'
+  | 'quality-lab'
+  | 'omr-lab';
+
+interface AdminViewProps {
+  appRole: AppRole;
+  userId: string;
+  onRefreshOrg?: () => void;
+}
 
 interface KnowledgeBase {
   id: string;
   name: string;
 }
 
-const AdminView: React.FC = () => {
+const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) => {
+  const isDeveloper = appRole === 'developer';
+  const isSchoolAdmin = appRole === 'school_admin';
+  const isTeacher = appRole === 'teacher';
+  const canUseSyllabusHub = isDeveloper || isSchoolAdmin || isTeacher;
+
   const [activeSection, setActiveSection] = useState<AdminSection>('dashboard');
   const [selectedKb, setSelectedKb] = useState<KnowledgeBase | null>(null);
 
@@ -27,6 +53,17 @@ const AdminView: React.FC = () => {
 
   const renderContent = () => {
     switch (activeSection) {
+      case 'institutes':
+        return (
+          <InstituteOrgPanel
+            userId={userId}
+            onRefresh={onRefreshOrg}
+            title="Institutes"
+            subtitle="Schools, coaching centres, and class batches"
+          />
+        );
+      case 'users':
+        return <UsersRoleManager />;
       case 'knowledge-source':
         return <KnowledgeSourceHome onSelectKb={handleSelectKb} />;
       case 'kb-explorer':
@@ -46,58 +83,101 @@ const AdminView: React.FC = () => {
       case 'quality-lab':
         return <QualityLab onBack={() => setActiveSection('dashboard')} />;
       case 'syllabus':
-        return <SyllabusManager />;
+        return <TeacherSyllabusHub isDeveloper={isDeveloper} />;
+      case 'omr-lab':
+        return isDeveloper ? (
+          <OMRAccuracyTester />
+        ) : (
+          <p className="p-6 text-sm text-slate-600">OMR Lab is only available to developers.</p>
+        );
       default:
         return (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-             <AdminCard 
-              title="Quality Lab"
-              description="Benchmark Gemini models & estimate INR costs."
-              icon="mdi:matrix"
-              color="text-indigo-600"
-              bg="bg-indigo-50"
-              onClick={() => setActiveSection('quality-lab')}
-            />
-             <AdminCard 
-              title="Batch Forge"
-              description="Rapid database population from files."
-              icon="mdi:factory"
-              color="text-rose-600"
-              bg="bg-rose-50"
-              onClick={() => setActiveSection('lab')}
-            />
-             <AdminCard 
-              title="Syllabus"
-              description="Manage NEET authorized topic boundaries."
-              icon="mdi:book-check-outline"
-              color="text-emerald-600"
-              bg="bg-emerald-50"
-              onClick={() => setActiveSection('syllabus')}
-            />
-             <AdminCard 
-              title="Question DB"
-              description="Browse synced knowledge & materials."
-              icon="mdi:database-search-outline"
-              color="text-amber-600"
-              bg="bg-amber-50"
-              onClick={() => setActiveSection('question-db')}
-            />
-            <AdminCard 
-              title="Knowledge"
-              description="Manage curriculum & PDF context."
-              icon="mdi:book-open-variant"
-              color="text-emerald-600"
-              bg="bg-emerald-50"
-              onClick={() => setActiveSection('knowledge-source')}
-            />
-            <AdminCard 
-              title="System Logic"
-              description="Configure AI generation rules & prompts."
-              icon="mdi:console"
-              color="text-violet-600"
-              bg="bg-violet-50"
-              onClick={() => setActiveSection('prompts')}
-            />
+            {(isDeveloper || isSchoolAdmin) && (
+              <AdminCard
+                title="Institutes"
+                description="Add schools, coaching centres, and classes."
+                icon="mdi:domain"
+                color="text-sky-600"
+                bg="bg-sky-50"
+                onClick={() => setActiveSection('institutes')}
+              />
+            )}
+            {canUseSyllabusHub && (
+              <AdminCard
+                title="Syllabus & exclusions"
+                description="Multiple syllabi per knowledge base, topic blocklist for AI."
+                icon="mdi:book-education-outline"
+                color="text-emerald-600"
+                bg="bg-emerald-50"
+                onClick={() => setActiveSection('syllabus')}
+              />
+            )}
+            {isDeveloper && (
+              <>
+                <AdminCard
+                  title="Users"
+                  description="View all users and manage roles."
+                  icon="mdi:account-cog-outline"
+                  color="text-cyan-600"
+                  bg="bg-cyan-50"
+                  onClick={() => setActiveSection('users')}
+                />
+                <AdminCard
+                  title="OMR Lab"
+                  description="Tune OMR recognition & accuracy."
+                  icon="mdi:flask-outline"
+                  color="text-fuchsia-600"
+                  bg="bg-fuchsia-50"
+                  onClick={() => setActiveSection('omr-lab')}
+                />
+                <AdminCard
+                  title="Quality Lab"
+                  description="Benchmark Gemini models & estimate INR costs."
+                  icon="mdi:matrix"
+                  color="text-indigo-600"
+                  bg="bg-indigo-50"
+                  onClick={() => setActiveSection('quality-lab')}
+                />
+                <AdminCard
+                  title="Batch Forge"
+                  description="Rapid database population from files."
+                  icon="mdi:factory"
+                  color="text-rose-600"
+                  bg="bg-rose-50"
+                  onClick={() => setActiveSection('lab')}
+                />
+                <AdminCard
+                  title="Question DB"
+                  description="Browse synced knowledge & materials."
+                  icon="mdi:database-search-outline"
+                  color="text-amber-600"
+                  bg="bg-amber-50"
+                  onClick={() => setActiveSection('question-db')}
+                />
+                <AdminCard
+                  title="Knowledge"
+                  description="Manage curriculum & PDF context."
+                  icon="mdi:book-open-variant"
+                  color="text-teal-600"
+                  bg="bg-teal-50"
+                  onClick={() => setActiveSection('knowledge-source')}
+                />
+                <AdminCard
+                  title="System Logic"
+                  description="Configure AI generation rules & prompts."
+                  icon="mdi:console"
+                  color="text-violet-600"
+                  bg="bg-violet-50"
+                  onClick={() => setActiveSection('prompts')}
+                />
+              </>
+            )}
+            {isSchoolAdmin && !isDeveloper && (
+              <p className="col-span-full text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                Use <strong className="text-slate-600">Institutes</strong> to manage your centres and classes.
+              </p>
+            )}
           </div>
         );
     }
@@ -133,12 +213,20 @@ const AdminView: React.FC = () => {
       } else if (activeSection === 'prompts') {
           parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
           parts.push(<button className='text-slate-900'>System Logic</button>);
-      } else if (activeSection === 'lab' || activeSection === 'quality-lab') {
+      } else if (activeSection === 'lab' || activeSection === 'quality-lab' || activeSection === 'omr-lab') {
           parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button className='text-slate-900'>{activeSection === 'lab' ? 'Batch Forge' : 'Quality Lab'}</button>);
+          parts.push(<button type="button" className="text-slate-900">{
+            activeSection === 'lab' ? 'Batch Forge' : activeSection === 'quality-lab' ? 'Quality Lab' : 'OMR Lab'
+          }</button>);
       } else if (activeSection === 'syllabus') {
           parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
           parts.push(<button className='text-slate-900'>Syllabus</button>);
+      } else if (activeSection === 'institutes') {
+          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
+          parts.push(<button type="button" className="text-slate-900">Institutes</button>);
+      } else if (activeSection === 'users') {
+          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
+          parts.push(<button type="button" className="text-slate-900">Users</button>);
       }
       return parts;
   };
@@ -151,7 +239,10 @@ const AdminView: React.FC = () => {
         case 'prompts': return 'System Configuration';
         case 'lab': return 'Rapid Forging Lab';
         case 'quality-lab': return 'Model Benchmarking';
-        case 'syllabus': return 'NEET Syllabus Index';
+        case 'syllabus': return 'Syllabus & exclusions';
+        case 'omr-lab': return 'OMR Lab';
+        case 'institutes': return 'Institutes & classes';
+        case 'users': return 'Users';
         default: return activeSection.replace('-', ' ');
     }
   };

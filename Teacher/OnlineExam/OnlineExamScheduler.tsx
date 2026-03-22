@@ -1,11 +1,11 @@
 
 import '../../types';
 import React, { useState, useMemo, useRef } from 'react';
-import { supabase } from '../../supabase/client';
 import { Question } from '../../Quiz/types';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import InteractiveQuizSession from '../../Quiz/components/InteractiveQuizSession';
+import { fetchEligibleQuestions, isUuid } from '../../Quiz/services/questionUsageService';
 
 interface OnlineExamSchedulerProps {
   topic: string;
@@ -13,11 +13,11 @@ interface OnlineExamSchedulerProps {
   initialConfig?: any;
   onBack: () => void;
   onSave: (examData: any) => Promise<void>;
-  schoolsList: any[];
+  institutesList: any[];
   classesList: any[];
 }
 
-const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questions, initialConfig, onBack, onSave, schoolsList, classesList }) => {
+const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questions, initialConfig, onBack, onSave, institutesList, classesList }) => {
   const [localQuestions, setLocalQuestions] = useState<Question[]>(questions);
   const [examTitle, setExamTitle] = useState(topic);
   
@@ -38,6 +38,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
 
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [replacingId, setReplacingId] = useState<string | null>(null);
+  const [allowPastReplacements, setAllowPastReplacements] = useState(false);
 
   const stats = useMemo(() => {
       const breakdown = { total: localQuestions.length, easy: 0, medium: 0, hard: 0, types: {} as Record<string, number> };
@@ -72,42 +73,23 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
       if (!q.sourceChapterId) return alert("Cannot replace: Source chapter unknown.");
       setReplacingId(q.id);
       try {
-          // Only filter out questions that actually have a database ID (UUID).
-          // AI generated questions have string IDs like 'forge-...' which cause UUID syntax errors in DB queries.
           const currentIds = localQuestions
-            .map(item => item.originalId) // Only grab original DB UUIDs
-            .filter(id => id && typeof id === 'string'); // Ensure truthy strings
-
-          let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', q.sourceChapterId);
-          
-          if (currentIds.length > 0) {
-              query = query.not('id', 'in', `(${currentIds.join(',')})`);
-          }
-          
-          const { data, error } = await query.limit(20);
-          
-          if (error) throw error;
-          if (!data || data.length === 0) return alert("No alternative questions found in this chapter.");
-          
-          const raw = data[Math.floor(Math.random() * data.length)];
-          const newQ: Question = {
-              id: raw.id, 
-              originalId: raw.id, 
-              text: raw.question_text, 
-              options: raw.options, 
-              correctIndex: raw.correct_index, 
-              explanation: raw.explanation, 
-              difficulty: raw.difficulty, 
-              type: raw.question_type || 'mcq', 
-              figureDataUrl: raw.figure_url,
-              columnA: raw.column_a, 
-              columnB: raw.column_b, 
-              correctMatches: raw.correct_matches, 
-              sourceChapterId: raw.chapter_id,
-              sourceChapterName: raw.chapter_name || q.sourceChapterName, 
-              sourceSubjectName: raw.subject_name || q.sourceSubjectName, 
-              pageNumber: raw.page_number
-          };
+            .map(item => item.originalId || item.id)
+            .filter((id): id is string => isUuid(id));
+          const classContext =
+            previewClassId !== 'default'
+              ? previewClassId
+              : selectedClassIds[0] || initialConfig?.classIds?.[0] || null;
+          const candidates = await fetchEligibleQuestions({
+            classId: classContext,
+            chapterId: q.sourceChapterId,
+            difficulty: q.difficulty,
+            excludeIds: currentIds,
+            limit: 20,
+            allowRepeats: allowPastReplacements,
+          });
+          if (!candidates.length) return alert("No alternative questions found in this chapter.");
+          const newQ: Question = candidates[Math.floor(Math.random() * candidates.length)];
           setLocalQuestions(prev => prev.map(item => item.id === q.id ? newQ : item));
       } catch (err: any) { 
           console.error("Replace Error", err);
@@ -126,7 +108,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
     } catch (e: any) { alert("Failed to schedule exam: " + e.message); } finally { setIsSaving(false); }
   };
 
-  const selectedPreviewSchool = useMemo(() => schoolsList.find(s => s.id === previewSchoolId), [schoolsList, previewSchoolId]);
+  const selectedPreviewSchool = useMemo(() => institutesList.find(s => s.id === previewSchoolId), [institutesList, previewSchoolId]);
 
   if (isPreviewing) return <InteractiveQuizSession questions={localQuestions} topic={selectedPreviewSchool ? selectedPreviewSchool.name : examTitle} onExit={() => setIsPreviewing(false)} />;
 
@@ -150,7 +132,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                     className="bg-transparent text-[9px] font-black uppercase tracking-wider text-slate-600 px-3 py-1 outline-none border-r border-slate-200"
                   >
                     <option value="default">Preview School</option>
-                    {schoolsList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {institutesList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                   <select 
                     value={previewClassId} 
@@ -159,14 +141,14 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                     className="bg-transparent text-[9px] font-black uppercase tracking-wider text-slate-600 px-3 py-1 outline-none disabled:opacity-30"
                   >
                     <option value="default">Preview Class</option>
-                    {classesList.filter(c => c.school_id === previewSchoolId).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    {classesList.filter(c => c.institute_id === previewSchoolId).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
              </div>
 
-             <button onClick={() => setIsPreviewing(true)} className="bg-white text-indigo-600 border border-indigo-200 px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-50 transition-all flex items-center gap-2 shadow-sm">
+             <button onClick={() => setIsPreviewing(true)} className="bg-white text-sky-800 border border-sky-200 px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-sky-50 transition-all flex items-center gap-2 shadow-sm">
                 <iconify-icon icon="mdi:eye-outline" width="18" /> Preview
              </button>
-             <button onClick={handleSave} disabled={isSaving} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-600/30 hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2">
+             <button onClick={handleSave} disabled={isSaving} className="bg-sky-300 hover:bg-sky-200 text-sky-950 px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-md transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2">
                 {isSaving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <iconify-icon icon="mdi:cloud-upload-outline" width="18" />}
                 Publish Assessment
              </button>
@@ -177,9 +159,9 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
           <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {localQuestions.map((q, idx) => (
-                      <div key={q.id || idx} draggable onDragStart={(e) => handleDragStart(e, idx)} onDragOver={(e) => handleDragOver(e, idx)} onDrop={(e) => handleDrop(e, idx)} className={`bg-white p-5 rounded-3xl border transition-all flex flex-col gap-3 group relative hover:shadow-xl ${replacingId === q.id ? 'opacity-50 border-indigo-200 animate-pulse' : 'border-slate-100 hover:border-indigo-200'}`}>
+                      <div key={q.id || idx} draggable onDragStart={(e) => handleDragStart(e, idx)} onDragOver={(e) => handleDragOver(e, idx)} onDrop={(e) => handleDrop(e, idx)} className={`bg-white p-5 rounded-3xl border transition-all flex flex-col gap-3 group relative hover:shadow-xl ${replacingId === q.id ? 'opacity-50 border-sky-200 animate-pulse' : 'border-slate-100 hover:border-sky-200'}`}>
                           <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 bg-white/90 backdrop-blur-sm rounded-xl p-1 shadow-md border border-slate-100">
-                              <button onClick={() => handleReplace(q)} disabled={!!replacingId} className="w-7 h-7 flex items-center justify-center text-indigo-500 hover:bg-indigo-50 rounded-lg hover:scale-110 transition-transform"><iconify-icon icon="mdi:refresh" width="16" /></button>
+                              <button onClick={() => handleReplace(q)} disabled={!!replacingId} className="w-7 h-7 flex items-center justify-center text-sky-600 hover:bg-sky-50 rounded-lg hover:scale-110 transition-transform"><iconify-icon icon="mdi:refresh" width="16" /></button>
                               <button onClick={() => handleDelete(q.id)} className="w-7 h-7 flex items-center justify-center text-rose-500 hover:bg-rose-50 rounded-lg hover:scale-110 transition-transform"><iconify-icon icon="mdi:trash-can-outline" width="16" /></button>
                               <div className="w-px h-4 bg-slate-200 mx-1"></div>
                               <div className="w-7 h-7 flex items-center justify-center text-slate-400 cursor-grab active:cursor-grabbing"><iconify-icon icon="mdi:drag" width="18" /></div>
@@ -208,7 +190,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                   <div className="space-y-6">
                       <div>
                           <label className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">Exam Identification</label>
-                          <input type="text" value={examTitle} onChange={e => setExamTitle(e.target.value)} className="w-full bg-white border-2 border-slate-100 rounded-2xl px-4 py-3 text-xs font-black text-slate-800 outline-none focus:border-indigo-500 transition-all shadow-sm" />
+                          <input type="text" value={examTitle} onChange={e => setExamTitle(e.target.value)} className="w-full bg-white border-2 border-slate-100 rounded-2xl px-4 py-3 text-xs font-black text-slate-800 outline-none focus:border-sky-400 transition-all shadow-sm" />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                           <div>
@@ -223,9 +205,9 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                       <div>
                           <div className="flex justify-between items-center mb-2 px-1">
                               <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Window (Mins)</label>
-                              <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">{duration}m</span>
+                              <span className="text-[10px] font-black text-sky-800 bg-sky-100 px-2 py-0.5 rounded-full">{duration}m</span>
                           </div>
-                          <input type="range" min="10" max="300" step="5" value={duration} onChange={e => setDuration(parseInt(e.target.value))} className="w-full h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer accent-indigo-600" />
+                          <input type="range" min="10" max="300" step="5" value={duration} onChange={e => setDuration(parseInt(e.target.value))} className="w-full h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer accent-sky-500" />
                       </div>
                       
                       {/* ASSIGN CLASSES */}
@@ -241,6 +223,10 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                           <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Auto-Key</label>
                           <button onClick={() => setReleaseAnswers(!releaseAnswers)} className={`w-10 h-5 rounded-full transition-all relative ${releaseAnswers ? 'bg-emerald-500' : 'bg-slate-700'}`}><div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-all ${releaseAnswers ? 'left-6' : 'left-1'}`}></div></button>
                       </div>
+                      <div className="bg-amber-50 p-4 rounded-2xl border border-amber-100 flex items-center justify-between">
+                          <label className="text-[9px] font-black text-amber-700 uppercase tracking-widest">Allow past replace</label>
+                          <button onClick={() => setAllowPastReplacements(!allowPastReplacements)} className={`w-10 h-5 rounded-full transition-all relative ${allowPastReplacements ? 'bg-amber-500' : 'bg-amber-200'}`}><div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-all ${allowPastReplacements ? 'left-6' : 'left-1'}`}></div></button>
+                      </div>
                   </div>
               </div>
 
@@ -248,7 +234,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                   <div className="bg-white rounded-[2rem] p-5 border border-slate-200 shadow-sm space-y-5">
                       <div className="flex items-center justify-between pb-3 border-b border-slate-50">
                           <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Structure</span>
-                          <span className="text-xl font-black text-indigo-600">{stats.total} Qs</span>
+                          <span className="text-xl font-black text-sky-700">{stats.total} Qs</span>
                       </div>
                       <div className="space-y-4">
                           <div className="flex flex-wrap gap-1.5">
@@ -289,8 +275,8 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                   </div>
                   
                   <div className="flex-1 overflow-y-auto custom-scrollbar space-y-6 pr-2">
-                      {schoolsList.map(school => {
-                          const schoolClasses = classesList.filter(c => c.school_id === school.id);
+                      {institutesList.map(school => {
+                          const schoolClasses = classesList.filter(c => c.institute_id === school.id);
                           if (schoolClasses.length === 0) return null;
                           return (
                               <div key={school.id} className="bg-slate-50 p-5 rounded-[2rem] border border-slate-100 shadow-inner">
@@ -312,7 +298,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                               </div>
                           );
                       })}
-                      {schoolsList.length === 0 && (
+                      {institutesList.length === 0 && (
                           <div className="text-center py-10">
                               <iconify-icon icon="mdi:alert-circle-outline" width="48" className="text-slate-200 mb-4" />
                               <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No organizations found. Configure them in Settings.</p>

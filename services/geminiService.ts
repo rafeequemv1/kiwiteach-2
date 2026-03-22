@@ -221,7 +221,8 @@ export const generateQuizQuestions = async (
   syllabusTopics?: string[],
   pyqContext?: string,
   isLengthy?: boolean,
-  isConfusingChoices?: boolean
+  isConfusingChoices?: boolean,
+  excludedTopicLabels?: string[]
 ): Promise<Question[]> => {
   await ensureApiKey();
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -281,6 +282,14 @@ export const generateQuizQuestions = async (
        - **FAILURE CONDITION**: It is strictly forbidden to generate a 'topic_tag' that is not on this list. Do not paraphrase, summarize, or invent new topics. For example, if the list contains "Cell Cycle", the tag must be "Cell Cycle", not "Phases of the Cell Cycle".`
     : '';
 
+  const exclusionInstruction =
+    excludedTopicLabels && excludedTopicLabels.length > 0
+      ? `[FORBIDDEN_TOPICS — NEGATIVE SYLLABUS LIST]:
+       - Do NOT create questions that belong to, reference, or should be tagged with any of these topics (case-insensitive; treat as hard bans).
+       - BANNED LABELS: [${excludedTopicLabels.map((t) => `"${String(t).trim()}"`).join(', ')}]
+       - Your topic_tag for every question must clearly avoid these areas; if the source material mentions them, skip and choose another subtopic.`
+      : '';
+
   const formatProtocols = `
   STYLE PROTOCOLS (STRICT):
   1. mcq: Standard 4-option single correct choice.
@@ -303,6 +312,7 @@ export const generateQuizQuestions = async (
     ${difficultyInstruction}
     ${visualInstruction}
     ${syllabusInstruction}
+    ${exclusionInstruction}
     ${formatProtocols}
 
     WORLD CLASS TUNING:

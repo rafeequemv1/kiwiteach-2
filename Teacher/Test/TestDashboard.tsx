@@ -20,16 +20,16 @@ interface Test {
   folder_id?: string | null;
 }
 
-interface School {
+interface Institute {
   id: string;
   name: string;
   color?: string;
 }
 
-interface SchoolClass {
+interface OrgClass {
   id: string;
   name: string;
-  school_id: string | null;
+  institute_id: string | null;
 }
 
 interface Folder {
@@ -41,8 +41,8 @@ interface Folder {
 
 interface TestDashboardProps {
   username?: string;
-  schoolsList: School[];
-  classesList: SchoolClass[];
+  institutesList: Institute[];
+  classesList: OrgClass[];
   folders: Folder[];
   allTests: Test[];
   onAddFolder: (folder: { name: string; parent_id: string | null }) => void;
@@ -63,7 +63,7 @@ interface TestDashboardProps {
 
 const TestDashboard: React.FC<TestDashboardProps> = ({ 
     username,
-    schoolsList,
+    institutesList,
     classesList,
     folders,
     allTests,
@@ -82,7 +82,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     title = "Test Repository",
     subtitle
 }) => {
-  const [selectedSchoolId, setSelectedSchoolId] = useState<string>('all');
+  const [selectedInstituteId, setSelectedInstituteId] = useState<string>('all');
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   
@@ -111,15 +111,15 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   }, [assigningTest]);
 
   const displayedClasses = useMemo(() => {
-      if (selectedSchoolId === 'all') return [];
-      return classesList.filter(c => c.school_id === selectedSchoolId);
-  }, [classesList, selectedSchoolId]);
+      if (selectedInstituteId === 'all') return [];
+      return classesList.filter(c => c.institute_id === selectedInstituteId);
+  }, [classesList, selectedInstituteId]);
 
   const testsToDisplay = useMemo(() => {
       let filtered = allTests;
 
-      if (selectedSchoolId !== 'all') {
-          const schoolClassIds = new Set(classesList.filter(c => c.school_id === selectedSchoolId).map(c => c.id));
+      if (selectedInstituteId !== 'all') {
+          const schoolClassIds = new Set(classesList.filter(c => c.institute_id === selectedInstituteId).map(c => c.id));
           filtered = filtered.filter(t => t.class_ids && t.class_ids.some(id => schoolClassIds.has(id)));
       }
 
@@ -129,26 +129,26 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
 
       if (currentFolderId) {
           filtered = filtered.filter(t => t.folder_id === currentFolderId);
-      } else if (!selectedClassId && selectedSchoolId === 'all') {
+      } else if (!selectedClassId && selectedInstituteId === 'all') {
           filtered = filtered.filter(t => !t.folder_id);
       }
 
       return filtered.map(t => optimisticOverrides[t.id] !== undefined ? { ...t, scheduledAt: optimisticOverrides[t.id] } : t)
           .sort((a, b) => new Date(b.scheduledAt || b.generatedAt || 0).getTime() - new Date(a.scheduledAt || a.generatedAt || 0).getTime());
-  }, [allTests, selectedSchoolId, selectedClassId, currentFolderId, classesList, optimisticOverrides]);
+  }, [allTests, selectedInstituteId, selectedClassId, currentFolderId, classesList, optimisticOverrides]);
 
   const visibleFolders = useMemo(() => {
       if (currentFolderId) {
           return folders.filter(f => f.parent_id === currentFolderId);
       }
-      if (selectedSchoolId === 'all' && !selectedClassId) {
+      if (selectedInstituteId === 'all' && !selectedClassId) {
           return folders.filter(f => !f.parent_id);
       }
       return [];
-  }, [folders, currentFolderId, selectedSchoolId, selectedClassId]);
+  }, [folders, currentFolderId, selectedInstituteId, selectedClassId]);
 
   const handleSchoolTabClick = (schoolId: string) => {
-    setSelectedSchoolId(schoolId);
+    setSelectedInstituteId(schoolId);
     setSelectedClassId(null);
     setCurrentFolderId(null);
   };
@@ -205,7 +205,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
 
     const styles = {
         draft: { bg: 'bg-white', border: 'border-slate-300 border-dashed', icon: 'mdi:pencil-ruler', text: 'text-slate-500', accent: 'bg-slate-400' },
-        generated: { bg: 'bg-white', border: 'border-slate-200', icon: 'mdi:file-document-outline', text: 'text-indigo-900', accent: 'bg-indigo-600' },
+        generated: { bg: 'bg-white', border: 'border-slate-200', icon: 'mdi:file-document-outline', text: 'text-sky-950', accent: 'bg-sky-600' },
         scheduled: { bg: 'bg-white', border: 'border-amber-200', icon: 'mdi:calendar-clock', text: 'text-amber-900', accent: 'bg-amber-500' },
         over: { bg: 'bg-emerald-50/30', border: 'border-emerald-100', icon: 'mdi:check-circle-outline', text: 'text-emerald-800', accent: 'bg-emerald-500' }
     }[status];
@@ -229,7 +229,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
                 <button onClick={(e) => { e.stopPropagation(); setDeletingItem({ type: 'test', id: test.id, name: test.name }); }} className="w-6 h-6 bg-white text-slate-400 rounded-md hover:text-red-500 shadow-sm flex items-center justify-center" title="Delete"><iconify-icon icon="mdi:trash-can-outline" width="12" /></button>
             </div>
             
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 shadow-sm bg-slate-50 ${status === 'draft' ? 'text-slate-400' : 'text-indigo-500'}`}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 shadow-sm bg-slate-50 ${status === 'draft' ? 'text-slate-400' : 'text-sky-600'}`}>
                 <iconify-icon icon={styles.icon} width="20" />
             </div>
             
@@ -295,35 +295,35 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
           <button onClick={() => setIsCreateModalOpen(true)} className="px-4 py-3 bg-white border border-slate-200 rounded-xl font-black text-xs uppercase tracking-widest text-slate-600 hover:bg-slate-50 flex items-center gap-2">
             <iconify-icon icon="mdi:folder-plus-outline" width="18" />Folder
           </button>
-          <button onClick={() => onStartNewTest(currentFolderId)} className="bg-accent text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest flex items-center gap-2 shadow-xl shadow-accent/20 hover:bg-indigo-700 active:scale-95">
+          <button onClick={() => onStartNewTest(currentFolderId)} className="bg-sky-300 hover:bg-sky-200 text-sky-950 px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest flex items-center gap-2 shadow-md shadow-sky-900/10 active:scale-95">
             <iconify-icon icon="mdi:plus" width="18" />Generate New
           </button>
         </div>
       </div>
       
       <div className="flex border-b border-slate-200 mb-6 shrink-0 gap-6 overflow-x-auto">
-          <button onClick={() => handleSchoolTabClick('all')} className={`pb-3 text-xs font-black uppercase tracking-[0.2em] transition-all relative whitespace-nowrap ${selectedSchoolId === 'all' ? 'text-accent' : 'text-slate-300 hover:text-slate-500'}`}>
+          <button onClick={() => handleSchoolTabClick('all')} className={`pb-3 text-xs font-black uppercase tracking-[0.2em] transition-all relative whitespace-nowrap ${selectedInstituteId === 'all' ? 'text-accent' : 'text-slate-300 hover:text-slate-500'}`}>
               All Repository
-              {selectedSchoolId === 'all' && <div className="absolute bottom-0 left-0 w-full h-1 bg-accent rounded-full" />}
+              {selectedInstituteId === 'all' && <div className="absolute bottom-0 left-0 w-full h-1 bg-sky-400 rounded-full" />}
           </button>
-          {schoolsList.map(school => (
-              <button key={school.id} onClick={() => handleSchoolTabClick(school.id)} className={`pb-3 text-xs font-black uppercase tracking-[0.2em] transition-all relative whitespace-nowrap ${selectedSchoolId === school.id ? 'text-accent' : 'text-slate-300 hover:text-slate-500'}`}>
+          {institutesList.map(school => (
+              <button key={school.id} onClick={() => handleSchoolTabClick(school.id)} className={`pb-3 text-xs font-black uppercase tracking-[0.2em] transition-all relative whitespace-nowrap ${selectedInstituteId === school.id ? 'text-accent' : 'text-slate-300 hover:text-slate-500'}`}>
                   {school.name}
-                  {selectedSchoolId === school.id && <div className="absolute bottom-0 left-0 w-full h-1 bg-accent rounded-full" />}
+                  {selectedInstituteId === school.id && <div className="absolute bottom-0 left-0 w-full h-1 bg-sky-400 rounded-full" />}
               </button>
           ))}
       </div>
       
       <div className="flex-1 flex gap-6 overflow-hidden pb-4">
-        {selectedSchoolId !== 'all' && (
+        {selectedInstituteId !== 'all' && (
             <aside className="w-64 bg-white/40 backdrop-blur-sm rounded-[2rem] border border-slate-100 shadow-sm flex flex-col p-4 shrink-0">
                 <h3 className="px-2 mb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Class Filter</h3>
                 <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
-                    <button onClick={() => setSelectedClassId(null)} className={`w-full text-left p-3 rounded-xl text-xs font-black uppercase tracking-tight transition-all flex items-center justify-between ${selectedClassId === null ? 'bg-indigo-500 text-white shadow-lg' : 'hover:bg-white/50 text-slate-500'}`}>
+                    <button onClick={() => setSelectedClassId(null)} className={`w-full text-left p-3 rounded-xl text-xs font-black uppercase tracking-tight transition-all flex items-center justify-between ${selectedClassId === null ? 'bg-sky-300 text-sky-950 shadow-md' : 'hover:bg-white/50 text-slate-500'}`}>
                         All Classes
                     </button>
                     {displayedClasses.map(cls => (
-                        <button key={cls.id} onClick={() => setSelectedClassId(cls.id)} className={`w-full text-left p-3 rounded-xl text-xs font-black uppercase tracking-tight transition-all flex items-center justify-between ${selectedClassId === cls.id ? 'bg-accent text-white shadow-lg shadow-accent/20' : 'hover:bg-white/50 text-slate-500'}`}>
+                        <button key={cls.id} onClick={() => setSelectedClassId(cls.id)} className={`w-full text-left p-3 rounded-xl text-xs font-black uppercase tracking-tight transition-all flex items-center justify-between ${selectedClassId === cls.id ? 'bg-sky-300 text-sky-950 shadow-md' : 'hover:bg-white/50 text-slate-500'}`}>
                             <span className="truncate">{cls.name}</span>
                             {selectedClassId === cls.id && <iconify-icon icon="mdi:check" />}
                         </button>
@@ -348,7 +348,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
                         <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-300">
                             <iconify-icon icon="mdi:folder-open-outline" width="64" className="mb-4 opacity-20" />
                             <p className="text-sm font-black uppercase tracking-widest opacity-40">Empty</p>
-                            {selectedSchoolId !== 'all' && (
+                            {selectedInstituteId !== 'all' && (
                                 <p className="text-[10px] text-slate-400 mt-2">Tests assigned to classes in this school appear here.</p>
                             )}
                         </div>
@@ -372,7 +372,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
               <input autoFocus required type="text" value={newFolderName} onChange={e => setNewFolderName(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 outline-none focus:border-accent font-bold text-sm" placeholder="Folder Name" />
               <div className="flex gap-4">
                 <button type="button" onClick={() => setIsCreateModalOpen(false)} className="flex-1 py-4 text-[10px] font-black uppercase text-slate-400">Cancel</button>
-                <button type="submit" className="flex-1 py-4 bg-accent text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl">Create</button>
+                <button type="submit" className="flex-1 py-4 bg-sky-300 hover:bg-sky-200 text-sky-950 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md">Create</button>
               </div>
             </form>
           </div>
@@ -407,8 +407,8 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
           <div className="bg-white w-full max-w-md rounded-[2.5rem] p-10 shadow-2xl flex flex-col max-h-[80vh]">
             <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-6 text-center">Assign to Classes</h3>
             <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4 pr-2">
-                {schoolsList.map(school => {
-                    const schoolClasses = classesList.filter(c => c.school_id === school.id);
+                {institutesList.map(school => {
+                    const schoolClasses = classesList.filter(c => c.institute_id === school.id);
                     if (schoolClasses.length === 0) return null;
                     return (
                         <div key={school.id} className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
@@ -426,7 +426,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
                         </div>
                     );
                 })}
-                {schoolsList.length === 0 && <p className="text-center text-slate-400 text-xs">No schools defined. Go to Settings to add schools.</p>}
+                {institutesList.length === 0 && <p className="text-center text-slate-400 text-xs">No institutes defined. Go to Settings to add institutes.</p>}
             </div>
             <div className="flex gap-3 mt-6 pt-4 border-t border-slate-100">
                 <button onClick={() => setAssigningTest(null)} className="flex-1 py-4 text-slate-400 font-black uppercase text-[10px] tracking-widest">Cancel</button>

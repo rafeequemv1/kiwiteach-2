@@ -109,6 +109,11 @@ export interface MultiChapterAIOptions {
   useSmiles?: boolean;
   useAsIsFigures?: boolean;
   selectionMode?: 'auto' | 'manual';
+  targetClassId?: string | null;
+  /** Knowledge base used in Test Creator (for syllabus + topic exclusions). */
+  knowledgeBaseId?: string | null;
+  allowPastQuestions?: boolean;
+  includeUsedQuestionIds?: string[];
 }
 
 export interface CreateTestOptions extends MultiChapterAIOptions {

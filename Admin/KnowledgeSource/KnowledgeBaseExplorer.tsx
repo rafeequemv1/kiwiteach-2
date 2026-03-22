@@ -79,7 +79,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     setIsLoading(true);
     try {
       const { data: classesData, error: classesError } = await supabase
-        .from('classes')
+        .from('kb_classes')
         .select('id, name, kb_name')
         .eq('kb_id', kbId)
         .order('created_at', { ascending: true });
@@ -151,7 +151,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
 
     try {
       if (activeModal === 'class') {
-        const { data, error } = await supabase.from('classes').insert([{ kb_id: kbId, kb_name: kbName, name: newItemName }]).select().single();
+        const { data, error } = await supabase.from('kb_classes').insert([{ kb_id: kbId, kb_name: kbName, name: newItemName }]).select().single();
         if (error) throw error;
         setClasses([...classes, data]);
         setSelectedClass(data);
@@ -252,7 +252,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     try {
       if (type === 'class') {
         await Promise.all([
-          supabase.from('classes').update({ name: newName }).eq('id', item.id),
+          supabase.from('kb_classes').update({ name: newName }).eq('id', item.id),
           supabase.from('subjects').update({ class_name: newName }).eq('class_id', item.id),
           supabase.from('chapters').update({ class_name: newName }).eq('class_id', item.id)
         ]);
@@ -281,7 +281,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
   const deleteItem = async (type: 'class' | 'subject' | 'chapter', id: string, name: string) => {
     if (!confirm(`Delete ${type} "${name}"? This action cannot be undone.`)) return;
     try {
-      const table = type === 'class' ? 'classes' : type === 'subject' ? 'subjects' : 'chapters';
+      const table = type === 'class' ? 'kb_classes' : type === 'subject' ? 'subjects' : 'chapters';
       const { error } = await supabase.from(table).delete().eq('id', id);
       if (error) throw error;
       if (type === 'class' && selectedClass?.id === id) { setSelectedClass(null); setSelectedSubject(null); } 

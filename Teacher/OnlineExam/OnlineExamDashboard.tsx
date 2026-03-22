@@ -8,7 +8,7 @@ import TestDashboard from '../Test/TestDashboard';
 
 interface OnlineExamDashboardProps {
   username?: string;
-  schoolsList: any[];
+  institutesList: any[];
   classesList: any[];
   folders: any[];
   allTests: any[]; // These will be filtered

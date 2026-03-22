@@ -28,7 +28,7 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
     <div 
       onClick={() => onToggleSelect && onToggleSelect(question.id)} 
       style={{ colorScheme: 'light' }}
-      className={`group relative bg-white p-5 rounded-[2rem] border-2 transition-all flex flex-col gap-2 ${isSelected ? 'border-indigo-500 shadow-xl ring-4 ring-indigo-500/10' : 'border-slate-100 hover:border-indigo-100 hover:shadow-lg'}`}
+      className={`group relative bg-white rounded-[2rem] border-2 transition-all flex flex-col gap-2 touch-manipulation active:scale-[0.99] px-5 py-6 sm:p-5 min-h-[112px] sm:min-h-0 ${isSelected ? 'border-indigo-500 shadow-xl ring-4 ring-indigo-500/10' : 'border-slate-100 hover:border-indigo-100 hover:shadow-lg'}`}
     >
       {/* Header: Difficulty & Type */}
       <div className="flex justify-between items-start mb-2">
