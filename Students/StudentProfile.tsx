@@ -1,6 +1,7 @@
 import '../types';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Student, SchoolClass } from './StudentDirectory';
+import { supabase } from '../supabase/client';
 
 interface TestResult {
     id: string;
@@ -30,6 +31,7 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
       name: student.name,
       email: student.email || '',
       mobile_phone: student.mobile_phone || '',
+      institute_id: student.institute_id || '',
       class_id: student.class_id || '',
       attending_exams: student.attending_exams?.join(', ') || ''
   });
@@ -47,37 +49,59 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
   const classes = useMemo(() => schoolsAndClasses.filter(sc => sc.type === 'class'), [schoolsAndClasses]);
 
   const { schoolName, className } = useMemo(() => {
+    if (student.institute_id) {
+      const school = schools.find((s) => s.id === student.institute_id);
+      const sClass = student.class_id ? classes.find((c) => c.id === student.class_id) : null;
+      return {
+        schoolName: school?.name || 'Unknown',
+        className: sClass?.name || 'N/A',
+      };
+    }
     if (!student.class_id) return { schoolName: 'Unassigned', className: 'N/A' };
-    const sClass = classes.find(c => c.id === student.class_id);
+    const sClass = classes.find((c) => c.id === student.class_id);
     if (!sClass) return { schoolName: 'Unknown', className: 'Unknown' };
-    const school = schools.find(s => s.id === sClass.parent_id);
+    const school = schools.find((s) => s.id === sClass.parent_id);
     return { schoolName: school?.name || 'Unassigned', className: sClass.name };
   }, [student, schools, classes]);
 
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData((prev) => {
+      if (name === 'institute_id') {
+        return { ...prev, institute_id: value, class_id: '' };
+      }
+      return { ...prev, [name]: value };
+    });
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
-        const localStudents = localStorage.getItem('kt_students');
-        if (localStudents) {
-            let students: Student[] = JSON.parse(localStudents);
-            const updated = students.map(s => s.id === student.id ? {
-                ...s,
-                name: formData.name,
-                email: formData.email,
-                mobile_phone: formData.mobile_phone,
-                class_id: formData.class_id || null,
-                attending_exams: formData.attending_exams.split(',').map(e => e.trim()).filter(Boolean)
-            } : s);
-            localStorage.setItem('kt_students', JSON.stringify(updated));
-            onUpdate();
-            setIsEditing(false);
+        if (!formData.institute_id || !formData.class_id) {
+          throw new Error('Institute and class are required for every student.');
         }
+        const school = schools.find((s) => s.id === formData.institute_id);
+        const business_id = (school as any)?.business_id || null;
+        if (!business_id) {
+          throw new Error('Selected institute is not assigned to a business.');
+        }
+        const exams = formData.attending_exams.split(',').map(e => e.trim()).filter(Boolean);
+        const { error } = await supabase
+          .from('students')
+          .update({
+            name: formData.name,
+            email: formData.email || null,
+            mobile_phone: formData.mobile_phone || null,
+            business_id,
+            institute_id: formData.institute_id || null,
+            class_id: formData.class_id || null,
+            attending_exams: exams,
+          })
+          .eq('id', student.id);
+        if (error) throw error;
+        onUpdate();
+        setIsEditing(false);
     } catch (err: any) {
         alert("Update failed: " + err.message);
     } finally {
@@ -175,14 +199,22 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
                     <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6">
                       <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-6">Academic Mapping</h3>
                       <div className="space-y-5">
-                         <InfoItem icon="mdi:school-outline" label="Campus" value={schoolName} />
+                         <InfoItem icon="mdi:school-outline" label="Campus" value={isEditing ? (
+                             <select name="institute_id" value={formData.institute_id} onChange={handleInputChange} className="w-full text-xs font-semibold text-slate-700 bg-slate-50 rounded-lg p-2 border border-slate-200 outline-none focus:border-accent appearance-none cursor-pointer">
+                                 <option value="">Unassigned</option>
+                                 {schools.map((sch) => (
+                                   <option key={sch.id} value={sch.id}>{sch.name}</option>
+                                 ))}
+                             </select>
+                         ) : schoolName} />
                          <InfoItem icon="mdi:google-classroom" label="Classroom" value={isEditing ? (
                              <select name="class_id" value={formData.class_id} onChange={handleInputChange} className="w-full text-xs font-semibold text-slate-700 bg-slate-50 rounded-lg p-2 border border-slate-200 outline-none focus:border-accent appearance-none cursor-pointer">
                                  <option value="">Unassigned</option>
-                                 {schools.map(school => (
-                                     <optgroup key={school.id} label={school.name}>
-                                         {classes.filter(c => c.parent_id === school.id).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                     </optgroup>
+                                 {(formData.institute_id
+                                   ? classes.filter((c) => c.parent_id === formData.institute_id)
+                                   : classes
+                                 ).map((c) => (
+                                   <option key={c.id} value={c.id}>{c.name}</option>
                                  ))}
                              </select>
                          ) : className} />

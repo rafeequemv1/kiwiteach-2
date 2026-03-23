@@ -5,13 +5,13 @@ import { supabase } from '../../supabase/client';
 import { SelectedChapter, TypeDistribution, CreateTestOptions, QuestionType, Question } from '../types';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
-import { GoogleGenAI, Type } from "@google/genai";
-import { ensureApiKey } from '../../services/geminiService';
 import QuestionPaperItem from './QuestionPaperItem';
+import { ChapterStatChips } from './ChapterStatChips';
 import {
     fetchEligibleQuestions,
     fetchUsedQuestionsForClass,
 } from '../services/questionUsageService';
+import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
 interface TestCreatorViewProps {
   onClose: () => void;
@@ -88,6 +88,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     const [isChatThinking, setIsChatThinking] = useState(false);
     const chatScrollRef = useRef<HTMLDivElement>(null);
     const [kbChaptersMap, setKbChaptersMap] = useState<any[]>([]);
+    const [kbChapterCounts, setKbChapterCounts] = useState<Record<string, number>>({});
 
     // Manual Mode Config
     const [manualFilters, setManualFilters] = useState({
@@ -114,6 +115,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     
     const [topic, setTopic] = useState(initialTopic || '');
     const [isSavingDraft, setIsSavingDraft] = useState(false);
+    const [actionError, setActionError] = useState<string | null>(null);
     
     const [blueprint, setBlueprint] = useState<SelectedChapter[]>(initialChapters || []);
     const [globalDiff, setGlobalDiff] = useState({ easy: 30, medium: 50, hard: 20 });
@@ -158,7 +160,20 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     useEffect(() => {
         const fetchKbs = async () => {
             const { data } = await supabase.from('knowledge_bases').select('id, name');
-            if (data?.length) { setKbs(data); setSelectedKb(data[0].id); }
+            if (data?.length) {
+                setKbs(data);
+                setSelectedKb(data[0].id);
+                const entries = await Promise.all(
+                    data.map(async (kb) => {
+                        const { count } = await supabase
+                            .from('chapters')
+                            .select('*', { count: 'exact', head: true })
+                            .eq('kb_id', kb.id);
+                        return [kb.id, count ?? 0] as const;
+                    })
+                );
+                setKbChapterCounts(Object.fromEntries(entries));
+            }
         };
         fetchKbs();
     }, []);
@@ -304,19 +319,26 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     };
 
     const handleAction = () => {
-        if (!topic.trim()) return alert("Please provide an assessment name.");
-        if (activeMode === 'auto' && blueprint.length === 0) return alert("Select at least one chapter.");
-        if (activeMode === 'manual' && selectedManualQuestions.length === 0) return alert("Select at least one question.");
+        setActionError(null);
+        if (activeMode === 'auto' && blueprint.length === 0) {
+            setActionError('Add at least one chapter to the blueprint, or enter a chapter from the list.');
+            return;
+        }
+        if (activeMode === 'manual' && selectedManualQuestions.length === 0) {
+            setActionError('Select at least one question from the pool.');
+            return;
+        }
         onStart(getOptions());
     };
 
     const handleSaveDraftInternal = async () => {
         if (!onSaveDraft) return;
         setIsSavingDraft(true);
+        setActionError(null);
         try {
             await onSaveDraft(getOptions());
         } catch (e: any) {
-            alert("Failed to save draft: " + e.message);
+            setActionError(e?.message ? `Could not save draft: ${e.message}` : 'Could not save draft.');
         } finally {
             setIsSavingDraft(false);
         }
@@ -379,26 +401,26 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
         return (
             <div className="flex flex-col gap-1 group w-28 shrink-0">
                 <div className="flex justify-between items-center px-1">
-                    <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
-                    <span className={`text-[8px] font-black ${color} bg-slate-100 px-1 rounded`}>{mode === 'percent' ? `${value}%` : displayValue}</span>
+                    <span className="text-[7px] font-black text-zinc-400 uppercase tracking-widest">{label}</span>
+                    <span className={`text-[8px] font-black ${color} bg-zinc-100 px-1 rounded`}>{mode === 'percent' ? `${value}%` : displayValue}</span>
                 </div>
-                <input type="range" min="0" max="100" value={value} onChange={e => onChange(parseInt(e.target.value))} className="w-full h-1 bg-slate-200 rounded-full appearance-none cursor-pointer accent-slate-600 transition-all" />
+                <input type="range" min="0" max="100" value={value} onChange={e => onChange(parseInt(e.target.value))} className="w-full h-1 bg-zinc-200 rounded-full appearance-none cursor-pointer accent-zinc-600 transition-all" />
             </div>
         );
     };
 
     const mixStripLeading = (
-        <div className="flex items-center gap-4 sm:gap-6 shrink-0 flex-wrap">
-            <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 shadow-inner mr-0 sm:mr-2">
-                <button type="button" onClick={() => setDistributionMode('percent')} className={`min-h-[36px] px-2.5 py-1 rounded-md text-[8px] font-black uppercase tracking-widest transition-all ${distributionMode === 'percent' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>%</button>
-                <button type="button" onClick={() => setDistributionMode('count')} className={`min-h-[36px] px-2.5 py-1 rounded-md text-[8px] font-black uppercase tracking-widest transition-all ${distributionMode === 'count' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>#</button>
+        <div className="flex shrink-0 flex-wrap items-center gap-4 sm:gap-6">
+            <div className="mr-0 inline-flex rounded-md border border-zinc-200 bg-zinc-100 p-0.5 shadow-sm sm:mr-2">
+                <button type="button" onClick={() => setDistributionMode('percent')} className={`min-h-[36px] rounded-sm px-2.5 py-1 text-[8px] font-medium uppercase tracking-wide transition-all ${distributionMode === 'percent' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>%</button>
+                <button type="button" onClick={() => setDistributionMode('count')} className={`min-h-[36px] rounded-sm px-2.5 py-1 text-[8px] font-medium uppercase tracking-wide transition-all ${distributionMode === 'count' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>#</button>
             </div>
             <div className="flex items-center gap-3">
                 <div className="flex flex-col gap-0.5">
-                    <label className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Total Items</label>
+                    <label className="text-[7px] font-medium uppercase tracking-wide text-zinc-500">Total items</label>
                     <div className="flex items-center gap-1.5">
-                        <input type="number" value={totalTarget} onChange={e => setTotalTarget(parseInt(e.target.value)||0)} className="w-14 h-9 sm:h-7 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-600 outline-none focus:border-indigo-500 shadow-sm text-center" />
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">Qs</span>
+                        <input type="number" value={totalTarget} onChange={e => setTotalTarget(parseInt(e.target.value)||0)} className="h-9 w-14 rounded-md border border-zinc-200 bg-white px-2 py-1 text-center text-xs font-semibold text-zinc-800 shadow-sm outline-none focus:border-zinc-400 sm:h-7" />
+                        <span className="text-[8px] font-black text-zinc-400 uppercase tracking-tighter">Qs</span>
                     </div>
                 </div>
             </div>
@@ -406,41 +428,126 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     );
 
     const mixStripSliders = (
-        <div className="flex flex-1 gap-4 min-w-0 lg:border-l lg:border-slate-200 lg:pl-4 overflow-x-auto no-scrollbar py-1">
+        <div className="no-scrollbar flex min-w-0 flex-1 gap-4 overflow-x-auto py-1 lg:border-l lg:border-zinc-200 lg:pl-4">
             <MixControl label="Easy" value={globalDiff.easy} onChange={v => setGlobalDiff({...globalDiff, easy: v})} color="text-emerald-600" mode={distributionMode} total={totalTarget} />
             <MixControl label="Medium" value={globalDiff.medium} onChange={v => setGlobalDiff({...globalDiff, medium: v})} color="text-amber-600" mode={distributionMode} total={totalTarget} />
             <MixControl label="Hard" value={globalDiff.hard} onChange={v => setGlobalDiff({...globalDiff, hard: v})} color="text-rose-600" mode={distributionMode} total={totalTarget} />
-            <div className="w-px h-6 bg-slate-200 self-center shrink-0 hidden sm:block" />
-            <MixControl label="MCQ" value={globalTypes.mcq} onChange={v => setGlobalTypes({...globalTypes, mcq: v})} color="text-indigo-600" mode={distributionMode} total={totalTarget} />
-            <MixControl label="Reason" value={globalTypes.reasoning} onChange={v => setGlobalTypes({...globalTypes, reasoning: v})} color="text-indigo-600" mode={distributionMode} total={totalTarget} />
+            <div className="w-px h-6 bg-zinc-200 self-center shrink-0 hidden sm:block" />
+            <MixControl label="MCQ" value={globalTypes.mcq} onChange={v => setGlobalTypes({...globalTypes, mcq: v})} color="text-zinc-600" mode={distributionMode} total={totalTarget} />
+            <MixControl label="Reason" value={globalTypes.reasoning} onChange={v => setGlobalTypes({...globalTypes, reasoning: v})} color="text-zinc-600" mode={distributionMode} total={totalTarget} />
         </div>
     );
 
     const chaptersAsideNodes = (
         <>
-            <div className="p-4 border-b border-slate-50 bg-slate-50/30 space-y-3 shrink-0">
-                <select value={selectedKb} onChange={e => setSelectedKb(e.target.value)} className="w-full p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-black uppercase text-indigo-700 outline-none shadow-sm">
-                    {kbs.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-                </select>
+            <div className="shrink-0 space-y-3 border-b border-zinc-200 bg-zinc-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Question database</p>
+                <div className="max-h-40 space-y-2 overflow-y-auto custom-scrollbar pr-0.5">
+                    {kbs.map((kb) => {
+                        const active = selectedKb === kb.id;
+                        const chCount = kbChapterCounts[kb.id];
+                        return (
+                            <button
+                                key={kb.id}
+                                type="button"
+                                onClick={() => setSelectedKb(kb.id)}
+                                className={`w-full rounded-md border p-2.5 text-left transition-all ${
+                                    active
+                                        ? 'border-zinc-300 bg-zinc-50 shadow-sm ring-1 ring-zinc-200/60'
+                                        : 'border-zinc-200 bg-white hover:border-zinc-300'
+                                }`}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <div
+                                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
+                                            active ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-500'
+                                        }`}
+                                    >
+                                        <iconify-icon icon="mdi:database-outline" width="16" />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <p
+                                            className={`truncate text-[9px] font-black uppercase leading-tight ${
+                                                active ? 'text-zinc-900' : 'text-zinc-800'
+                                            }`}
+                                        >
+                                            {kb.name}
+                                        </p>
+                                        <p className="text-[7px] font-bold uppercase text-zinc-400">
+                                            {chCount !== undefined ? `${chCount} ch` : '…'}
+                                        </p>
+                                    </div>
+                                </div>
+                            </button>
+                        );
+                    })}
+                </div>
                 <div className="relative group">
-                    <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input type="text" placeholder="Search Chapters..." value={chapterSearch} onChange={e => setChapterSearch(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-[10px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
+                    <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                    <input
+                        type="text"
+                        placeholder="Search Chapters..."
+                        value={chapterSearch}
+                        onChange={(e) => setChapterSearch(e.target.value)}
+                        className="w-full rounded-md border border-zinc-200 bg-white py-2 pl-9 pr-3 text-[10px] font-medium shadow-sm outline-none focus:border-zinc-400"
+                    />
                 </div>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1 min-h-0">
                 {classes.map(cl => (
                     <div key={cl.id}>
-                        <button type="button" onClick={() => setSelectedClass(selectedClass === cl.id ? '' : cl.id)} className={`w-full min-h-11 px-3 py-2 rounded-lg text-[10px] font-black uppercase flex justify-between items-center transition-all ${selectedClass === cl.id ? 'bg-slate-900 text-white shadow-lg' : 'hover:bg-slate-50 text-slate-500'}`}>{cl.name} <iconify-icon icon={selectedClass === cl.id ? "mdi:chevron-up" : "mdi:chevron-down"} /></button>
+                        <button type="button" onClick={() => setSelectedClass(selectedClass === cl.id ? '' : cl.id)} className={`flex min-h-11 w-full items-center justify-between rounded-md px-3 py-2 text-[10px] font-medium uppercase tracking-wide transition-all ${selectedClass === cl.id ? 'bg-zinc-900 text-white shadow-sm' : 'text-zinc-600 hover:bg-zinc-50'}`}>{cl.name} <iconify-icon icon={selectedClass === cl.id ? "mdi:chevron-up" : "mdi:chevron-down"} /></button>
                         {selectedClass === cl.id && (
                             <div className="pl-2 mt-1">
                                 {subjects.map(s => (
                                     <div key={s.id}>
-                                        <button type="button" onClick={() => setSelectedSubject(selectedSubject === s.id ? '' : s.id)} className={`w-full min-h-10 px-3 py-1.5 rounded text-[9px] font-bold uppercase text-left transition-colors ${selectedSubject === s.id ? 'text-emerald-600 bg-emerald-50' : 'text-slate-400 hover:text-slate-600'}`}>{s.name}</button>
+                                        <button type="button" onClick={() => setSelectedSubject(selectedSubject === s.id ? '' : s.id)} className={`w-full min-h-10 px-3 py-1.5 rounded text-[9px] font-bold uppercase text-left transition-colors ${selectedSubject === s.id ? 'text-emerald-600 bg-emerald-50' : 'text-zinc-400 hover:text-zinc-600'}`}>{s.name}</button>
                                         {selectedSubject === s.id && (
                                             <div className="pl-2 mt-1">
-                                                {chapters.map(ch => (
-                                                    <button type="button" key={ch.id} onClick={() => addToBlueprint(ch)} className={`w-full text-left px-3 py-2.5 min-h-10 rounded-lg cursor-pointer text-[9px] font-black uppercase mb-1 transition-all ${activeMode === 'auto' ? (blueprint.some(b => b.id === ch.id) ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50') : (currentViewChapter?.id === ch.id ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50')}`}>{ch.name}</button>
-                                                ))}
+                                                {chapters.map((ch) => {
+                                                    const inBlueprint = blueprint.some((b) => b.id === ch.id);
+                                                    const isCurrent = currentViewChapter?.id === ch.id;
+                                                    const autoActive = activeMode === 'auto' && inBlueprint;
+                                                    const manualActive = activeMode === 'manual' && isCurrent;
+                                                    const chipStats = chapterStats[ch.id]
+                                                        ? {
+                                                              total: chapterStats[ch.id].total,
+                                                              easy: chapterStats[ch.id].easy,
+                                                              medium: chapterStats[ch.id].medium,
+                                                              hard: chapterStats[ch.id].hard,
+                                                              mcq: chapterStats[ch.id].mcq,
+                                                              reasoning: chapterStats[ch.id].reasoning,
+                                                              matching: chapterStats[ch.id].matching,
+                                                              statements: chapterStats[ch.id].statements,
+                                                              figures: chapterStats[ch.id].figures,
+                                                          }
+                                                        : undefined;
+                                                    return (
+                                                        <button
+                                                            type="button"
+                                                            key={ch.id}
+                                                            onClick={() => addToBlueprint(ch)}
+                                                            className={`mb-1 w-full cursor-pointer rounded-lg px-3 py-2 text-left text-[9px] font-black uppercase transition-all ${
+                                                                activeMode === 'auto'
+                                                                    ? inBlueprint
+                                                                        ? 'bg-zinc-900 text-white shadow-sm'
+                                                                        : 'text-zinc-600 hover:bg-zinc-50'
+                                                                    : isCurrent
+                                                                      ? 'bg-emerald-600 text-white shadow-md'
+                                                                      : 'text-zinc-500 hover:bg-zinc-50'
+                                                            }`}
+                                                        >
+                                                            <span className="block truncate leading-tight">{ch.name}</span>
+                                                            {chipStats && (
+                                                                <ChapterStatChips
+                                                                    stats={chipStats}
+                                                                    dense
+                                                                    onColoredBackground={autoActive || manualActive}
+                                                                />
+                                                            )}
+                                                        </button>
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
@@ -454,11 +561,12 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     );
 
     const matrixPanelHeader = (
-        <div className="p-4 sm:p-6 border-b border-slate-50 bg-slate-50/50 shrink-0">
-            <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest mb-1 flex items-center gap-2">
-                <iconify-icon icon="mdi:clipboard-list-outline" className="text-emerald-500" /> Assessment Matrix
-            </h3>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Real-time Selection Profile</p>
+        <div className="shrink-0 border-b border-zinc-200 bg-zinc-50 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                <iconify-icon icon="mdi:clipboard-list-outline" className="text-emerald-600" width="16" />
+                Assessment matrix
+            </div>
+            <p className="mt-0.5 text-[11px] text-zinc-500">Selection profile</p>
         </div>
     );
 
@@ -466,15 +574,15 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 sm:p-6 space-y-8">
             <div className="space-y-4">
                 <div className="flex justify-between items-end">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Progress</span>
-                    <span className="text-xl font-black text-slate-800">{globalInventoryStats.totalSelected} <span className="text-xs text-slate-300">/ {globalInventoryStats.totalTarget}</span></span>
+                    <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Total Progress</span>
+                    <span className="text-xl font-black text-zinc-800">{globalInventoryStats.totalSelected} <span className="text-xs text-zinc-300">/ {globalInventoryStats.totalTarget}</span></span>
                 </div>
-                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden shadow-inner">
+                <div className="w-full h-2 bg-zinc-100 rounded-full overflow-hidden shadow-inner">
                     <div className="h-full bg-emerald-500 transition-all duration-500 shadow-[0_0_10px_#10b98150]" style={{ width: `${Math.min(100, (globalInventoryStats.totalSelected / globalInventoryStats.totalTarget) * 100)}%` }} />
                 </div>
             </div>
             <div className="space-y-4">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Rigor Breakdown</h4>
+                <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Rigor Breakdown</h4>
                 <div className="grid grid-cols-3 gap-2">
                     <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-100 text-center flex flex-col items-center">
                         <span className="text-[8px] font-black text-emerald-600 uppercase mb-1">Easy</span>
@@ -491,24 +599,24 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                 </div>
             </div>
             <div className="space-y-4">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Style Map</h4>
+                <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Style Map</h4>
                 <div className="space-y-2">
                     {Object.entries(globalInventoryStats.styles).map(([style, count]) => (
-                        <div key={style} className="flex items-center justify-between bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100 group hover:border-emerald-200 transition-all">
-                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider">{style}</span>
-                            <span className="text-sm font-black text-slate-800">{count}</span>
+                        <div key={style} className="flex items-center justify-between bg-zinc-50 px-4 py-2.5 rounded-xl border border-zinc-100 group hover:border-emerald-200 transition-all">
+                            <span className="text-[9px] font-black text-zinc-500 uppercase tracking-wider">{style}</span>
+                            <span className="text-sm font-black text-zinc-800">{count}</span>
                         </div>
                     ))}
                 </div>
             </div>
             <div className="space-y-4">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Per Chapter Balance</h4>
+                <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Per Chapter Balance</h4>
                 <div className="space-y-2">
                     {selectionInventory.map(item => (
-                        <div key={item.id} className="p-4 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all">
+                        <div key={item.id} className="p-4 bg-white border border-zinc-100 rounded-2xl shadow-sm hover:shadow-md transition-all">
                             <div className="flex justify-between items-start mb-2">
-                                <h5 className="text-[10px] font-black text-slate-700 uppercase truncate flex-1 pr-2">{item.name}</h5>
-                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${item.selectedCount >= item.targetCount ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>{item.selectedCount}/{item.targetCount}</span>
+                                <h5 className="text-[10px] font-black text-zinc-700 uppercase truncate flex-1 pr-2">{item.name}</h5>
+                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${item.selectedCount >= item.targetCount ? 'bg-emerald-50 text-emerald-600' : 'bg-zinc-100 text-zinc-500'}`}>{item.selectedCount}/{item.targetCount}</span>
                             </div>
                             <div className="flex gap-1">
                                 {item.difficulties.Easy > 0 && <span className="text-[7px] font-black text-emerald-500 px-1.5 py-0.5 bg-emerald-50 rounded uppercase">E:{item.difficulties.Easy}</span>}
@@ -523,12 +631,15 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     );
 
     const matrixPanelFooter = (
-        <div className="p-4 sm:p-6 border-t border-slate-50 bg-slate-50/30 shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <div className="shrink-0 border-t border-zinc-200 bg-zinc-50/80 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6">
             <button
                 type="button"
                 onClick={handleAction}
-                disabled={isLoading || selectedManualQuestions.length === 0}
-                className="w-full min-h-12 py-3.5 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-xl hover:bg-slate-800 disabled:opacity-50 transition-all active:scale-95 flex items-center justify-center gap-2"
+                disabled={
+                    isLoading ||
+                    (activeMode === 'auto' ? blueprint.length === 0 : selectedManualQuestions.length === 0)
+                }
+                className="flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 py-3 text-[10px] font-medium uppercase tracking-wide text-white shadow-sm transition-all hover:bg-zinc-800 disabled:opacity-50 active:scale-[0.99]"
             >
                 <iconify-icon icon="mdi:check-all" width="20" />
                 Lock Assessment
@@ -537,35 +648,40 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     );
 
     return (
-        <div className="w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans relative">
-            <header className="bg-white border-b border-slate-200 z-30 shadow-sm shrink-0">
+        <div className={`${workspacePageClass} relative`}>
+            <header className="z-30 shrink-0 border-b border-zinc-200 bg-white shadow-sm">
+                {actionError && (
+                    <div className="border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-center text-[12px] font-medium text-amber-950" role="alert">
+                        {actionError}
+                    </div>
+                )}
                 {/* Mobile / tablet */}
-                <div className="lg:hidden px-3 py-3 space-y-3">
+                <div className="space-y-3 px-3 py-3 lg:hidden">
                     <div className="flex items-center justify-between gap-2">
-                        <button type="button" onClick={onClose} className="w-11 h-11 shrink-0 rounded-xl flex items-center justify-center bg-slate-50 text-slate-400 hover:text-indigo-600 transition-all border border-slate-100" aria-label="Back">
+                        <button type="button" onClick={onClose} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-800" aria-label="Back">
                             <iconify-icon icon="mdi:arrow-left" width="20" />
                         </button>
                         <div className="min-w-0 flex-1 px-2 text-center">
-                            <h1 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-none mb-0.5 truncate">Creator</h1>
-                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{activeMode === 'auto' ? 'Blueprint' : `${selectedManualQuestions.length} selected`}</p>
+                            <h1 className="mb-0.5 truncate text-sm font-semibold tracking-tight text-zinc-900">Test creator</h1>
+                            <p className="truncate text-[11px] text-zinc-500">{activeMode === 'auto' ? 'Blueprint' : `${selectedManualQuestions.length} selected`}</p>
                         </div>
-                        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-inner shrink-0">
-                            <button type="button" onClick={() => setActiveMode('auto')} className={`min-h-11 min-w-11 px-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1 ${activeMode === 'auto' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`} title="Auto" aria-label="Auto mode">
+                        <div className="inline-flex shrink-0 rounded-md border border-zinc-200 bg-zinc-100 p-0.5 shadow-sm">
+                            <button type="button" onClick={() => setActiveMode('auto')} className={`flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-sm px-2 text-[10px] font-medium uppercase tracking-wide transition-all ${activeMode === 'auto' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`} title="Auto" aria-label="Auto mode">
                                 <iconify-icon icon="mdi:lightning-bolt" />
                                 <span className="hidden sm:inline">Auto</span>
                             </button>
-                            <button type="button" onClick={() => setActiveMode('manual')} className={`min-h-11 min-w-11 px-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1 ${activeMode === 'manual' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`} title="Manual" aria-label="Manual mode">
+                            <button type="button" onClick={() => setActiveMode('manual')} className={`flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-sm px-2 text-[10px] font-medium uppercase tracking-wide transition-all ${activeMode === 'manual' ? 'bg-white text-emerald-700 shadow-sm' : 'text-zinc-500'}`} title="Manual" aria-label="Manual mode">
                                 <iconify-icon icon="mdi:cursor-default-click" />
                                 <span className="hidden sm:inline">Manual</span>
                             </button>
                         </div>
                     </div>
-                    <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="Test title..." className="w-full min-h-11 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2.5 text-xs font-black text-slate-700 outline-none focus:border-indigo-500 transition-all placeholder:text-slate-300" />
+                    <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="Assessment title…" className="min-h-11 w-full rounded-md border border-zinc-200 bg-white px-4 py-2.5 text-xs font-medium text-zinc-800 shadow-sm outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400" />
                     <div className="flex flex-wrap items-stretch gap-2">
                         <select
                             value={targetOrgClassId}
                             onChange={(e) => setTargetOrgClassId(e.target.value)}
-                            className="flex-1 min-w-[140px] min-h-11 bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-600 outline-none"
+                            className="min-h-11 min-w-[140px] flex-1 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-zinc-700 shadow-sm outline-none focus:border-zinc-400"
                             title="Class scope for no-repeat policy"
                         >
                             <option value="">No class scope</option>
@@ -576,56 +692,56 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                         <button
                             type="button"
                             onClick={() => setAllowPastQuestions((prev) => !prev)}
-                            className={`min-h-11 px-3 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all shrink-0 ${
+                            className={`min-h-11 shrink-0 rounded-md border px-3 text-[9px] font-medium uppercase tracking-wide transition-all ${
                                 allowPastQuestions
-                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                    : 'bg-white text-slate-500 border-slate-200'
+                                    ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                    : 'border-zinc-200 bg-white text-zinc-600 shadow-sm'
                             }`}
                             title="Optional override to allow past questions"
                         >
                             {allowPastQuestions ? 'Past ok' : 'No repeat'}
                         </button>
-                        <button type="button" onClick={handleSaveDraftInternal} disabled={isLoading || isSavingDraft} className="min-h-11 min-w-11 rounded-xl bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 transition-all shadow-sm flex items-center justify-center disabled:opacity-50 shrink-0" title="Save draft">
-                            {isSavingDraft ? <div className="w-4 h-4 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div> : <iconify-icon icon="mdi:content-save-outline" width="20" />}
+                        <button type="button" onClick={handleSaveDraftInternal} disabled={isLoading || isSavingDraft} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-800 disabled:opacity-50" title="Save draft">
+                            {isSavingDraft ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-800"></div> : <iconify-icon icon="mdi:content-save-outline" width="20" />}
                         </button>
-                        <button type="button" onClick={handleAction} disabled={isLoading} className={`min-h-11 flex-1 min-w-[120px] px-4 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2 ${activeMode === 'auto' ? 'bg-indigo-600 text-white shadow-indigo-600/30 hover:bg-indigo-700' : 'bg-emerald-600 text-white shadow-emerald-600/30 hover:bg-emerald-700'}`}>
+                        <button type="button" onClick={handleAction} disabled={isLoading} className={`flex min-h-11 min-w-[120px] flex-1 items-center justify-center gap-2 rounded-md px-4 text-[10px] font-medium uppercase tracking-wide shadow-sm transition-all active:scale-[0.99] disabled:opacity-50 ${activeMode === 'auto' ? 'bg-zinc-900 text-white hover:bg-zinc-800' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}>
                             {activeMode === 'auto' ? 'Forge' : 'Finalize'}
                         </button>
                     </div>
                 </div>
 
                 {/* Desktop */}
-                <div className="hidden lg:flex h-16 px-6 items-center justify-between gap-4">
-                    <div className="flex items-center gap-4 shrink-0">
-                        <button type="button" onClick={onClose} className="w-10 h-10 rounded-xl flex items-center justify-center bg-slate-50 text-slate-400 hover:text-indigo-600 transition-all border border-slate-100" aria-label="Back">
+                <div className="hidden h-16 items-center justify-between gap-4 px-4 lg:flex">
+                    <div className="flex shrink-0 items-center gap-3">
+                        <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-800" aria-label="Back">
                             <iconify-icon icon="mdi:arrow-left" width="20" />
                         </button>
-                        <div className="min-w-[150px]">
-                            <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight leading-none mb-1">Creator</h1>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{activeMode === 'auto' ? `Blueprint Config` : `${selectedManualQuestions.length} Items Selected`}</p>
+                        <div className="min-w-[140px]">
+                            <h1 className="mb-0.5 text-lg font-semibold tracking-tight text-zinc-900">Test creator</h1>
+                            <p className="text-[13px] text-zinc-500">{activeMode === 'auto' ? 'Blueprint & mix' : `${selectedManualQuestions.length} items selected`}</p>
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-4 shrink-0">
-                        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-inner">
-                            <button type="button" onClick={() => setActiveMode('auto')} className={`px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${activeMode === 'auto' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>
+                    <div className="flex shrink-0 items-center gap-2">
+                        <div className="inline-flex rounded-md border border-zinc-200 bg-zinc-100 p-0.5 shadow-sm">
+                            <button type="button" onClick={() => setActiveMode('auto')} className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide transition-all ${activeMode === 'auto' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>
                                 <iconify-icon icon="mdi:lightning-bolt" /> Auto
                             </button>
-                            <button type="button" onClick={() => setActiveMode('manual')} className={`px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${activeMode === 'manual' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>
+                            <button type="button" onClick={() => setActiveMode('manual')} className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide transition-all ${activeMode === 'manual' ? 'bg-white text-emerald-700 shadow-sm' : 'text-zinc-500'}`}>
                                 <iconify-icon icon="mdi:cursor-default-click" /> Manual
                             </button>
                         </div>
                     </div>
 
-                    <div className="flex-1 max-w-xs px-4 min-w-0">
-                        <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="Test Title..." className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 text-xs font-black text-slate-700 outline-none focus:border-indigo-500 transition-all placeholder:text-slate-300" />
+                    <div className="min-w-0 max-w-xs flex-1 px-2">
+                        <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="Assessment title…" className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-800 shadow-sm outline-none placeholder:text-zinc-400 focus:border-zinc-400" />
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex shrink-0 items-center gap-2">
                         <select
                             value={targetOrgClassId}
                             onChange={(e) => setTargetOrgClassId(e.target.value)}
-                            className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-600 outline-none max-w-[160px]"
+                            className="max-w-[160px] rounded-md border border-zinc-200 bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-zinc-700 shadow-sm outline-none focus:border-zinc-400"
                             title="Class scope for no-repeat policy"
                         >
                             <option value="">No class scope</option>
@@ -636,10 +752,10 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                         <button
                             type="button"
                             onClick={() => setAllowPastQuestions((prev) => !prev)}
-                            className={`px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all whitespace-nowrap ${
+                            className={`whitespace-nowrap rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-wide transition-all ${
                                 allowPastQuestions
-                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                    : 'bg-white text-slate-500 border-slate-200'
+                                    ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                    : 'border-zinc-200 bg-white text-zinc-600 shadow-sm'
                             }`}
                             title="Optional override to allow past questions"
                         >
@@ -647,11 +763,11 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                         </button>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                        <button type="button" onClick={handleSaveDraftInternal} disabled={isLoading || isSavingDraft} className="w-10 h-10 rounded-xl bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 transition-all shadow-sm flex items-center justify-center disabled:opacity-50" title="Save Draft to Hub">
-                            {isSavingDraft ? <div className="w-4 h-4 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div> : <iconify-icon icon="mdi:content-save-outline" width="20" />}
+                    <div className="flex shrink-0 items-center gap-2">
+                        <button type="button" onClick={handleSaveDraftInternal} disabled={isLoading || isSavingDraft} className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-800 disabled:opacity-50" title="Save draft">
+                            {isSavingDraft ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-800"></div> : <iconify-icon icon="mdi:content-save-outline" width="20" />}
                         </button>
-                        <button type="button" onClick={handleAction} disabled={isLoading} className={`px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2 ${activeMode === 'auto' ? 'bg-indigo-600 text-white shadow-indigo-600/30 hover:bg-indigo-700' : 'bg-emerald-600 text-white shadow-emerald-600/30 hover:bg-emerald-700'}`}>
+                        <button type="button" onClick={handleAction} disabled={isLoading} className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-[10px] font-medium uppercase tracking-wide shadow-sm transition-all active:scale-[0.99] disabled:opacity-50 ${activeMode === 'auto' ? 'bg-zinc-900 text-white hover:bg-zinc-800' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}>
                             {activeMode === 'auto' ? 'Forge Assessment' : 'Finalize Selection'}
                         </button>
                     </div>
@@ -659,23 +775,23 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
 
                 {activeMode === 'auto' && (
                     <>
-                        <div className="lg:hidden border-t border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="border-t border-zinc-200 bg-zinc-50/80 px-3 py-2 lg:hidden">
                             <button
                                 type="button"
                                 onClick={() => setMixStripOpen((o) => !o)}
-                                className="w-full flex items-center justify-between min-h-11 px-2 rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-600"
+                                className="flex min-h-11 w-full items-center justify-between rounded-md px-2 text-[10px] font-medium uppercase tracking-wide text-zinc-700"
                             >
                                 Mix &amp; totals
                                 <iconify-icon icon={mixStripOpen ? 'mdi:chevron-up' : 'mdi:chevron-down'} width="22" />
                             </button>
                             {mixStripOpen && (
-                                <div className="flex flex-col gap-3 pt-2 pb-1 border-t border-slate-200/80 mt-1">
+                                <div className="flex flex-col gap-3 pt-2 pb-1 border-t border-zinc-200/80 mt-1">
                                     {mixStripLeading}
                                     {mixStripSliders}
                                 </div>
                             )}
                         </div>
-                        <div className="hidden lg:flex bg-slate-50 border-t border-slate-100 px-6 py-3 items-center gap-8 min-h-[56px] overflow-hidden">
+                        <div className="hidden min-h-[56px] items-center gap-8 overflow-hidden border-t border-zinc-200 bg-zinc-50/80 px-6 py-3 lg:flex">
                             {mixStripLeading}
                             {mixStripSliders}
                         </div>
@@ -684,28 +800,28 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
             </header>
 
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-                <aside className="z-20 hidden min-h-0 w-80 shrink-0 flex-col border-r border-slate-100 bg-white shadow-sm lg:flex">
+                <aside className="z-20 hidden min-h-0 w-80 shrink-0 flex-col border-r border-zinc-200 bg-white lg:flex">
                     {chaptersAsideNodes}
                 </aside>
 
-                <main className="relative min-h-0 flex-1 overflow-y-auto custom-scrollbar bg-slate-100/40 p-4 md:p-6 lg:p-8">
+                <main className="relative min-h-0 flex-1 overflow-y-auto bg-zinc-100 p-4 custom-scrollbar md:p-6 lg:p-8">
                     {activeMode === 'auto' ? (
                         <div className="max-w-4xl mx-auto space-y-4 pb-20">
                             {blueprint.map((item, idx) => (
-                                <div key={item.id} className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-5 shadow-sm flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 animate-slide-up group">
-                                    <div className="flex items-center gap-4 flex-1 min-w-0">
-                                        <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center font-black text-[10px] shrink-0">{idx + 1}</div>
+                                <div key={item.id} className="group flex animate-slide-up flex-col gap-4 rounded-md border border-zinc-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:gap-6 sm:p-5">
+                                    <div className="flex min-w-0 flex-1 items-center gap-4">
+                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-zinc-900 text-[10px] font-semibold text-white">{idx + 1}</div>
                                         <div className="min-w-0 flex-1">
-                                            <h3 className="text-sm font-black text-slate-800 uppercase truncate">{item.name}</h3>
-                                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{item.subjectName}</p>
+                                            <h3 className="truncate text-sm font-semibold text-zinc-900">{item.name}</h3>
+                                            <p className="truncate text-[11px] text-zinc-500">{item.subjectName}</p>
                                         </div>
                                     </div>
-                                    <div className="flex items-center justify-end gap-4 sm:gap-6 shrink-0">
+                                    <div className="flex shrink-0 items-center justify-end gap-4 sm:gap-6">
                                         <div className="flex flex-col gap-0.5">
-                                            <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest text-center">Qty</span>
-                                            <input type="number" value={item.count} onChange={e => handleUpdateChapterCount(item.id, parseInt(e.target.value)||0)} className="w-12 h-9 sm:h-8 bg-slate-50 border border-slate-200 rounded-lg text-center text-xs font-black text-slate-800 outline-none" />
+                                            <span className="text-center text-[7px] font-medium uppercase tracking-wide text-zinc-500">Qty</span>
+                                            <input type="number" value={item.count} onChange={e => handleUpdateChapterCount(item.id, parseInt(e.target.value)||0)} className="h-9 w-12 rounded-md border border-zinc-200 bg-white text-center text-xs font-semibold text-zinc-800 shadow-sm outline-none focus:border-zinc-400 sm:h-8" />
                                         </div>
-                                        <button type="button" onClick={() => addToBlueprint(item as any)} className="w-11 h-11 sm:w-10 sm:h-10 rounded-xl bg-rose-50 text-rose-400 flex items-center justify-center hover:bg-rose-500 hover:text-white transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 border border-rose-100 shrink-0" title="Remove chapter" aria-label="Remove chapter">
+                                        <button type="button" onClick={() => addToBlueprint(item as any)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-500 opacity-100 transition-all hover:bg-rose-500 hover:text-white sm:h-10 sm:w-10 md:opacity-0 md:group-hover:opacity-100" title="Remove chapter" aria-label="Remove chapter">
                                             <iconify-icon icon="mdi:trash-can-outline" width="18" />
                                         </button>
                                     </div>
@@ -716,26 +832,26 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                             )}
                         </div>
                     ) : (
-                        <div className="max-w-6xl mx-auto flex flex-col h-full">
-                            <div className="mb-6 flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-[2rem] border border-slate-100 shadow-sm shrink-0">
-                                <div className="flex items-center gap-4 flex-1 w-full">
+                        <div className="mx-auto flex h-full max-w-6xl flex-col">
+                            <div className="mb-6 flex shrink-0 flex-col items-center justify-between gap-4 rounded-md border border-zinc-200 bg-white p-4 shadow-sm md:flex-row">
+                                <div className="flex w-full flex-1 items-center gap-4">
                                     <div className="relative flex-1">
-                                        <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                        <input type="text" placeholder="Search pool..." value={poolSearch} onChange={e => setPoolSearch(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-xs outline-none focus:border-emerald-500" />
+                                        <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                                        <input type="text" placeholder="Search pool…" value={poolSearch} onChange={e => setPoolSearch(e.target.value)} className="w-full rounded-md border border-zinc-200 bg-white py-2 pl-10 pr-4 text-xs shadow-sm outline-none focus:border-emerald-500" />
                                     </div>
-                                    <div className="flex gap-2 shrink-0">
+                                    <div className="flex shrink-0 gap-2">
                                         {(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (
-                                            <button type="button" key={d} onClick={() => setManualFilters({...manualFilters, difficulty: d})} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase border transition-all ${manualFilters.difficulty === d ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'}`}>{d}</button>
+                                            <button type="button" key={d} onClick={() => setManualFilters({...manualFilters, difficulty: d})} className={`rounded-md border px-3 py-1.5 text-[9px] font-medium uppercase transition-all ${manualFilters.difficulty === d ? 'border-zinc-900 bg-zinc-900 text-white' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300'}`}>{d}</button>
                                         ))}
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-3 shrink-0">
-                                    <button type="button" onClick={() => setShowSelectedOnly(!showSelectedOnly)} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase border transition-all flex items-center gap-2 ${showSelectedOnly ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-400 border-slate-100'}`}><iconify-icon icon="mdi:filter-check" /> Selected Only</button>
+                                <div className="flex shrink-0 items-center gap-3">
+                                    <button type="button" onClick={() => setShowSelectedOnly(!showSelectedOnly)} className={`inline-flex items-center gap-2 rounded-md border px-4 py-2 text-[9px] font-medium uppercase transition-all ${showSelectedOnly ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-zinc-200 bg-white text-zinc-600'}`}><iconify-icon icon="mdi:filter-check" /> Selected only</button>
                                 </div>
                             </div>
                             
                             {isPoolFetching ? (
-                                <div className="flex-1 flex flex-col items-center justify-center text-slate-300 gap-4">
+                                <div className="flex-1 flex flex-col items-center justify-center text-zinc-300 gap-4">
                                     <iconify-icon icon="mdi:loading" width="48" className="animate-spin" />
                                     <p className="text-xs font-black uppercase tracking-widest">Querying Vault...</p>
                                 </div>
@@ -760,7 +876,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                     )}
                 </main>
 
-                <aside className="z-20 hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-100 bg-white shadow-sm animate-fade-in lg:flex">
+                <aside className="z-20 hidden min-h-0 w-80 shrink-0 flex-col border-l border-zinc-200 bg-white animate-fade-in lg:flex">
                     {matrixPanelHeader}
                     {matrixPanelScroll}
                     {matrixPanelFooter}
@@ -768,12 +884,12 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
             </div>
 
             {!isLgLayout && (
-                <div className="flex shrink-0 gap-2 border-t border-slate-200 bg-white/95 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm">
+                <div className="flex shrink-0 gap-2 border-t border-zinc-200 bg-white/95 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm">
                     <button
                         type="button"
                         onClick={() => setMobileSheet((s) => (s === 'chapters' ? null : 'chapters'))}
-                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                            mobileSheet === 'chapters' ? 'bg-slate-900 text-white shadow-md' : 'border border-slate-200 bg-slate-50 text-slate-600'
+                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-md text-[10px] font-medium uppercase tracking-wide transition-all ${
+                            mobileSheet === 'chapters' ? 'bg-zinc-900 text-white shadow-sm' : 'border border-zinc-200 bg-zinc-50 text-zinc-700'
                         }`}
                     >
                         <iconify-icon icon="mdi:book-open-page-variant" width="20" />
@@ -782,8 +898,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                     <button
                         type="button"
                         onClick={() => setMobileSheet((s) => (s === 'matrix' ? null : 'matrix'))}
-                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                            mobileSheet === 'matrix' ? 'bg-emerald-700 text-white shadow-md' : 'border border-slate-200 bg-slate-50 text-slate-600'
+                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-md text-[10px] font-medium uppercase tracking-wide transition-all ${
+                            mobileSheet === 'matrix' ? 'bg-emerald-700 text-white shadow-sm' : 'border border-zinc-200 bg-zinc-50 text-zinc-700'
                         }`}
                     >
                         <iconify-icon icon="mdi:clipboard-list-outline" width="20" />
@@ -802,25 +918,25 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                     <button
                         type="button"
                         aria-label="Close panel"
-                        className="animate-fade-in fixed inset-0 z-[55] bg-slate-900/50"
+                        className="animate-fade-in fixed inset-0 z-[55] bg-zinc-950/40"
                         onClick={() => setMobileSheet(null)}
                     />
                     <div
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="creator-sheet-title"
-                        className="animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-2xl border border-slate-200 border-b-0 bg-white shadow-[0_-12px_48px_rgba(0,0,0,0.15)]"
+                        className="animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-xl border border-zinc-200 border-b-0 bg-white shadow-lg"
                     >
                         <div className="flex justify-center pt-2 pb-1" aria-hidden>
-                            <div className="h-1 w-10 rounded-full bg-slate-300" />
+                            <div className="h-1 w-10 rounded-full bg-zinc-300" />
                         </div>
-                        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-2.5">
-                            <span id="creator-sheet-title" className="text-xs font-black uppercase tracking-widest text-slate-800">
+                        <div className="flex shrink-0 items-center justify-between border-b border-zinc-100 px-4 py-2.5">
+                            <span id="creator-sheet-title" className="text-xs font-black uppercase tracking-widest text-zinc-800">
                                 {mobileSheet === 'chapters' ? 'Browse chapters' : 'Assessment matrix'}
                             </span>
                             <button
                                 type="button"
-                                className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                                className="rounded-xl p-2.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
                                 onClick={() => setMobileSheet(null)}
                                 aria-label="Close"
                             >
@@ -842,10 +958,10 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
             )}
 
             {isLoading && (
-                <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center animate-fade-in">
-                    <div className="w-16 h-16 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
-                    <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">{loadingStep || 'Synthesizing...'}</h3>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2 animate-pulse">Neural Link Synchronization</p>
+                <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-white/85 backdrop-blur-sm animate-fade-in">
+                    <div className="mb-5 h-14 w-14 animate-spin rounded-full border-4 border-zinc-200 border-t-zinc-900"></div>
+                    <h3 className="text-sm font-semibold text-zinc-900">{loadingStep || 'Synthesizing…'}</h3>
+                    <p className="mt-2 text-[11px] text-zinc-500">Please wait</p>
                 </div>
             )}
         </div>

@@ -1,10 +1,11 @@
 import '../../types';
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
+import { isOnlineExamAssignment } from '../../Quiz/services/studentTestService';
+import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
 interface StudentOnlineTestDashboardProps {
   availableTests: any[];
   hasAssignedClass: boolean;
-  onEnrollClass?: (classUuid: string) => Promise<void>;
   onTakeExam: (test: any) => void;
   onViewSolutions?: (test: any) => void;
 }
@@ -12,24 +13,13 @@ interface StudentOnlineTestDashboardProps {
 const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
   availableTests,
   hasAssignedClass,
-  onEnrollClass,
   onTakeExam,
   onViewSolutions,
 }) => {
-  const [classUuidDraft, setClassUuidDraft] = useState('');
-  const [enrolling, setEnrolling] = useState(false);
-
-  const handleEnroll = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!onEnrollClass || !classUuidDraft.trim()) return;
-    setEnrolling(true);
-    try {
-      await onEnrollClass(classUuidDraft.trim());
-      setClassUuidDraft('');
-    } finally {
-      setEnrolling(false);
-    }
-  };
+  const onlineOnly = useMemo(
+    () => availableTests.filter((t) => isOnlineExamAssignment(t)),
+    [availableTests]
+  );
 
   const { upcoming, live, past } = useMemo(() => {
       const now = new Date();
@@ -37,7 +27,7 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
       const l: any[] = [];
       const p: any[] = [];
 
-      availableTests.forEach(test => {
+      onlineOnly.forEach(test => {
           if (!test.scheduledAt) {
               l.push(test);
               return;
@@ -60,7 +50,7 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
       p.sort((a,b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime());
 
       return { upcoming: u, live: l, past: p };
-  }, [availableTests]);
+  }, [onlineOnly]);
 
   const ExamCard: React.FC<{ test: any; status: 'upcoming' | 'live' | 'past' }> = ({ test, status }) => {
       const dateStr = test.scheduledAt ? new Date(test.scheduledAt).toLocaleDateString() : 'Flexible';
@@ -68,62 +58,72 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
       const duration = test.config?.duration || 60;
       const solutionsReleased = test.config?.releaseAnswers;
 
+      const ring =
+        status === 'live'
+          ? 'border-emerald-300 bg-emerald-50/40'
+          : status === 'upcoming'
+            ? 'border-zinc-200 bg-white'
+            : 'border-zinc-200 bg-zinc-50/80';
+
       return (
-          <div className={`bg-white rounded-2xl p-5 border transition-all flex flex-col gap-4 relative overflow-hidden ${
-              status === 'live' ? 'border-emerald-500 shadow-lg shadow-emerald-500/10' : 
-              status === 'upcoming' ? 'border-indigo-100 shadow-sm hover:border-indigo-300' : 'border-slate-100 opacity-80 hover:opacity-100 grayscale-[0.2]'
-          }`}>
+          <div className={`relative flex flex-col gap-3 rounded-md border p-4 ${ring}`}>
               {status === 'live' && (
-                  <div className="absolute top-0 right-0 bg-emerald-500 text-white text-[9px] font-black uppercase px-3 py-1 rounded-bl-xl tracking-widest animate-pulse">
-                      Live Now
+                  <div className="absolute right-0 top-0 rounded-bl-md bg-emerald-600 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-white">
+                      Live
                   </div>
               )}
               
-              <div className="flex items-start gap-4">
-                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white shadow-md shrink-0 ${
-                      status === 'live' ? 'bg-emerald-500' : status === 'upcoming' ? 'bg-indigo-500' : 'bg-slate-400'
+              <div className="flex items-start gap-3">
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-white ${
+                      status === 'live' ? 'bg-emerald-600' : status === 'upcoming' ? 'bg-zinc-900' : 'bg-zinc-500'
                   }`}>
-                      <iconify-icon icon="mdi:file-certificate-outline" width="24" />
+                      <iconify-icon icon="mdi:file-certificate-outline" width="20" />
                   </div>
-                  <div>
-                      <h3 className="font-black text-slate-800 text-sm leading-tight mb-1 line-clamp-2">{test.name}</h3>
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">{test.questionCount} Questions • {duration} Mins</p>
+                  <div className="min-w-0 flex-1">
+                      <h3 className="line-clamp-2 text-sm font-semibold leading-tight text-zinc-900">{test.name}</h3>
+                      <p className="mt-0.5 text-[11px] text-zinc-500">{test.questionCount} questions · {duration} min</p>
                   </div>
               </div>
 
-              <div className="flex items-center gap-4 text-xs font-medium text-slate-500 bg-slate-50 p-3 rounded-xl">
-                  <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-3 border-t border-zinc-100 pt-3 text-[11px] text-zinc-600">
+                  <span className="inline-flex items-center gap-1">
                       <iconify-icon icon="mdi:calendar" /> {dateStr}
-                  </div>
-                  <div className="w-px h-3 bg-slate-300"></div>
-                  <div className="flex items-center gap-1.5">
+                  </span>
+                  <span className="text-zinc-300">·</span>
+                  <span className="inline-flex items-center gap-1">
                       <iconify-icon icon="mdi:clock-outline" /> {timeStr}
-                  </div>
+                  </span>
               </div>
 
               {status === 'past' ? (
                   <button 
                     type="button"
                     onClick={() => onViewSolutions && onViewSolutions(test)}
-                    className={`w-full py-3 rounded-xl font-black uppercase tracking-[0.2em] text-[10px] transition-all flex items-center justify-center gap-2 border ${solutionsReleased ? 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                    className={`w-full rounded-md border py-2.5 text-[10px] font-medium uppercase tracking-wide transition-colors ${
+                      solutionsReleased
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                        : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50'
+                    }`}
                   >
-                      <iconify-icon icon={solutionsReleased ? "mdi:book-open-variant" : "mdi:file-document-outline"} width="16"/>
-                      {solutionsReleased ? "View Solutions" : "View Paper"}
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <iconify-icon icon={solutionsReleased ? "mdi:book-open-variant" : "mdi:file-document-outline"} width="16"/>
+                        {solutionsReleased ? 'View solutions' : 'View paper'}
+                      </span>
                   </button>
               ) : (
                   <button 
                     type="button"
                     onClick={() => status === 'live' ? onTakeExam(test) : alert(status === 'upcoming' ? "This exam has not started yet." : "This exam has ended.")}
-                    className={`w-full py-3 rounded-xl font-black uppercase tracking-[0.2em] text-[10px] transition-all flex items-center justify-center gap-2 ${
+                    className={`w-full rounded-md py-2.5 text-[10px] font-medium uppercase tracking-wide transition-colors ${
                         status === 'live' 
-                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 active:scale-95' 
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700' 
                         : status === 'upcoming' 
-                            ? 'bg-indigo-50 text-indigo-400 border border-indigo-100 cursor-not-allowed' 
-                            : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            ? 'cursor-not-allowed border border-zinc-200 bg-zinc-100 text-zinc-400' 
+                            : 'cursor-not-allowed border border-zinc-200 bg-zinc-100 text-zinc-400'
                     }`}
                   >
-                      {status === 'live' ? <><iconify-icon icon="mdi:play-circle-outline" width="16"/> Start Exam</> : 
-                       status === 'upcoming' ? 'Wait to Start' : 'Exam Ended'}
+                      {status === 'live' ? <span className="inline-flex items-center justify-center gap-2"><iconify-icon icon="mdi:play-circle-outline" width="16"/> Start exam</span> : 
+                       status === 'upcoming' ? 'Not started yet' : 'Ended'}
                   </button>
               )}
           </div>
@@ -131,78 +131,63 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
   };
 
   return (
-    <div className="w-full h-full p-6 md:p-10 overflow-y-auto custom-scrollbar bg-slate-50 font-sans">
-        <header className="mb-10">
-            <h1 className="text-3xl font-black text-slate-800 tracking-tight mb-2">Online Exams</h1>
-            <p className="text-sm font-medium text-slate-400">Online exams assigned to your class. Results are saved when you submit.</p>
+    <div className={`${workspacePageClass} w-full overflow-y-auto p-6 md:p-10 custom-scrollbar`}>
+        <header className="mb-8 border-b border-zinc-200 pb-6">
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-900">Online exams</h1>
+            <p className="mt-1 text-[13px] text-zinc-500">Exams assigned to your class. Results save when you submit.</p>
         </header>
 
-        {!hasAssignedClass && onEnrollClass && (
-          <section className="mb-10 p-6 bg-white rounded-2xl border border-indigo-100 shadow-sm">
-            <h2 className="text-sm font-black text-slate-800 uppercase tracking-widest mb-2">Join your batch</h2>
-            <p className="text-xs text-slate-500 font-medium mb-4 leading-relaxed">
-              Paste the <strong>class ID</strong> (UUID) your teacher shared. After joining, assigned online exams appear here.
+        {!hasAssignedClass && (
+          <section className="mb-8 rounded-md border border-amber-200 bg-amber-50/80 p-4">
+            <h2 className="text-sm font-semibold text-amber-950">Waiting for class assignment</h2>
+            <p className="mt-1 text-xs font-medium leading-relaxed text-amber-900/90 max-w-2xl">
+              Your teacher assigns you to a class in <strong>Students</strong>. Use the same email your teacher registered. Then scheduled exams for that class appear here.
             </p>
-            <form onSubmit={handleEnroll} className="flex flex-col sm:flex-row gap-3">
-              <input
-                value={classUuidDraft}
-                onChange={(e) => setClassUuidDraft(e.target.value)}
-                placeholder="e.g. 3fa85f64-5717-4562-b3fc-2c963f66afa6"
-                className="flex-1 px-4 py-3 rounded-xl border border-slate-200 text-sm font-mono"
-              />
-              <button
-                type="submit"
-                disabled={enrolling || !classUuidDraft.trim()}
-                className="px-6 py-3 rounded-xl bg-indigo-600 text-white text-xs font-black uppercase tracking-widest disabled:opacity-40"
-              >
-                {enrolling ? 'Saving…' : 'Save class'}
-              </button>
-            </form>
           </section>
         )}
 
-        {hasAssignedClass && availableTests.length === 0 && (
-          <div className="mb-10 p-8 border-2 border-dashed border-slate-200 rounded-2xl text-center bg-white">
-            <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">No online exams assigned to your class yet.</p>
+        {hasAssignedClass && onlineOnly.length === 0 && (
+          <div className="mb-8 rounded-md border border-dashed border-zinc-300 bg-white px-6 py-10 text-center">
+            <p className="text-xs font-medium text-zinc-500">No online exams assigned yet.</p>
           </div>
         )}
 
-        <div className="space-y-12 pb-20">
+        <div className="space-y-10 pb-16">
             {live.length > 0 && (
                 <section>
-                    <div className="flex items-center gap-3 mb-5">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></div>
-                        <h2 className="text-sm font-black text-emerald-600 uppercase tracking-widest">Happening Now</h2>
+                    <div className="mb-4 flex items-center gap-2 border-b border-zinc-200 pb-2">
+                        <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                        <h2 className="text-xs font-semibold uppercase tracking-widest text-emerald-700">Happening now</h2>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {live.map(t => <ExamCard key={t.id} test={t} status="live" />)}
                     </div>
                 </section>
             )}
 
             <section>
-                <div className="flex items-center gap-3 mb-5">
-                    <iconify-icon icon="mdi:calendar-clock" className="text-indigo-400" />
-                    <h2 className="text-sm font-black text-slate-500 uppercase tracking-widest">Upcoming</h2>
+                <div className="mb-4 flex items-center gap-2 border-b border-zinc-200 pb-2">
+                    <iconify-icon icon="mdi:calendar-clock" className="text-zinc-500" />
+                    <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Upcoming</h2>
                 </div>
                 {upcoming.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {upcoming.map(t => <ExamCard key={t.id} test={t} status="upcoming" />)}
                     </div>
                 ) : (
-                    <div className="p-8 border-2 border-dashed border-slate-200 rounded-2xl text-center">
-                        <p className="text-xs font-bold text-slate-400 uppercase">No upcoming exams scheduled.</p>
+                    <div className="rounded-md border border-dashed border-zinc-200 bg-zinc-50/50 py-8 text-center">
+                        <p className="text-xs font-medium text-zinc-500">No upcoming exams.</p>
                     </div>
                 )}
             </section>
 
             {past.length > 0 && (
                 <section>
-                    <div className="flex items-center gap-3 mb-5">
-                        <iconify-icon icon="mdi:history" className="text-slate-400" />
-                        <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest">History</h2>
+                    <div className="mb-4 flex items-center gap-2 border-b border-zinc-200 pb-2">
+                        <iconify-icon icon="mdi:history" className="text-zinc-400" />
+                        <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">History</h2>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {past.map(t => <ExamCard key={t.id} test={t} status="past" />)}
                     </div>
                 </section>

@@ -13,15 +13,15 @@ const TeacherSyllabusHub: React.FC<TeacherSyllabusHubProps> = ({ isDeveloper = f
   const [tab, setTab] = useState<Tab>('syllabus');
 
   return (
-    <div className="h-full flex flex-col bg-slate-50/50 overflow-hidden">
-      <div className="shrink-0 px-6 pt-6 pb-2 flex flex-wrap gap-2 border-b border-slate-200/80 bg-white/80">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex shrink-0 flex-wrap gap-1 rounded-md border border-zinc-200 bg-white p-1 shadow-sm md:gap-1.5">
         <button
           type="button"
           onClick={() => setTab('syllabus')}
-          className={`px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
+          className={`rounded-md px-3 py-2 text-left text-xs font-medium transition-colors ${
             tab === 'syllabus'
-              ? 'bg-slate-900 text-white shadow-lg'
-              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+              ? 'bg-zinc-900 text-white shadow-sm'
+              : 'text-zinc-600 hover:bg-zinc-100'
           }`}
         >
           Syllabi
@@ -29,16 +29,16 @@ const TeacherSyllabusHub: React.FC<TeacherSyllabusHubProps> = ({ isDeveloper = f
         <button
           type="button"
           onClick={() => setTab('exclusions')}
-          className={`px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
+          className={`rounded-md px-3 py-2 text-left text-xs font-medium transition-colors ${
             tab === 'exclusions'
-              ? 'bg-slate-900 text-white shadow-lg'
-              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+              ? 'bg-zinc-900 text-white shadow-sm'
+              : 'text-zinc-600 hover:bg-zinc-100'
           }`}
         >
           Topic exclusions
         </button>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-md border border-zinc-200 bg-white p-3 shadow-sm md:p-4">
         {tab === 'syllabus' ? <SyllabusManager isDeveloper={isDeveloper} /> : <TopicExclusionsManager />}
       </div>
     </div>

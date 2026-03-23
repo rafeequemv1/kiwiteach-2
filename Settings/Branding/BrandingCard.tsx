@@ -7,23 +7,25 @@ import { supabase } from '../../supabase/client';
 interface BrandingCardProps {
   config: BrandingConfig;
   onUpdate: (config: BrandingConfig) => void;
+  /** Hide card chrome when nested in Settings split layout */
+  embedded?: boolean;
 }
 
 const Toggle: React.FC<{ label: string; sub: string; checked: boolean; onChange: () => void }> = ({ label, sub, checked, onChange }) => (
-  <label className="flex items-center justify-between cursor-pointer group py-2">
-    <div className="flex-1">
-      <span className="text-sm font-bold text-slate-700 block">{label}</span>
-      <span className="text-[10px] text-slate-400 font-medium">{sub}</span>
+  <label className="group flex cursor-pointer items-center justify-between gap-3 rounded-md border border-zinc-100 bg-zinc-50/50 px-3 py-2.5">
+    <div className="min-w-0 flex-1">
+      <span className="block text-[13px] font-medium text-zinc-800">{label}</span>
+      <span className="text-[11px] text-zinc-500">{sub}</span>
     </div>
-    <div className="relative">
+    <div className="relative shrink-0">
       <input type="checkbox" className="sr-only" checked={checked} onChange={onChange} />
-      <div className={`block bg-slate-200 w-10 h-5 rounded-full transition-colors ${checked ? 'bg-accent' : ''}`}></div>
-      <div className={`dot absolute left-1 top-1 bg-white w-3 h-3 rounded-full transition-transform ${checked ? 'transform translate-x-5' : ''}`}></div>
+      <div className={`block h-5 w-10 rounded-full transition-colors ${checked ? 'bg-zinc-900' : 'bg-zinc-300'}`} />
+      <div className={`dot absolute left-1 top-1 h-3 w-3 rounded-full bg-white transition-transform ${checked ? 'translate-x-5' : ''}`} />
     </div>
   </label>
 );
 
-const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
+const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate, embedded }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -77,30 +79,38 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
   const toggleShowOnOmr = () => onUpdate({ ...config, showOnOmr: !config.showOnOmr });
 
   return (
-    <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 p-8 animate-fade-in">
-      <div className="flex items-center gap-4 mb-8">
-        <div className="p-3 bg-indigo-50 rounded-2xl text-accent">
-          <iconify-icon icon="mdi:palette-outline" width="24"></iconify-icon>
+    <div
+      className={
+        embedded
+          ? ''
+          : 'rounded-md border border-zinc-200 bg-white p-5 shadow-sm md:p-6'
+      }
+    >
+      {!embedded && (
+        <div className="mb-5 flex items-center gap-3 border-b border-zinc-100 pb-4">
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 text-zinc-700">
+            <iconify-icon icon="mdi:palette-outline" width="20"></iconify-icon>
+          </div>
+          <div>
+            <h3 className="text-base font-semibold tracking-tight text-zinc-900">Branding</h3>
+            <p className="text-[12px] text-zinc-500">Identity &amp; display</p>
+          </div>
         </div>
-        <div>
-          <h3 className="text-xl font-black text-slate-800 tracking-tight">Branding</h3>
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Customize your workspace identity</p>
-        </div>
-      </div>
+      )}
 
-      <div className="space-y-10">
+      <div className={embedded ? 'space-y-6' : 'space-y-8'}>
         {/* Brand Name Input */}
         <div>
-          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 ml-1">Brand Name</label>
-          <div className="relative group">
+          <label className="mb-2 ml-0.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Brand name</label>
+          <div className="group relative">
             <input
               type="text"
               value={config.name}
               onChange={handleNameChange}
-              placeholder="Enter your brand name"
-              className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 outline-none focus:border-accent focus:bg-white font-bold text-sm transition-all"
+              placeholder="Workspace name"
+              className="w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm font-medium outline-none transition-all focus:border-zinc-400 focus:bg-white"
             />
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-accent transition-colors">
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-300 group-focus-within:text-zinc-500">
               <iconify-icon icon="mdi:rename-outline" width="20"></iconify-icon>
             </div>
           </div>
@@ -108,18 +118,18 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
 
         {/* Logo Upload Section */}
         <div>
-          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 ml-1">Identity Logo</label>
-          <div className="flex flex-col md:flex-row gap-6 items-start md:items-center">
+          <label className="mb-2 ml-0.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Logo</label>
+          <div className="flex flex-col items-start gap-4 md:flex-row md:items-center">
             <div className="relative">
-              <div className="w-32 h-32 rounded-3xl bg-slate-50 border-2 border-dashed border-slate-200 flex items-center justify-center overflow-hidden group hover:border-accent transition-colors relative">
+              <div className="group relative flex h-24 w-24 items-center justify-center overflow-hidden rounded-md border border-dashed border-zinc-200 bg-zinc-50 transition-colors hover:border-zinc-300">
                 {isUploading ? (
                   <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-10">
-                    <div className="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-700"></div>
                   </div>
                 ) : config.logo ? (
                   <img src={config.logo} alt="Brand Logo" className="w-full h-full object-contain p-2" />
                 ) : (
-                  <iconify-icon icon="mdi:image-plus" width="32" className="text-slate-300 group-hover:text-accent transition-colors"></iconify-icon>
+                  <iconify-icon icon="mdi:image-plus" width="28" className="text-zinc-300 group-hover:text-zinc-500"></iconify-icon>
                 )}
                 
                 {!isUploading && (
@@ -135,22 +145,24 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
               
               {!isUploading && config.logo && (
                 <button
+                  type="button"
                   onClick={removeLogo}
-                  className="absolute -top-2 -right-2 bg-white text-red-500 rounded-full p-1 shadow-lg border border-red-50 hover:bg-red-50 transition-colors z-20"
+                  className="absolute -top-2 -right-2 z-20 rounded-full border border-red-100 bg-white p-1 text-red-500 shadow-md transition-colors hover:bg-red-50"
                 >
                   <iconify-icon icon="mdi:close-circle" width="20"></iconify-icon>
                 </button>
               )}
             </div>
-            <div className="flex-1 space-y-2">
-              <p className="text-sm font-bold text-slate-600">Upload your organization logo</p>
-              <p className="text-xs text-slate-400 leading-relaxed max-w-xs">
-                Recommended size: 512x512px. Supported formats: PNG, JPG, or SVG. Stored securely in cloud bucket.
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="text-[13px] font-medium text-zinc-700">Organization logo</p>
+              <p className="max-w-sm text-[11px] leading-relaxed text-zinc-500">
+                PNG, JPG, or SVG. ~512×512 recommended.
               </p>
               <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploading}
-                className="mt-2 text-accent text-xs font-black uppercase tracking-widest hover:underline disabled:opacity-50"
+                className="mt-1 text-[11px] font-medium uppercase tracking-wide text-zinc-700 underline decoration-zinc-300 underline-offset-2 hover:text-zinc-900 disabled:opacity-50"
               >
                 {isUploading ? 'Uploading...' : 'Choose File'}
               </button>
@@ -159,9 +171,9 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate }) => {
         </div>
 
         {/* Preferences / Toggles */}
-        <div className="pt-6 border-t border-slate-50">
-          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 ml-1">Display Preferences</label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-4">
+        <div className="border-t border-zinc-100 pt-5">
+          <label className="mb-3 ml-0.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-500">On exports</label>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 md:gap-x-8">
             <Toggle 
               label="Add to Test Paper" 
               sub="Show brand name/logo on the generated PDF test header." 

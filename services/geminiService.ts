@@ -2,6 +2,8 @@
 import { GoogleGenAI, Type, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
 import { Question, QuestionType, TypeDistribution } from "../Quiz/types";
 import { supabase } from "../supabase/client";
+import { assertGeminiApiKey } from "../config/env";
+import { FORGE_FORMAT_PROTOCOLS } from "./neuralStudioPromptBlueprint";
 
 declare const mammoth: any;
 
@@ -225,7 +227,7 @@ export const generateQuizQuestions = async (
   excludedTopicLabels?: string[]
 ): Promise<Question[]> => {
   await ensureApiKey();
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
   
   const styleInstruction = ((): string => {
     if (typeof qType === 'string') {
@@ -290,15 +292,6 @@ export const generateQuizQuestions = async (
        - Your topic_tag for every question must clearly avoid these areas; if the source material mentions them, skip and choose another subtopic.`
       : '';
 
-  const formatProtocols = `
-  STYLE PROTOCOLS (STRICT):
-  1. mcq: Standard 4-option single correct choice.
-  2. reasoning (Assertion-Reason): Clear A/R text.
-  3. matching (MANDATORY): 
-     - You MUST populate "columnA" and "columnB" with the actual list items (exactly 4 strings each).
-     - **TEXT FORMATTING**: If you describe the columns in the question text or explanation, refer to them as "Column A" and "Column B".
-  4. statements: Statement I and Statement II.`;
-
   try {
     const mainPrompt = `
     ${getSystemPrompt('General')}
@@ -313,7 +306,7 @@ export const generateQuizQuestions = async (
     ${visualInstruction}
     ${syllabusInstruction}
     ${exclusionInstruction}
-    ${formatProtocols}
+    ${FORGE_FORMAT_PROTOCOLS}
 
     WORLD CLASS TUNING:
     ${pyqContext ? `[PYQ_DNA_INJECTION_ACTIVE]: \n MIMIC THE STYLE OF THESE QUESTIONS BUT CHANGE THE CONTENT: \n ${pyqContext}` : ''}
@@ -392,7 +385,7 @@ export const generateQuizQuestions = async (
 
 export const generateCompositeStyleVariants = async (sourceBase64: string, sourceMimeType: string, prompts: string[], useAsIs: boolean = false): Promise<string[]> => {
     await ensureApiKey();
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
     const results: string[] = [];
     const cleanedSource = cleanBase64(sourceBase64);
     if (!cleanedSource) return [];
@@ -446,7 +439,7 @@ Prompt: ${prompt}`;
 
 export const generateCompositeFigures = async (prompts: string[]): Promise<string[]> => {
     await ensureApiKey();
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
     const results: string[] = [];
     for (const prompt of prompts) {
         if (!prompt) {
@@ -490,7 +483,7 @@ RULES:
 
 export const refineSystemPrompt = async (currentPrompt: string, instruction: string): Promise<string> => {
     await ensureApiKey();
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',

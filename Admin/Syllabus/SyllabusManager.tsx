@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from "@google/genai";
 import { ensureApiKey } from '../../services/geminiService';
+import { assertGeminiApiKey } from '../../config/env';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import {
     createSyllabusSet,
@@ -208,7 +209,7 @@ const SyllabusManager: React.FC<SyllabusManagerProps> = ({ isDeveloper = false }
 
         try {
             await ensureApiKey();
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
             
             // Step 1: Identify relevant chapters via keyword or title matching
             // We search for chapters that might contain the answer
@@ -266,7 +267,7 @@ const SyllabusManager: React.FC<SyllabusManagerProps> = ({ isDeveloper = false }
         setIsParsing(true);
         try {
             await ensureApiKey();
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
             const prompt = `Parse this raw NEET syllabus text into structured JSON: ${rawInput}`;
             
             const response = await ai.models.generateContent({

@@ -305,14 +305,17 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
               {landingNavLinks.map((link) => {
                 const isActive =
                   (link.id === 'home' && activeTab === 'home') ||
-                  (link.id === 'test-prep' && activeTab === 'test-prep');
+                  (link.id === 'test-prep' && activeTab === 'test-prep') ||
+                  (link.id === 'blog' && (activeTab === 'blog' || activeTab === 'blog-post'));
                 return (
                   <button
                     key={link.id}
                     type="button"
                     onClick={() => {
                       setBlogSlug(null);
-                      setActiveTab(link.id === 'test-prep' ? 'test-prep' : 'home');
+                      if (link.id === 'test-prep') setActiveTab('test-prep');
+                      else if (link.id === 'blog') setActiveTab('blog');
+                      else setActiveTab('home');
                     }}
                     className={`text-sm font-bold transition-colors ${isActive ? 'text-slate-900' : 'text-slate-500 hover:text-slate-900'}`}
                   >
@@ -356,7 +359,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
                 type="button"
                 onClick={() => {
                   setBlogSlug(null);
-                  setActiveTab(link.id === 'test-prep' ? 'test-prep' : 'home');
+                  if (link.id === 'test-prep') setActiveTab('test-prep');
+                  else if (link.id === 'blog') setActiveTab('blog');
+                  else setActiveTab('home');
                   setMobileMenuOpen(false);
                 }}
                 className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-slate-700 hover:bg-slate-50"

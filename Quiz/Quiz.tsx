@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../supabase/client';
+import { fetchClassesForUser, fetchInstitutesForUser } from '../supabase/orgScope';
 import AuthUI from '../supabase/AuthUI';
 import LeftPanel from '../Panel/LeftPanel';
 import TestDashboard from '../Teacher/Test/TestDashboard';
@@ -32,13 +33,14 @@ import {
   recordQuestionUsageForTest,
 } from './services/questionUsageService';
 import { fetchUserExcludedTopicLabels } from '../services/syllabusService';
-import { sanitizeQuestionsForStudentExam, setStudentClass as enrollStudentClass } from './services/studentTestService';
+import { isOnlineExamAssignment, sanitizeQuestionsForStudentExam } from './services/studentTestService';
 import { Menu } from 'lucide-react';
 
 interface Institute {
   id: string;
   name: string;
   color?: string;
+  business_id?: string | null;
 }
 interface OrgClass {
   id: string;
@@ -46,6 +48,17 @@ interface OrgClass {
   institute_id: string;
 }
 interface Folder { id: string; name: string; parent_id?: string | null; tests: any[]; }
+
+/** Narrow columns for workspace lists — avoids huge JSON blobs. */
+const TESTS_LIST_COLUMNS =
+  'id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids, config';
+
+function isMissingDbColumnError(err: { message?: string; code?: string } | null) {
+  if (!err) return false;
+  const m = (err.message || '').toLowerCase();
+  if (err.code === '42703') return true;
+  return m.includes('evaluation_pending') || m.includes('does not exist');
+}
 
 /**
  * Utility to strip Null characters (\u0000) which are illegal in Postgres text types.
@@ -84,7 +97,7 @@ const Quiz: React.FC = () => {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [allTests, setAllTests] = useState<any[]>([]);
   const [studentClassId, setStudentClassId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'calendar' | 'kanban'>('grid');
+  const [viewMode, setViewMode] = useState<'icons' | 'list' | 'calendar' | 'kanban'>('icons');
   const [calendarType, setCalendarType] = useState<'month' | 'week' | 'year'>('month');
 
   const [brandConfig, setBrandConfig] = useState<BrandingConfig>({ name: 'KiwiTeach', logo: null, showOnTest: true, showOnOmr: true });
@@ -105,6 +118,7 @@ const Quiz: React.FC = () => {
   const [creatorFolderId, setCreatorFolderId] = useState<string | null>(null);
   const [isForging, setIsForging] = useState(false);
   const [forgeStep, setForgeStep] = useState('');
+  const [forgeError, setForgeError] = useState<string | null>(null);
   const [forgedResult, setForgedResult] = useState<{ topic: string, questions: Question[], layoutConfig?: LayoutConfig, sourceOptions: CreateTestOptions } | null>(null);
   
   const [editingTestId, setEditingTestId] = useState<string | null>(null);
@@ -115,11 +129,26 @@ const Quiz: React.FC = () => {
 
   const loadProfileAndOrg = async (user: { id: string; email?: string | null }) => {
     const email = user.email ?? '';
-    let { data: prof, error: profErr } = await supabase
-      .from('profiles')
-      .select('role, class_id')
-      .eq('id', user.id)
-      .maybeSingle();
+    type ProfileRow = { role?: string | null; class_id?: string | null; business_id?: string | null };
+    let prof: ProfileRow | null = null;
+    let profErr: { message?: string; code?: string } | null = null;
+    {
+      const r = await supabase
+        .from('profiles')
+        .select('role, class_id, business_id')
+        .eq('id', user.id)
+        .maybeSingle();
+      prof = r.data as ProfileRow | null;
+      profErr = r.error;
+    }
+    if (
+      profErr &&
+      /42703|business_id/i.test(`${profErr.code || ''} ${profErr.message || ''}`)
+    ) {
+      const fb = await supabase.from('profiles').select('role, class_id').eq('id', user.id).maybeSingle();
+      prof = fb.data ? { ...fb.data, business_id: null } : null;
+      profErr = fb.error;
+    }
     if (profErr) console.warn('profiles:', profErr.message);
     if (!prof) {
       const initialRole = resolveAppRole(email, null);
@@ -131,8 +160,15 @@ const Quiz: React.FC = () => {
         },
         { onConflict: 'id' }
       );
-      const refetch = await supabase.from('profiles').select('role, class_id').eq('id', user.id).maybeSingle();
-      prof = refetch.data;
+      const refetch = await supabase.from('profiles').select('role, class_id, business_id').eq('id', user.id).maybeSingle();
+      prof = refetch.data as ProfileRow | null;
+      if (
+        refetch.error &&
+        /42703|business_id/i.test(`${refetch.error.code || ''} ${refetch.error.message || ''}`)
+      ) {
+        const fb2 = await supabase.from('profiles').select('role, class_id').eq('id', user.id).maybeSingle();
+        prof = fb2.data ? { ...fb2.data, business_id: null } : null;
+      }
     }
     const role = resolveAppRole(email, prof?.role ?? null);
     setAppRole(role);
@@ -141,16 +177,15 @@ const Quiz: React.FC = () => {
       await supabase.from('profiles').update({ role: 'developer' }).eq('id', user.id);
     }
 
-    const { data: instRows } = await supabase
-      .from('institutes')
-      .select('id, name')
-      .eq('user_id', user.id)
-      .order('name');
-    const { data: classRows } = await supabase
-      .from('classes')
-      .select('id, name, institute_id')
-      .eq('user_id', user.id)
-      .order('name');
+    const ir = await fetchInstitutesForUser(user.id);
+    let instRows = ir.data as { id: string; name: string }[] | null;
+    if (ir.error && /business_id|does not exist|42703/i.test(`${ir.error.message} ${ir.error.code || ''}`)) {
+      const fb = await supabase.from('institutes').select('id, name').eq('user_id', user.id).order('name');
+      instRows = fb.data as { id: string; name: string }[] | null;
+    }
+    const instIds = (instRows || []).map((r) => r.id);
+    const cr = await fetchClassesForUser(user.id, instIds);
+    const classRows = cr.data;
     const colors = ['indigo', 'rose', 'emerald', 'amber', 'violet'] as const;
     if (instRows?.length) {
       setInstitutes(
@@ -174,6 +209,11 @@ const Quiz: React.FC = () => {
       setActiveView(defaultViewForRole(appRole));
     }
   }, [appRole, activeView]);
+
+  // Test repositories should open in icon card view by default.
+  useEffect(() => {
+    if (activeView === 'test' || activeView === 'online-exam') setViewMode('icons');
+  }, [activeView]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -250,33 +290,80 @@ const Quiz: React.FC = () => {
             setAllTests([]);
             return;
           }
-          const { data: assignedTests, error: stuErr } = await supabase
+          const stPrimary = await supabase
             .from('tests')
-            .select('id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids, config')
+            .select(`${TESTS_LIST_COLUMNS}, evaluation_pending`)
             .contains('class_ids', [cid])
             .order('created_at', { ascending: false })
             .limit(80);
-          if (stuErr) console.warn('Student tests fetch:', stuErr.message);
-          const filtered = (assignedTests || []).filter(
-            (t: any) => t.config?.mode === 'online' && t.status !== 'draft'
-          );
+          let stRows = stPrimary.data as any[] | null;
+          let stErr = stPrimary.error;
+          if (stErr && isMissingDbColumnError(stErr)) {
+            const stFb = await supabase
+              .from('tests')
+              .select(TESTS_LIST_COLUMNS)
+              .contains('class_ids', [cid])
+              .order('created_at', { ascending: false })
+              .limit(80);
+            stRows = stFb.data as any[] | null;
+            stErr = stFb.error;
+          }
+          if (stErr) {
+            console.warn('Student tests fetch:', stErr.message);
+            setAllTests([]);
+            return;
+          }
+          const filtered = (stRows || []).filter((t: any) => isOnlineExamAssignment(t));
           const processedTests = filtered.map((t: any) => ({
             ...t,
             questionCount: t.question_count || 0,
             generatedAt: t.created_at,
             scheduledAt: t.scheduled_at,
             class_ids: t.class_ids || [],
+            evaluationPending: !!(t as { evaluation_pending?: boolean }).evaluation_pending,
           }));
           setAllTests(processedTests);
           return;
         }
 
         const [foldersRes, testsRes] = await Promise.all([
-            supabase.from('folders').select('id, name, parent_id').eq('user_id', user.id).order('created_at'),
-            supabase.from('tests').select('id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids').eq('user_id', user.id).order('created_at', { ascending: false }).limit(60)
+          supabase.from('folders').select('id, name, parent_id').eq('user_id', user.id).order('created_at'),
+          supabase
+            .from('tests')
+            .select(`${TESTS_LIST_COLUMNS}, evaluation_pending`)
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(120),
         ]);
 
-        const processedTests = (testsRes.data || []).map((t: any) => ({ ...t, questionCount: t.question_count || 0, generatedAt: t.created_at, scheduledAt: t.scheduled_at, class_ids: t.class_ids || [] }));
+        let testsRows = testsRes.data as any[] | null;
+        if (testsRes.error && isMissingDbColumnError(testsRes.error)) {
+          const fb = await supabase
+            .from('tests')
+            .select(TESTS_LIST_COLUMNS)
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(120);
+          if (fb.error) {
+            console.warn('[fetchWorkspace] tests query failed:', fb.error.message);
+            testsRows = [];
+          } else {
+            testsRows = fb.data as any[] | null;
+          }
+        } else if (testsRes.error) {
+          console.warn('[fetchWorkspace] tests query failed:', testsRes.error.message);
+          testsRows = [];
+        }
+
+        const processedTests = (testsRows || []).map((t: any) => ({
+          ...t,
+          questionCount: t.question_count || 0,
+          generatedAt: t.created_at,
+          scheduledAt: t.scheduled_at,
+          class_ids: Array.isArray(t.class_ids) ? t.class_ids : [],
+          config: t.config ?? {},
+          evaluationPending: !!t.evaluation_pending,
+        }));
         setAllTests(processedTests);
         
         const folderMap = new Map();
@@ -291,6 +378,16 @@ const Quiz: React.FC = () => {
         fetchingRef.current = false; 
     }
   };
+
+  /** Refresh assigned online exams when opening student zone (teacher-created tests sync via Supabase). */
+  useEffect(() => {
+    if (!session?.user || activeView !== 'student-online-test') return;
+    lastFetchTime.current = 0;
+    void fetchWorkspace(session.user);
+  }, [activeView, session?.user?.id]);
+
+  /** Student “Online exams” must only list online rows (developers load all tests for teacher UI). */
+  const studentOnlineExamsOnly = useMemo(() => allTests.filter((t) => isOnlineExamAssignment(t)), [allTests]);
 
   const handleAddFolder = async (folder: { name: string, parent_id: string | null }) => {
       const { error } = await supabase.from('folders').insert([{ name: folder.name, parent_id: folder.parent_id, user_id: session?.user?.id }]);
@@ -320,13 +417,51 @@ const Quiz: React.FC = () => {
   const handleScheduleTest = async (testId: string, dateStr: string | null) => { try { const updates = dateStr ? { scheduled_at: new Date(dateStr).toISOString(), status: 'scheduled' } : { scheduled_at: null, status: 'generated' }; await supabase.from('tests').update(updates).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Scheduling Error:", e); } };
   const handleAssignClasses = async (testId: string, classIds: string[]) => { try { await supabase.from('tests').update({ class_ids: classIds }).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Assign Error:", e); } };
 
+  const handleMoveTestToFolder = async (testId: string, folderId: string | null) => {
+    try {
+      const { error } = await supabase.from('tests').update({ folder_id: folderId }).eq('id', testId);
+      if (error) throw error;
+      lastFetchTime.current = 0;
+      await fetchWorkspace(session?.user ?? undefined);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not move test';
+      alert(msg);
+    }
+  };
+
+  const handleSetEvaluationPending = async (testId: string, pending: boolean) => {
+    try {
+      const { error } = await supabase.from('tests').update({ evaluation_pending: pending }).eq('id', testId);
+      if (error) {
+        if (isMissingDbColumnError(error)) {
+          alert(
+            'The database is missing column evaluation_pending. Apply the latest Supabase migration (tests_evaluation_pending.sql) and reload.'
+          );
+          return;
+        }
+        throw error;
+      }
+      lastFetchTime.current = 0;
+      await fetchWorkspace(session?.user ?? undefined);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not update test';
+      alert(msg);
+    }
+  };
+
   const handleStartTestCreator = (folderId: string | null) => { 
       setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
-      setEditingTestId(null); setCreatorFolderId(folderId); setIsCreatorOpen(true); 
+      setEditingTestId(null); setCreatorFolderId(folderId);
+      setIsForging(false); setForgeStep(''); setForgeError(null);
+      setForgedResult(null); setOnlineExamResult(null);
+      setIsCreatorOpen(true); 
   };
   const handleStartOnlineExamCreator = (folderId: string | null) => { 
       setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
-      setEditingTestId(null); setCreatorFolderId(folderId); setIsOnlineExamCreatorOpen(true); 
+      setEditingTestId(null); setCreatorFolderId(folderId);
+      setIsForging(false); setForgeStep(''); setForgeError(null);
+      setForgedResult(null); setOnlineExamResult(null);
+      setIsOnlineExamCreatorOpen(true); 
   };
 
   const handleEditBlueprint = (questions: Question[]) => {
@@ -352,6 +487,7 @@ const Quiz: React.FC = () => {
         setEditInitialSettings({ totalQuestions: questions.length, selectionMode: 'manual' });
         setEditInitialManualQuestions(questions);
     }
+    setForgeError(null);
     setIsCreatorOpen(true);
     setForgedResult(null); 
   };
@@ -364,13 +500,14 @@ const Quiz: React.FC = () => {
       const safeOptions = sanitizeForPostgres(options);
       const safeManualQs = sanitizeForPostgres(manualQs);
 
+      const draftMode = isOnlineExamCreatorOpen ? 'online-exam' : 'paper';
       const payload = { 
           name: safeOptions.topic || 'New Assessment Draft', 
           folder_id: creatorFolderId, 
           user_id: user.id, 
           questions: safeManualQs, 
           question_ids: safeManualQs.map((q: any) => q.id || '').filter(Boolean), 
-          config: { sourceOptions: safeOptions, mode: 'paper' }, 
+          config: { sourceOptions: safeOptions, mode: draftMode }, 
           layout_config: {}, 
           status: 'draft', 
           question_count: safeOptions.selectionMode === 'manual' ? safeManualQs.length : safeOptions.totalQuestions, 
@@ -618,12 +755,16 @@ const Quiz: React.FC = () => {
   };
 
   const handleCreateTest = async (options: CreateTestOptions) => {
+      setForgeError(null);
       setIsForging(true); setForgeStep('Synthesizing Assessment...');
       try {
           const questions = await generateQuestionsLogic(options, setForgeStep);
           setForgedResult({ topic: options.topic, questions, sourceOptions: options });
           setIsCreatorOpen(false); 
-      } catch (err: any) { alert("Forge Failed: " + err.message); } finally { setIsForging(false); setForgeStep(''); }
+      } catch (err: any) {
+          const msg = err?.message ? String(err.message) : 'Unknown error';
+          setForgeError(`Forge failed: ${msg}`);
+      } finally { setIsForging(false); setForgeStep(''); }
   };
 
   const handleSaveTestToSupabase = async (questions: Question[], layoutConfig?: LayoutConfig, updatedTitle?: string) => {
@@ -644,6 +785,7 @@ const Quiz: React.FC = () => {
           if (error) throw error;
 
           if (test.status === 'draft') {
+              setIsForging(false); setForgeStep(''); setForgeError(null);
               setIsCreatorOpen(false); setEditingTestId(test.id); setCreatorFolderId(test.folder_id); setEditInitialTopic(test.name);
               const options = test.config?.sourceOptions || test.config;
               if (options) {
@@ -709,11 +851,19 @@ const Quiz: React.FC = () => {
   };
 
   const handleStudentTakeExam = async (test: any) => {
+      if (!isOnlineExamAssignment(test)) {
+        alert('This assessment is not an online exam.');
+        return;
+      }
       setLoadingMessage('Loading Exam Environment...');
       setIsLoadingTest(true);
       try {
-          const { data, error } = await supabase.from('tests').select('name, questions, config').eq('id', test.id).single();
+          const { data, error } = await supabase.from('tests').select('name, questions, config, status').eq('id', test.id).single();
           if (error) throw error;
+          if (!isOnlineExamAssignment({ config: data.config, status: data.status })) {
+            alert('This assessment is not available as an online exam.');
+            return;
+          }
           const rawQs = Array.isArray(data.questions) ? data.questions : [];
           const safeQs = sanitizeQuestionsForStudentExam(rawQs as Question[]);
           const durationMin = typeof data.config?.duration === 'number' ? data.config.duration : 60;
@@ -726,27 +876,17 @@ const Quiz: React.FC = () => {
       } catch (e: any) { alert("Failed to load exam: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
-  const handleStudentEnrollClass = async (classUuid: string) => {
-    try {
-      await enrollStudentClass(classUuid.trim());
-      if (session?.user) {
-        await loadProfileAndOrg(session.user);
-        lastFetchTime.current = 0;
-        await fetchWorkspace(session.user);
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Could not join class';
-      alert(msg);
-      throw e;
-    }
-  };
-
   const handleStudentViewSolutions = async (test: any) => {
+      if (!isOnlineExamAssignment(test)) {
+        alert('Solutions for this paper test are not shown here.');
+        return;
+      }
       setLoadingMessage('Fetching Solution Key...');
       setIsLoadingTest(true);
       try {
-          const { data, error } = await supabase.from('tests').select('name, questions, config').eq('id', test.id).single();
+          const { data, error } = await supabase.from('tests').select('name, questions, config, status').eq('id', test.id).single();
           if (error) throw error;
+          if (!isOnlineExamAssignment({ config: data.config, status: data.status })) return;
           setActiveStudentSolution({ topic: data.name, questions: data.questions, showAnswers: data.config?.releaseAnswers });
       } catch (e: any) { alert("Failed to load solutions: " + e.message); } finally { setIsLoadingTest(false); }
   };
@@ -802,7 +942,7 @@ const Quiz: React.FC = () => {
         {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className={`w-12 h-12 border-4 border-slate-100 rounded-full animate-spin mb-4 ${appShellTheme.accent.spinner}`}></div><h3 className="text-xl font-black uppercase tracking-tight text-slate-800">Syncing Hub</h3></div>}
         
         {isLoadingTest && (
-            <div className="absolute inset-0 z-[100] bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
+            <div className="absolute inset-0 z-40 bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 flex flex-col items-center gap-5 transform scale-100 animate-slide-up" style={{ boxShadow: landingTheme.shadow.card }}>
                     <div className="relative w-16 h-16">
                         <div className="absolute inset-0 rounded-full border-4 border-slate-50"></div>
@@ -819,17 +959,42 @@ const Quiz: React.FC = () => {
             </div>
         )}
 
-        {activeView === 'test' && <TestDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewTest={handleStartTestCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
-        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
+        {activeView === 'test' && (
+          <TestDashboard
+            username={session.user.email}
+            title="Paper tests"
+            subtitle="Generate PDFs and OMR layouts"
+            institutesList={institutes}
+            classesList={orgClasses}
+            folders={folders}
+            allTests={allTests.filter(
+              (t: any) => t.config?.mode !== 'online' && t.config?.mode !== 'online-exam'
+            )}
+            onAddFolder={handleAddFolder}
+            onStartNewTest={handleStartTestCreator}
+            onTestClick={handleTestClick}
+            onDeleteItem={handleDeleteItem}
+            onDuplicateTest={handleDuplicateTest}
+            onRenameTest={handleRenameTest}
+            onScheduleTest={handleScheduleTest}
+            onAssignClasses={handleAssignClasses}
+            onMoveTestToFolder={handleMoveTestToFolder}
+            onSetEvaluationPending={handleSetEvaluationPending}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            calendarType={calendarType}
+            setCalendarType={setCalendarType}
+          />
+        )}
+        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} onMoveTestToFolder={handleMoveTestToFolder} onSetEvaluationPending={handleSetEvaluationPending} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
         {activeView === 'students' && <StudentDirectory institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'reports' && <ReportsDashboard institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} userId={session.user.id} onRefresh={refreshOrgData} />}
         {activeView === 'admin' && <AdminView appRole={appRole} userId={session.user.id} onRefreshOrg={refreshOrgData} />}
         {activeView === 'student-online-test' && (
           <StudentOnlineTestDashboard
-            availableTests={allTests}
+            availableTests={studentOnlineExamsOnly}
             hasAssignedClass={!!studentClassId}
-            onEnrollClass={handleStudentEnrollClass}
             onTakeExam={handleStudentTakeExam}
             onViewSolutions={handleStudentViewSolutions}
           />
@@ -856,31 +1021,55 @@ const Quiz: React.FC = () => {
           />
       )}
 
-      {isCreatorOpen && <div className="fixed inset-0 z-[100] bg-white"><TestCreatorView onClose={() => setIsCreatorOpen(false)} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} /></div>}
-      {forgedResult && <div className="fixed inset-0 z-[150] bg-white"><QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} onRestart={() => setForgedResult(null)} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} initialLayoutConfig={forgedResult.layoutConfig} sourceOptions={forgedResult.sourceOptions} /></div>}
+      {isCreatorOpen && (
+          <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden bg-white">
+              {forgeError && (
+                  <div className="flex shrink-0 items-center justify-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] font-medium text-amber-950 shadow-sm" role="alert">
+                      <span className="text-center">{forgeError}</span>
+                      <button type="button" onClick={() => setForgeError(null)} className="shrink-0 rounded-md border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100">Dismiss</button>
+                  </div>
+              )}
+              <div className="min-h-0 flex-1">
+                  <TestCreatorView onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsCreatorOpen(false); }} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} />
+              </div>
+          </div>
+      )}
+      {forgedResult && <div className="fixed inset-0 z-[210] bg-white"><QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} onRestart={() => setForgedResult(null)} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} initialLayoutConfig={forgedResult.layoutConfig} sourceOptions={forgedResult.sourceOptions} /></div>}
       {isOnlineExamCreatorOpen && (
-          <div className="fixed inset-0 z-[100] bg-white">
-              <TestCreatorView 
-                  onClose={() => setIsOnlineExamCreatorOpen(false)} 
-                  onSaveDraft={handleSaveDraft}
-                  onStart={async (opts) => {
-                      setIsForging(true); setForgeStep('Forging Exam...');
-                      try {
-                          const qs = await generateQuestionsLogic(opts, setForgeStep);
-                          setOnlineExamResult({ topic: opts.topic, questions: qs, config: opts });
-                          setIsOnlineExamCreatorOpen(false);
-                      } catch(e: any) { alert("Forge failed: " + e.message); } finally { setIsForging(false); setForgeStep(''); }
-                  }}
-                  isLoading={isForging} 
-                  loadingStep={forgeStep} 
-                  initialChapters={editInitialChapters} 
-                  initialTopic={editInitialTopic} 
-                  initialManualQuestions={editInitialManualQuestions}
-              />
+          <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden bg-white">
+              {forgeError && (
+                  <div className="flex shrink-0 items-center justify-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] font-medium text-amber-950 shadow-sm" role="alert">
+                      <span className="text-center">{forgeError}</span>
+                      <button type="button" onClick={() => setForgeError(null)} className="shrink-0 rounded-md border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100">Dismiss</button>
+                  </div>
+              )}
+              <div className="min-h-0 flex-1">
+                  <TestCreatorView 
+                      onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsOnlineExamCreatorOpen(false); }} 
+                      onSaveDraft={handleSaveDraft}
+                      onStart={async (opts) => {
+                          setForgeError(null);
+                          setIsForging(true); setForgeStep('Forging Exam...');
+                          try {
+                              const qs = await generateQuestionsLogic(opts, setForgeStep);
+                              setOnlineExamResult({ topic: opts.topic, questions: qs, config: opts });
+                              setIsOnlineExamCreatorOpen(false);
+                          } catch (e: any) {
+                              const msg = e?.message ? String(e.message) : 'Unknown error';
+                              setForgeError(`Forge failed: ${msg}`);
+                          } finally { setIsForging(false); setForgeStep(''); }
+                      }}
+                      isLoading={isForging} 
+                      loadingStep={forgeStep} 
+                      initialChapters={editInitialChapters} 
+                      initialTopic={editInitialTopic} 
+                      initialManualQuestions={editInitialManualQuestions}
+                  />
+              </div>
           </div>
       )}
       {onlineExamResult && (
-          <div className="fixed inset-0 z-[150] bg-white">
+          <div className="fixed inset-0 z-[210] bg-white">
               <OnlineExamScheduler 
                   topic={onlineExamResult.topic} 
                   questions={onlineExamResult.questions} 

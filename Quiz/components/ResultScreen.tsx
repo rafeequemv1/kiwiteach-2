@@ -8,6 +8,7 @@ import { renderWithSmiles } from '../../utils/smilesRenderer';
 import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
 import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
+import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -67,7 +68,7 @@ const AnswerKeyPage: React.FC<{ questions: Question[]; brandConfig: BrandingConf
         <div className="flex-1 flex flex-col text-black bg-white p-4 border-[0.5pt] border-black h-full">
             <div className="text-center mb-5 border-b-[0.5pt] border-black pb-2">
                 <h1 className="text-base font-black uppercase tracking-[0.2em] text-black">Official Answer Key</h1>
-                <div className="flex justify-center gap-6 mt-1 text-[7pt] font-black uppercase text-slate-500">
+                <div className="flex justify-center gap-6 mt-1 text-[7pt] font-black uppercase text-zinc-500">
                     <span className="truncate max-w-[300px]">{topic}</span>
                     <span className="shrink-0">Questions: {questions.length}</span>
                     <span className="shrink-0">Max Marks: {questions.length * 4}</span>
@@ -80,10 +81,10 @@ const AnswerKeyPage: React.FC<{ questions: Question[]; brandConfig: BrandingConf
                         {column.map(({ q, qIndex }) => {
                             const correctOption = (q.correctIndex ?? 0) + 1;
                             return (
-                                <div key={q.id || qIndex} className="flex items-center justify-between py-1.5 border-b border-dotted border-slate-200">
-                                    <span className="font-bold text-[7.5pt] text-slate-400 w-5">{qIndex + 1}.</span>
+                                <div key={q.id || qIndex} className="flex items-center justify-between py-1.5 border-b border-dotted border-zinc-200">
+                                    <span className="font-bold text-[7.5pt] text-zinc-400 w-5">{qIndex + 1}.</span>
                                     <div className="flex items-center">
-                                        <span className="font-black text-[8pt] text-slate-800 pr-1">
+                                        <span className="font-black text-[8pt] text-zinc-800 pr-1">
                                             {correctOption}
                                         </span>
                                     </div>
@@ -95,50 +96,52 @@ const AnswerKeyPage: React.FC<{ questions: Question[]; brandConfig: BrandingConf
             </div>
             
             <div className="mt-4 pt-2 border-t-[0.5pt] border-black flex justify-between items-end">
-                <div className="text-[5pt] font-black uppercase text-slate-400">
+                <div className="text-[5pt] font-black uppercase text-zinc-400">
                     ID: {Math.random().toString(36).substring(7).toUpperCase()}
                 </div>
                 <div className="text-right">
                     <p className="text-[7pt] font-bold text-black uppercase leading-none">{brandConfig.name}</p>
-                    <p className="text-[5pt] text-slate-400 italic">Authored Assessment Matrix</p>
+                    <p className="text-[5pt] text-zinc-400 italic">Authored Assessment Matrix</p>
                 </div>
             </div>
         </div>
     );
 };
 
-const Toggle: React.FC<{ label: string; checked: boolean; onChange: () => void; color?: string }> = ({ label, checked, onChange, color = 'indigo' }) => {
+const Toggle: React.FC<{ label: string; checked: boolean; onChange: () => void; color?: string }> = ({ label, checked, onChange, color = 'zinc' }) => {
     const activeColors: Record<string, string> = {
-        indigo: 'bg-indigo-600 border-indigo-600',
+        zinc: 'bg-zinc-900 border-zinc-900',
+        indigo: 'bg-zinc-900 border-zinc-900',
         amber: 'bg-amber-500 border-amber-500',
         emerald: 'bg-emerald-600 border-emerald-600',
         rose: 'bg-rose-500 border-rose-500',
-        slate: 'bg-slate-700 border-slate-700',
+        slate: 'bg-zinc-700 border-zinc-700',
         cyan: 'bg-cyan-600 border-cyan-600'
     };
     return (
         <button 
+            type="button"
             onClick={onChange}
-            className={`flex items-center gap-2 px-3 py-1 rounded-full transition-all border ${checked ? `${activeColors[color]} text-white shadow-sm` : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'}`}
+            className={`flex items-center gap-2 rounded-md border px-3 py-1.5 transition-all ${checked ? `${activeColors[color]} text-white shadow-sm` : 'border-zinc-200 bg-white text-zinc-500 hover:border-zinc-300'}`}
         >
-            <div className={`w-3 h-3 rounded-full border flex items-center justify-center transition-all ${checked ? 'border-white bg-white/20' : 'border-slate-300 bg-slate-50'}`}>
+            <div className={`flex h-3 w-3 items-center justify-center rounded-full border transition-all ${checked ? 'border-white bg-white/20' : 'border-zinc-300 bg-zinc-50'}`}>
                 {checked && <iconify-icon icon="mdi:check" className="text-[7px] font-black" />}
             </div>
-            <span className="text-[8px] font-black uppercase tracking-wider">{label}</span>
+            <span className="text-[8px] font-semibold uppercase tracking-wider">{label}</span>
         </button>
     );
 };
 
 const NumberControl: React.FC<{ label: string; value: number; onChange: (v: number) => void; min?: number; max?: number; unit?: string; step?: number }> = ({ label, value, onChange, min = 0, max = 100, unit, step = 1 }) => (
-    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 shadow-sm">
+    <div className="flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 shadow-sm">
         <div className="flex items-center gap-2">
-            <iconify-icon icon="mdi:ruler-square" className="text-slate-300" />
-            <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider">{label}</span>
+            <iconify-icon icon="mdi:ruler-square" className="text-zinc-400" />
+            <span className="text-[9px] font-medium uppercase tracking-wider text-zinc-600">{label}</span>
         </div>
         <div className="flex items-center gap-2">
-            <button onClick={() => onChange(Math.max(min, parseFloat((value - step).toFixed(2))))} className="w-5 h-5 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded text-slate-500 transition-colors"><iconify-icon icon="mdi:minus" width="12"/></button>
-            <span className="text-xs font-bold text-slate-700 w-8 text-center tabular-nums">{value}{unit}</span>
-            <button onClick={() => onChange(Math.min(max, parseFloat((value + step).toFixed(2))))} className="w-5 h-5 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded text-slate-500 transition-colors"><iconify-icon icon="mdi:plus" width="12"/></button>
+            <button type="button" onClick={() => onChange(Math.max(min, parseFloat((value - step).toFixed(2))))} className="flex h-5 w-5 items-center justify-center rounded-md bg-zinc-100 text-zinc-600 transition-colors hover:bg-zinc-200"><iconify-icon icon="mdi:minus" width="12"/></button>
+            <span className="w-8 text-center text-xs font-semibold tabular-nums text-zinc-800">{value}{unit}</span>
+            <button type="button" onClick={() => onChange(Math.min(max, parseFloat((value + step).toFixed(2))))} className="flex h-5 w-5 items-center justify-center rounded-md bg-zinc-100 text-zinc-600 transition-colors hover:bg-zinc-200"><iconify-icon icon="mdi:plus" width="12"/></button>
         </div>
     </div>
 );
@@ -174,6 +177,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   }, [isLgLayout]);
 
   useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setViewerUserId(data.user?.id ?? null);
+    });
+  }, []);
+
+  useEffect(() => {
     if (!resultMobileSheet || isLgLayout) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setResultMobileSheet(null);
@@ -191,6 +200,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [showDifficulty, setShowDifficulty] = useState(initialLayoutConfig?.showDifficulty ?? false);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
   const [allowPastReplacements, setAllowPastReplacements] = useState(sourceOptions?.allowPastQuestions ?? false);
+  const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
+  const [flaggingQuestionId, setFlaggingQuestionId] = useState<string | null>(null);
+  const [viewerUserId, setViewerUserId] = useState<string | null>(null);
 
   const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? true);
   const [showChapterListOnCover, setShowChapterListOnCover] = useState(initialLayoutConfig?.showChapterListOnCover ?? true);
@@ -551,6 +563,60 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     }
   };
 
+  useEffect(() => {
+    const loadFlagsForCurrentPaper = async () => {
+      if (!viewerUserId) {
+        setFlaggedQuestionIds(new Set());
+        return;
+      }
+      const ids = currentQuestions
+        .map((q) => q.originalId || q.id)
+        .filter((id): id is string => isUuid(id));
+      if (!ids.length) {
+        setFlaggedQuestionIds(new Set());
+        return;
+      }
+      const { data, error } = await supabase
+        .from('out_of_syllabus_question_flags')
+        .select('question_id')
+        .in('question_id', ids)
+        .eq('flagged_by', viewerUserId)
+        .eq('exam_tag', 'neet');
+      if (error) {
+        console.warn('Could not load test-paper flags:', error.message);
+        return;
+      }
+      setFlaggedQuestionIds(new Set(((data as { question_id: string }[]) || []).map((row) => row.question_id)));
+    };
+    void loadFlagsForCurrentPaper();
+  }, [currentQuestions, viewerUserId]);
+
+  const handleFlagQuestion = async (q: Question) => {
+    const questionId = q.originalId || q.id;
+    if (!isUuid(questionId)) {
+      alert('Only saved repository questions can be flagged.');
+      return;
+    }
+    setFlaggingQuestionId(q.id);
+    try {
+      const { error } = await supabase.rpc('flag_question_out_of_syllabus', {
+        p_question_id: questionId,
+        p_knowledge_base_id: null,
+        p_reason: null,
+        p_exam_tag: 'neet',
+      });
+      if (error) {
+        alert(error.message);
+        return;
+      }
+      setFlaggedQuestionIds((prev) => new Set(prev).add(questionId));
+      // Remove flagged question from current paper immediately.
+      setCurrentQuestions((prev) => prev.filter((item) => item.id !== q.id));
+    } finally {
+      setFlaggingQuestionId(null);
+    }
+  };
+
   const MM_TO_PX = 3.78;
   const PAGE_WIDTH_PX = 210 * MM_TO_PX;
   const PAGE_HEIGHT_PX = 297 * MM_TO_PX;
@@ -877,29 +943,29 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const PageThumbnail: React.FC<{ idx: number, label: string }> = ({ idx, label }) => (
     <button 
         onClick={() => scrollToPage(idx)}
-        className="aspect-[1/1.41] w-full bg-slate-50 border border-slate-200 rounded-lg p-1 hover:border-indigo-400 hover:ring-2 hover:ring-indigo-50 transition-all flex flex-col items-center justify-center relative group overflow-hidden"
+        className="group relative flex aspect-[1/1.41] w-full flex-col items-center justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-1 transition-all hover:border-zinc-400 hover:ring-2 hover:ring-zinc-200/80"
     >
         {pages[idx]?.isCover ? (
-            <iconify-icon icon="mdi:file-certificate" width="18" className="text-slate-300 group-hover:text-indigo-500" />
+            <iconify-icon icon="mdi:file-certificate" width="18" className="text-zinc-400 group-hover:text-zinc-700" />
         ) : (pages[idx]?.leftCol[0]?.type === 'answer-key' ? (
             <iconify-icon icon="mdi:key-variant" width="18" className="text-cyan-400 group-hover:text-cyan-600" />
         ) : (
             <div className="w-full h-full flex flex-col gap-0.5 p-1 opacity-20">
                 <div className="flex-1 flex gap-0.5">
-                    <div className="w-1/2 bg-slate-400 rounded-sm"></div>
-                    <div className="w-1/2 bg-slate-400 rounded-sm"></div>
+                    <div className="w-1/2 rounded-sm bg-zinc-400"></div>
+                    <div className="w-1/2 rounded-sm bg-zinc-400"></div>
                 </div>
             </div>
         ))}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-[14px] font-black text-slate-800 drop-shadow-sm opacity-80 group-hover:opacity-100 group-hover:scale-125 transition-all">{label.replace('P', '')}</span>
+            <span className="text-[14px] font-semibold text-zinc-800 opacity-80 drop-shadow-sm transition-all group-hover:scale-125 group-hover:opacity-100">{label.replace('P', '')}</span>
         </div>
     </button>
   );
 
   const BlockRenderer: React.FC<{
-      block: QuizBlock; showChoices: boolean; showSourceFigure: boolean; showDifficulty: boolean; onDelete?: (id: string) => void; onReplace?: (q: Question) => void;
-  }> = ({ block, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace }) => {
+      block: QuizBlock; showChoices: boolean; showSourceFigure: boolean; showDifficulty: boolean; onDelete?: (id: string) => void; onReplace?: (q: Question) => void; onFlag?: (q: Question) => void;
+  }> = ({ block, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
       if (block.type === 'subject-header') return <div className="border-y border-black py-0.25 text-center font-black text-[0.9em] uppercase tracking-widest bg-white mb-3 mt-1 text-black">PART: {block.content}</div>;
       const q = block.question;
       if (!q) return null;
@@ -924,25 +990,45 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       return (
           <div className="leading-tight relative group text-black mb-1 break-inside-avoid math-content">
               {/* Question Control Buttons: Positioned top-right to avoid being clipped by page-container overflow */}
-              <div className="no-print absolute top-0 right-0 flex items-center gap-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 backdrop-blur-sm pl-2 pb-1 rounded-bl-xl shadow-sm border-l border-b border-slate-100">
+              <div className="no-print absolute right-0 top-0 z-20 flex items-center gap-1 rounded-bl-md border-b border-l border-zinc-200 bg-white/90 pb-1 pl-2 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100">
                   <button 
+                    type="button"
                     onClick={() => onDelete && onDelete(q.id)}
-                    className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-500 bg-white rounded-lg border border-slate-100 transition-all hover:scale-110 active:scale-95"
+                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 transition-all hover:scale-110 hover:text-rose-500 active:scale-95"
                     title="Remove Question"
                   >
                     <iconify-icon icon="mdi:trash-can-outline" width="16" />
                   </button>
                   <button 
+                    type="button"
                     onClick={() => onReplace && onReplace(q)}
                     disabled={isReplacing === q.id}
-                    className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 bg-white rounded-lg border border-slate-100 transition-all hover:scale-110 active:scale-95 disabled:opacity-50"
+                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 transition-all hover:scale-110 hover:text-zinc-900 active:scale-95 disabled:opacity-50"
                     title="Replace with similar"
                   >
                     {isReplacing === q.id ? (
-                        <div className="w-3 h-3 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900"></div>
                     ) : (
                         <iconify-icon icon="mdi:refresh" width="16" />
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onFlag && onFlag(q)}
+                    disabled={flaggingQuestionId === q.id}
+                    className={`flex h-7 items-center justify-center gap-1 rounded-md border px-2 text-[8px] font-semibold uppercase tracking-wide transition-all active:scale-95 disabled:opacity-50 ${
+                      flaggedQuestionIds.has((q.originalId || q.id) as string)
+                        ? 'border-rose-300 bg-rose-50 text-rose-700'
+                        : 'border-zinc-200 bg-white text-zinc-600 hover:text-rose-600'
+                    }`}
+                    title="Flag out of syllabus"
+                  >
+                    {flaggingQuestionId === q.id ? (
+                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900"></div>
+                    ) : (
+                      <iconify-icon icon={flaggedQuestionIds.has((q.originalId || q.id) as string) ? 'mdi:flag' : 'mdi:flag-outline'} width="13" />
+                    )}
+                    {flaggedQuestionIds.has((q.originalId || q.id) as string) ? 'Flagged' : 'Flag'}
                   </button>
               </div>
   
@@ -964,8 +1050,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                   </div>
               )}
               {showSourceFigure && q.sourceFigureDataUrl && (
-                  <div className="ml-5 my-1.5 p-1 border border-indigo-50/30 rounded inline-block bg-indigo-50/10 shadow-sm relative overflow-hidden">
-                      <div className="absolute top-0 left-0 bg-indigo-600 text-white text-[5pt] font-black px-1.5 py-0.5 rounded-br-md uppercase tracking-widest z-10">Reference Source</div>
+                  <div className="relative ml-5 my-1.5 inline-block overflow-hidden rounded-md border border-zinc-200 bg-zinc-50/80 p-1 shadow-sm">
+                      <div className="absolute left-0 top-0 z-10 rounded-br-md bg-zinc-900 px-1.5 py-0.5 text-[5pt] font-semibold uppercase tracking-widest text-white">Reference Source</div>
                       <img src={q.sourceFigureDataUrl} className="max-h-[80px] object-contain mix-blend-multiply opacity-80" alt="Source Asset" />
                   </div>
               )}
@@ -1009,53 +1095,53 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
   const insightsPanelScroll = (
     <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
-      <div className="mb-6 bg-slate-900 rounded-2xl p-4 shadow-lg border border-slate-800">
-        <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Paper Matrix</h3>
+      <div className="mb-6 rounded-md border border-zinc-800 bg-zinc-900 p-4 shadow-sm">
+        <h3 className="mb-3 text-[8px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Paper Matrix</h3>
         <div className="grid grid-cols-3 gap-2 mb-3">
-          <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
+          <div className="flex flex-col items-center rounded-md bg-white/5 p-1.5">
             <span className="text-[7px] font-black text-emerald-400 uppercase">Easy</span>
             <span className="text-sm font-black text-white">{globalStats.Easy}</span>
           </div>
-          <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
+          <div className="flex flex-col items-center rounded-md bg-white/5 p-1.5">
             <span className="text-[7px] font-black text-amber-400 uppercase">Med</span>
             <span className="text-sm font-black text-white">{globalStats.Medium}</span>
           </div>
-          <div className="bg-white/5 rounded-lg p-1.5 flex flex-col items-center">
+          <div className="flex flex-col items-center rounded-md bg-white/5 p-1.5">
             <span className="text-[7px] font-black text-rose-400 uppercase">Hard</span>
             <span className="text-sm font-black text-white">{globalStats.Hard}</span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2 pt-2 border-t border-white/10">
-          <span className="text-[7px] font-black text-slate-400 uppercase">MCQ: {globalStats.mcq}</span>
-          <span className="text-[7px] font-black text-slate-400 uppercase">ASR: {globalStats.reasoning}</span>
-          <span className="text-[7px] font-black text-slate-400 uppercase">MT: {globalStats.matching}</span>
-          <span className="text-[7px] font-black text-slate-400 uppercase">ST: {globalStats.statements}</span>
+          <span className="text-[7px] font-medium uppercase text-zinc-400">MCQ: {globalStats.mcq}</span>
+          <span className="text-[7px] font-medium uppercase text-zinc-400">ASR: {globalStats.reasoning}</span>
+          <span className="text-[7px] font-medium uppercase text-zinc-400">MT: {globalStats.matching}</span>
+          <span className="text-[7px] font-medium uppercase text-zinc-400">ST: {globalStats.statements}</span>
         </div>
       </div>
 
       <div className="mb-8">
-        <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><iconify-icon icon="mdi:chart-box-outline" /> Breakdown</h3>
+        <h3 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-800"><iconify-icon icon="mdi:chart-box-outline" /> Breakdown</h3>
         <div className="space-y-1.5">
           {subjectBreakdown.map(([sub, count]) => (
-            <div key={sub} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-100 group hover:border-indigo-200 transition-all">
+            <div key={sub} className="group flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 transition-all hover:border-zinc-300">
               <div className="flex items-center gap-2 overflow-hidden">
-                <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0"></div>
-                <span className="text-[8px] font-black text-slate-500 uppercase truncate">{sub}</span>
+                <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600"></div>
+                <span className="truncate text-[8px] font-medium uppercase text-zinc-600">{sub}</span>
               </div>
-              <span className="text-xl font-black text-indigo-600">{count}</span>
+              <span className="text-xl font-semibold text-zinc-900">{count}</span>
             </div>
           ))}
         </div>
       </div>
 
-      <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><iconify-icon icon="mdi:layers-triple-outline" /> Navigator</h3>
+      <h3 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-800"><iconify-icon icon="mdi:layers-triple-outline" /> Navigator</h3>
 
       <div className="space-y-6">
         {showIntroPage && pages.length > 0 && (
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-[7px] font-black text-slate-300 uppercase tracking-widest">PREFACE</span>
-              <div className="h-px bg-slate-100 flex-1"></div>
+              <span className="text-[7px] font-semibold uppercase tracking-widest text-zinc-400">PREFACE</span>
+              <div className="h-px flex-1 bg-zinc-200"></div>
             </div>
             <div className="w-1/3">
               <PageThumbnail idx={0} label="P1" />
@@ -1066,8 +1152,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         {Object.entries(subjectToPages).map(([sub, pageIndices]) => (
           <div key={sub}>
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-[7px] font-black text-indigo-400 uppercase tracking-widest truncate">{sub}</span>
-              <div className="h-px bg-slate-100 flex-1"></div>
+              <span className="truncate text-[7px] font-semibold uppercase tracking-widest text-zinc-600">{sub}</span>
+              <div className="h-px flex-1 bg-zinc-200"></div>
             </div>
             <div className="grid grid-cols-3 gap-2">
               {pageIndices.map((pIdx) => (
@@ -1082,25 +1168,25 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
   const layoutControlsPanel = (
     <>
-      <div className="p-6 border-b border-slate-100 bg-slate-50/50">
-        <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">Layout Controls</h3>
-        <p className="text-[10px] font-bold text-slate-400">Paper & Content Settings</p>
+      <div className="border-b border-zinc-200 bg-zinc-50/90 p-6">
+        <h3 className="text-sm font-semibold tracking-tight text-zinc-900">Layout controls</h3>
+        <p className="text-[10px] font-medium text-zinc-500">Paper &amp; content</p>
       </div>
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
+      <div className="flex-1 space-y-8 overflow-y-auto custom-scrollbar p-6">
         <div>
-          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">View Mode</h4>
-          <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-inner">
+          <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">View mode</h4>
+          <div className="flex rounded-md border border-zinc-200 bg-zinc-100 p-0.5 shadow-inner">
             <button
               type="button"
               onClick={() => setViewMode('scroll')}
-              className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${viewMode === 'scroll' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-md py-2 text-[9px] font-medium uppercase tracking-widest transition-all ${viewMode === 'scroll' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}
             >
               <iconify-icon icon="mdi:view-day-outline" /> Scroll
             </button>
             <button
               type="button"
               onClick={() => setViewMode('grid')}
-              className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${viewMode === 'grid' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-md py-2 text-[9px] font-medium uppercase tracking-widest transition-all ${viewMode === 'grid' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}
             >
               <iconify-icon icon="mdi:view-grid-outline" /> Grid
             </button>
@@ -1108,9 +1194,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         </div>
 
         <div>
-          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Content Options</h4>
+          <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">Content options</h4>
           <div className="flex flex-wrap gap-2">
-            <Toggle label="Cover" checked={showIntroPage} onChange={() => setShowIntroPage(!showIntroPage)} color="indigo" />
+            <Toggle label="Cover" checked={showIntroPage} onChange={() => setShowIntroPage(!showIntroPage)} color="zinc" />
             <Toggle label="Logic" checked={includeExplanations} onChange={() => setIncludeExplanations(!includeExplanations)} color="amber" />
             <Toggle label="Source" checked={showSourceFigure} onChange={() => setShowSourceFigure(!showSourceFigure)} color="cyan" />
             <Toggle label="Answer Key" checked={showAnswerKey} onChange={() => setShowAnswerKey(!showAnswerKey)} color="cyan" />
@@ -1124,11 +1210,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         </div>
 
         <div>
-          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Paper Formatting</h4>
+          <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">Paper formatting</h4>
           <div className="space-y-3">
             <div className="flex flex-col gap-2">
-              <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider ml-1">Font Face</label>
-              <select value={paperConfig.fontFamily} onChange={(e) => setPaperConfig({ ...paperConfig, fontFamily: e.target.value })} className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none shadow-sm w-full">
+              <label className="ml-1 text-[9px] font-medium uppercase tracking-wider text-zinc-600">Font face</label>
+              <select value={paperConfig.fontFamily} onChange={(e) => setPaperConfig({ ...paperConfig, fontFamily: e.target.value })} className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium shadow-sm outline-none focus:border-zinc-400">
                 <option value="'Times New Roman', Times, serif">Times New Roman (Serif)</option>
                 <option value="Georgia, serif">Georgia (Serif)</option>
                 <option value="Helvetica, Arial, sans-serif">Helvetica (Sans-Serif)</option>
@@ -1144,9 +1230,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         </div>
 
         <div>
-          <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Utilities</h4>
-          <button type="button" onClick={handleDownloadKeys} disabled={isPaginating || isSaving} className="w-full bg-cyan-50 text-cyan-700 px-4 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:bg-cyan-100 transition-all flex items-center justify-center gap-2 disabled:opacity-50">
-            {isSaving ? <div className="w-4 h-4 border-2 border-cyan-200 border-t-cyan-600 rounded-full animate-spin"></div> : <iconify-icon icon="mdi:key-download-outline" width="16" />}
+          <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">Utilities</h4>
+          <button type="button" onClick={handleDownloadKeys} disabled={isPaginating || isSaving} className="flex w-full items-center justify-center gap-2 rounded-md border border-cyan-200 bg-cyan-50 px-4 py-3 text-[10px] font-medium uppercase tracking-widest text-cyan-800 shadow-sm transition-all hover:bg-cyan-100 disabled:opacity-50">
+            {isSaving ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-200 border-t-cyan-700"></div> : <iconify-icon icon="mdi:key-download-outline" width="16" />}
             Download Answer Key
           </button>
         </div>
@@ -1155,7 +1241,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   );
 
   return (
-    <div className="print-app-shell w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans" style={{ colorScheme: 'light' }}>
+    <div className={`print-app-shell h-full min-h-0 w-full overflow-hidden ${workspacePageClass}`} style={{ colorScheme: 'light' }}>
        {/* Inject dynamic styles for Math sizing consistency */}
        <style>{`
          .math-content .katex { font-size: 1em !important; }
@@ -1168,11 +1254,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
          }
        `}</style>
 
-       <header className="no-print z-30 shrink-0 border-b border-slate-200 bg-white pt-[env(safe-area-inset-top)] shadow-sm">
+       <header className="no-print z-30 shrink-0 border-b border-zinc-200 bg-white pt-[env(safe-area-inset-top)] shadow-sm">
           <div className="flex flex-col gap-2 px-3 py-2 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:gap-3 lg:px-6 lg:py-3">
             <div className="flex min-w-0 items-center gap-2 sm:gap-3 lg:gap-4">
                 <div
-                    className="group flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-indigo-600 text-white shadow-xl shadow-indigo-600/20 lg:h-10 lg:w-10"
+                    className="group flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-md bg-zinc-900 text-white shadow-sm transition-colors hover:bg-zinc-800 lg:h-10 lg:w-10"
                     onClick={onRestart}
                     onKeyDown={(e) => e.key === 'Enter' && onRestart()}
                     role="button"
@@ -1185,9 +1271,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                         type="text"
                         value={editableTopic}
                         onChange={(e) => setEditableTopic(e.target.value)}
-                        className="w-full min-w-0 max-w-full border-b-2 border-transparent bg-transparent px-1 text-base font-black leading-tight tracking-tight text-slate-800 outline-none transition-all hover:border-slate-200 focus:border-indigo-500 sm:text-lg lg:text-lg"
+                        className="w-full min-w-0 max-w-full border-b-2 border-transparent bg-transparent px-1 text-base font-semibold leading-tight tracking-tight text-zinc-900 outline-none transition-all hover:border-zinc-200 focus:border-zinc-400 sm:text-lg lg:text-lg"
                     />
-                    <p className="mt-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400 sm:text-[10px]">{currentQuestions.length} Items Validated</p>
+                    <p className="mt-0.5 text-[9px] font-medium uppercase tracking-widest text-zinc-500 sm:text-[10px]">{currentQuestions.length} items validated</p>
                 </div>
                 <div className="ml-auto flex shrink-0 items-center gap-1 lg:hidden">
                     <button
@@ -1196,7 +1282,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                             if (isLgLayout) setIsControlsOpen((o) => !o);
                             else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
                         }}
-                        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-600' : 'border-slate-200 bg-slate-100 text-slate-400 hover:text-indigo-600'}`}
+                        className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${layoutControlsActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-600'}`}
                         title="Layout controls"
                     >
                         <iconify-icon icon="mdi:tune-variant" width="18" />
@@ -1204,7 +1290,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     <button
                         type="button"
                         onClick={onRestart}
-                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-400 transition-colors hover:text-rose-500"
+                        className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:text-rose-600"
                         title="Close"
                     >
                         <iconify-icon icon="mdi:close" width="18" />
@@ -1216,7 +1302,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               <button
                 type="button"
                 onClick={() => onEditBlueprint && onEditBlueprint(currentQuestions)}
-                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-slate-400 transition-all hover:text-indigo-600 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-zinc-600 shadow-sm transition-all hover:border-zinc-300 hover:text-zinc-900 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
                 title="Edit blueprint"
               >
                 <iconify-icon icon="mdi:playlist-edit" width="16" />
@@ -1226,7 +1312,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               <button
                 type="button"
                 onClick={() => setIsOmrOpen(true)}
-                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-600 shadow-md transition-all hover:bg-rose-100 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-rose-700 shadow-sm transition-all hover:bg-rose-100 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
                 title="Evaluate (OMR)"
               >
                 <iconify-icon icon="mdi:camera-metering-spot" width="16" />
@@ -1236,7 +1322,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 type="button"
                 onClick={handleSaveToCloud}
                 disabled={isSaving || saveComplete}
-                className={`flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-widest shadow-md transition-all sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5 ${saveComplete ? 'border border-emerald-100 bg-emerald-50 text-emerald-600' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-all sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5 ${saveComplete ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'bg-zinc-900 text-white hover:bg-zinc-800'}`}
                 title="Sync to hub"
               >
                 {isSaving ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <iconify-icon icon="mdi:cloud-upload" width="16" />}
@@ -1246,14 +1332,14 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 type="button"
                 onClick={handlePrint}
                 disabled={isPaginating}
-                className="flex shrink-0 items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white shadow-xl shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-95 disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
+                className="flex shrink-0 items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
                 title="Print"
               >
                 <iconify-icon icon="mdi:printer" width="16" />
                 Print
               </button>
 
-              <div className="mx-1 hidden h-6 w-px shrink-0 bg-slate-200 lg:block" />
+              <div className="mx-1 hidden h-6 w-px shrink-0 bg-zinc-200 lg:block" />
 
               <div className="hidden items-center gap-2 lg:flex">
                 <button
@@ -1262,7 +1348,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     if (isLgLayout) setIsControlsOpen((o) => !o);
                     else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
                   }}
-                  className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-600' : 'border-slate-200 bg-slate-100 text-slate-400 hover:text-indigo-600'}`}
+                  className={`flex h-10 w-10 items-center justify-center rounded-md border transition-colors ${layoutControlsActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-700'}`}
                   title="Toggle Layout Controls"
                 >
                     <iconify-icon icon="mdi:tune-variant" width="20" />
@@ -1270,7 +1356,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 <button
                     type="button"
                     onClick={onRestart}
-                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-400 transition-colors hover:text-rose-500"
+                    className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:text-rose-600"
                     title="Close"
                 >
                     <iconify-icon icon="mdi:close" width="20" />
@@ -1281,11 +1367,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
        </header>
 
        <div className="print-content-shell flex-1 flex min-h-0 overflow-hidden">
-            <aside className="no-print hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white animate-fade-in lg:flex">
+            <aside className="no-print hidden w-64 shrink-0 flex-col border-r border-zinc-200 bg-white animate-fade-in lg:flex">
                 {insightsPanelScroll}
             </aside>
 
-            <main ref={mainHostRef} className="print-main-host min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-slate-200/50 p-3 pb-24 custom-scrollbar sm:p-4 sm:pb-24 lg:p-8 lg:pb-8">
+            <main ref={mainHostRef} className="print-main-host min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-zinc-100 p-3 pb-24 custom-scrollbar sm:p-4 sm:pb-24 lg:p-8 lg:pb-8">
                 <div
                     id="printable-paper-area"
                     className={`${
@@ -1409,10 +1495,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                         <div className="flex-1 relative flex" style={{ gap: `${paperConfig.gap}mm` }}>
                                             
                                             <div className="flex-1 overflow-hidden space-y-1 relative z-10 pr-1">
-                                                {p.leftCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} />)}
+                                                {p.leftCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} onFlag={handleFlagQuestion} />)}
                                             </div>
                                             <div className="flex-1 overflow-hidden space-y-1 relative z-10 pl-1">
-                                                {p.rightCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} />)}
+                                                {p.rightCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} onFlag={handleFlagQuestion} />)}
                                             </div>
                                         </div>
 
@@ -1448,9 +1534,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                         );
 
                         const pageClassGrid =
-                            'printable-quiz-page mx-auto bg-white shadow-2xl relative overflow-hidden flex flex-col border border-slate-200 text-black box-border transition-all cursor-zoom-in hover:scale-[1.03] hover:ring-4 hover:ring-indigo-50/20 w-full aspect-[210/297] h-auto';
+                            'printable-quiz-page relative mx-auto flex aspect-[210/297] h-auto w-full cursor-zoom-in flex-col overflow-hidden border border-zinc-200 bg-white text-black shadow-lg transition-all hover:scale-[1.03] hover:ring-4 hover:ring-zinc-200/60 box-border';
                         const pageClassScroll =
-                            'printable-quiz-page mx-auto bg-white shadow-2xl relative overflow-hidden flex flex-col border border-slate-200 text-black box-border transition-all w-[210mm] h-[297mm]';
+                            'printable-quiz-page relative mx-auto flex h-[297mm] w-[210mm] flex-col overflow-hidden border border-zinc-200 bg-white text-black shadow-lg transition-all box-border';
 
                         if (viewMode === 'grid') {
                             const g = gridPreviewScale;
@@ -1526,19 +1612,19 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
             </main>
 
             {isControlsOpen && (
-                <aside className="no-print hidden w-72 shrink-0 flex-col border-l border-slate-200 bg-white animate-fade-in lg:flex">
+                <aside className="no-print hidden w-72 shrink-0 flex-col border-l border-zinc-200 bg-white animate-fade-in lg:flex">
                     {layoutControlsPanel}
                 </aside>
             )}
        </div>
 
             {!isLgLayout && (
-                <div className="no-print flex shrink-0 gap-2 border-t border-slate-200 bg-white/95 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm">
+                <div className="no-print flex shrink-0 gap-2 border-t border-zinc-200 bg-white/95 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm">
                     <button
                         type="button"
                         onClick={() => setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'))}
-                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                            resultMobileSheet === 'insights' ? 'bg-slate-900 text-white shadow-md' : 'border border-slate-200 bg-slate-50 text-slate-600'
+                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-md text-[10px] font-medium uppercase tracking-widest transition-all ${
+                            resultMobileSheet === 'insights' ? 'bg-zinc-900 text-white shadow-sm' : 'border border-zinc-200 bg-zinc-50 text-zinc-600'
                         }`}
                     >
                         <iconify-icon icon="mdi:chart-box-outline" width="20" />
@@ -1547,8 +1633,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     <button
                         type="button"
                         onClick={() => setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'))}
-                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                            resultMobileSheet === 'layout' ? 'bg-indigo-600 text-white shadow-md' : 'border border-slate-200 bg-slate-50 text-slate-600'
+                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-md text-[10px] font-medium uppercase tracking-widest transition-all ${
+                            resultMobileSheet === 'layout' ? 'bg-zinc-900 text-white shadow-sm' : 'border border-zinc-200 bg-zinc-50 text-zinc-600'
                         }`}
                     >
                         <iconify-icon icon="mdi:tune-variant" width="20" />
@@ -1562,25 +1648,25 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     <button
                         type="button"
                         aria-label="Close panel"
-                        className="no-print animate-fade-in fixed inset-0 z-[55] bg-slate-900/50"
+                        className="no-print animate-fade-in fixed inset-0 z-[55] bg-zinc-950/40"
                         onClick={() => setResultMobileSheet(null)}
                     />
                     <div
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="result-sheet-title"
-                        className="no-print animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-2xl border border-slate-200 border-b-0 bg-white shadow-[0_-12px_48px_rgba(0,0,0,0.15)]"
+                        className="no-print animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-xl border border-zinc-200 border-b-0 bg-white shadow-[0_-12px_48px_rgba(0,0,0,0.12)]"
                     >
                         <div className="flex justify-center pt-2 pb-1" aria-hidden>
-                            <div className="h-1 w-10 rounded-full bg-slate-300" />
+                            <div className="h-1 w-10 rounded-full bg-zinc-300" />
                         </div>
-                        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-2.5">
-                            <span id="result-sheet-title" className="text-xs font-black uppercase tracking-widest text-slate-800">
+                        <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 bg-zinc-50/80 px-4 py-2.5">
+                            <span id="result-sheet-title" className="text-xs font-semibold uppercase tracking-widest text-zinc-800">
                                 {resultMobileSheet === 'insights' ? 'Paper insights' : 'Layout controls'}
                             </span>
                             <button
                                 type="button"
-                                className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                                className="rounded-md p-2.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
                                 onClick={() => setResultMobileSheet(null)}
                                 aria-label="Close"
                             >

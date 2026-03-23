@@ -1,9 +1,10 @@
 
 import '../types';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { workspacePageClass } from '../Teacher/components/WorkspaceChrome';
 import KnowledgeSourceHome from './KnowledgeSource/KnowledgeSourceHome';
 import KnowledgeBaseExplorer from './KnowledgeSource/KnowledgeBaseExplorer';
-import QuestionDBHome from './QuestionBank/QuestionBankHome';
+import QuestionDBHome from './QuestionDB/QuestionDBHome';
 import PromptsHome from './Prompts/PromptsHome';
 import LabHome from './Lab/LabHome';
 import QualityLab from './Lab/QualityLab';
@@ -11,12 +12,15 @@ import TeacherSyllabusHub from '../Teacher/Syllabus/TeacherSyllabusHub';
 import OMRAccuracyTester from '../Quiz/components/OMR/OMRAccuracyTester';
 import InstituteOrgPanel from '../Settings/Institutes/InstituteOrgPanel';
 import UsersRoleManager from './Users/UsersRoleManager';
+import RolesPermissionsManager from './Roles/RolesPermissionsManager';
+import OutOfSyllabusFlagsPanel from './Flags/OutOfSyllabusFlagsPanel';
 import type { AppRole } from '../auth/roles';
 
 type AdminSection =
-  | 'dashboard'
   | 'institutes'
   | 'users'
+  | 'roles'
+  | 'flags'
   | 'knowledge-source'
   | 'kb-explorer'
   | 'question-db'
@@ -37,19 +41,145 @@ interface KnowledgeBase {
   name: string;
 }
 
+type SectionMeta = { title: string; subtitle: string; icon: string };
+
+const SECTION_META: Record<AdminSection, SectionMeta> = {
+  institutes: {
+    title: 'Business',
+    subtitle: 'Businesses, institutes (centres), and class batches',
+    icon: 'mdi:briefcase-outline',
+  },
+  users: {
+    title: 'Users',
+    subtitle: 'Workspace accounts and roles',
+    icon: 'mdi:account-cog-outline',
+  },
+  roles: {
+    title: 'Roles & permissions',
+    subtitle: 'Feature access and custom roles',
+    icon: 'mdi:shield-account-outline',
+  },
+  flags: {
+    title: 'Flags',
+    subtitle: 'Out-of-syllabus reports and moderation',
+    icon: 'mdi:flag-outline',
+  },
+  'knowledge-source': {
+    title: 'Knowledge',
+    subtitle: 'Curriculum bases and PDF context',
+    icon: 'mdi:book-open-variant',
+  },
+  'kb-explorer': {
+    title: 'Knowledge explorer',
+    subtitle: 'Browse a selected knowledge base',
+    icon: 'mdi:folder-open-outline',
+  },
+  'question-db': {
+    title: 'Question DB',
+    subtitle: 'Browse and forge questions from the bank',
+    icon: 'mdi:database-search-outline',
+  },
+  prompts: {
+    title: 'Prompts',
+    subtitle: 'System prompts and Neural Studio forge',
+    icon: 'mdi:console',
+  },
+  lab: {
+    title: 'Batch Forge',
+    subtitle: 'Rapid population from documents',
+    icon: 'mdi:factory',
+  },
+  syllabus: {
+    title: 'Syllabus & exclusions',
+    subtitle: 'Syllabi and topic blocklists',
+    icon: 'mdi:book-education-outline',
+  },
+  'quality-lab': {
+    title: 'Quality Lab',
+    subtitle: 'Model benchmarks and cost estimates',
+    icon: 'mdi:matrix',
+  },
+  'omr-lab': {
+    title: 'OMR Lab',
+    subtitle: 'Recognition tuning (developers)',
+    icon: 'mdi:flask-outline',
+  },
+};
+
+/** Full-height tools with their own chrome */
+const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab'];
+
+/** Section body uses flex column + overflow hidden (roles manager) */
+const ROLES_SECTIONS: AdminSection[] = ['roles'];
+
+interface AdminSectionFrameProps {
+  meta: SectionMeta;
+  bleed?: boolean;
+  rolesLayout?: boolean;
+  children: React.ReactNode;
+}
+
+const AdminSectionFrame: React.FC<AdminSectionFrameProps> = ({ meta, bleed, rolesLayout, children }) => (
+  <div
+    className={`flex min-h-0 flex-col overflow-hidden bg-transparent ${
+      rolesLayout || bleed ? 'min-h-0 flex-1' : ''
+    }`}
+  >
+    <div className="shrink-0 border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white px-4 py-3 md:px-5 md:py-3.5">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 shadow-sm">
+          <iconify-icon icon={meta.icon} className="h-5 w-5 opacity-90" />
+        </div>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <h2 className="text-sm font-semibold tracking-tight text-zinc-900 md:text-[15px]">{meta.title}</h2>
+          <p className="mt-0.5 text-[12px] leading-snug text-zinc-500">{meta.subtitle}</p>
+        </div>
+      </div>
+    </div>
+    <div
+      className={
+        bleed
+          ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-50/40 [&>*]:min-h-0'
+          : rolesLayout
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-50/30'
+            : 'min-h-0 flex-1 overflow-y-auto bg-transparent'
+      }
+    >
+      {children}
+    </div>
+  </div>
+);
+
 const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) => {
   const isDeveloper = appRole === 'developer';
   const isSchoolAdmin = appRole === 'school_admin';
   const isTeacher = appRole === 'teacher';
   const canUseSyllabusHub = isDeveloper || isSchoolAdmin || isTeacher;
 
-  const [activeSection, setActiveSection] = useState<AdminSection>('dashboard');
+  const fallbackSection: AdminSection = isDeveloper || isSchoolAdmin ? 'institutes' : 'syllabus';
+
+  const [activeSection, setActiveSection] = useState<AdminSection>(fallbackSection);
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const [selectedKb, setSelectedKb] = useState<KnowledgeBase | null>(null);
 
   const handleSelectKb = (kb: KnowledgeBase) => {
     setSelectedKb(kb);
     setActiveSection('kb-explorer');
   };
+
+  const activeMeta: SectionMeta = useMemo(() => {
+    if (activeSection === 'kb-explorer' && selectedKb) {
+      return {
+        ...SECTION_META['kb-explorer'],
+        title: selectedKb.name,
+        subtitle: 'Explorer — curriculum and files',
+      };
+    }
+    return SECTION_META[activeSection];
+  }, [activeSection, selectedKb]);
+
+  const isBleed = FULL_BLEED_SECTIONS.includes(activeSection);
+  const isRolesLayout = ROLES_SECTIONS.includes(activeSection);
 
   const renderContent = () => {
     switch (activeSection) {
@@ -58,251 +188,141 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
           <InstituteOrgPanel
             userId={userId}
             onRefresh={onRefreshOrg}
-            title="Institutes"
-            subtitle="Schools, coaching centres, and class batches"
+            title="Business"
+            subtitle="Businesses, institutes (centres), and class batches"
+            embedded
           />
         );
       case 'users':
-        return <UsersRoleManager />;
+        return <UsersRoleManager embedded />;
+      case 'roles':
+        return <RolesPermissionsManager embedded />;
+      case 'flags':
+        return <OutOfSyllabusFlagsPanel />;
       case 'knowledge-source':
         return <KnowledgeSourceHome onSelectKb={handleSelectKb} />;
       case 'kb-explorer':
         return selectedKb ? (
-          <KnowledgeBaseExplorer 
-            kbId={selectedKb.id} 
-            kbName={selectedKb.name} 
-            onBack={() => setActiveSection('knowledge-source')} 
+          <KnowledgeBaseExplorer
+            kbId={selectedKb.id}
+            kbName={selectedKb.name}
+            onBack={() => setActiveSection('knowledge-source')}
           />
         ) : null;
       case 'question-db':
         return <QuestionDBHome />;
       case 'prompts':
-        return <PromptsHome />;
+        return <PromptsHome embedded />;
       case 'lab':
-        return <LabHome onBack={() => setActiveSection('dashboard')} />;
+        return <LabHome embedded onBack={() => setActiveSection(fallbackSection)} />;
       case 'quality-lab':
-        return <QualityLab onBack={() => setActiveSection('dashboard')} />;
+        return <QualityLab embedded onBack={() => setActiveSection(fallbackSection)} />;
       case 'syllabus':
         return <TeacherSyllabusHub isDeveloper={isDeveloper} />;
       case 'omr-lab':
         return isDeveloper ? (
           <OMRAccuracyTester />
         ) : (
-          <p className="p-6 text-sm text-slate-600">OMR Lab is only available to developers.</p>
-        );
-      default:
-        return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {(isDeveloper || isSchoolAdmin) && (
-              <AdminCard
-                title="Institutes"
-                description="Add schools, coaching centres, and classes."
-                icon="mdi:domain"
-                color="text-sky-600"
-                bg="bg-sky-50"
-                onClick={() => setActiveSection('institutes')}
-              />
-            )}
-            {canUseSyllabusHub && (
-              <AdminCard
-                title="Syllabus & exclusions"
-                description="Multiple syllabi per knowledge base, topic blocklist for AI."
-                icon="mdi:book-education-outline"
-                color="text-emerald-600"
-                bg="bg-emerald-50"
-                onClick={() => setActiveSection('syllabus')}
-              />
-            )}
-            {isDeveloper && (
-              <>
-                <AdminCard
-                  title="Users"
-                  description="View all users and manage roles."
-                  icon="mdi:account-cog-outline"
-                  color="text-cyan-600"
-                  bg="bg-cyan-50"
-                  onClick={() => setActiveSection('users')}
-                />
-                <AdminCard
-                  title="OMR Lab"
-                  description="Tune OMR recognition & accuracy."
-                  icon="mdi:flask-outline"
-                  color="text-fuchsia-600"
-                  bg="bg-fuchsia-50"
-                  onClick={() => setActiveSection('omr-lab')}
-                />
-                <AdminCard
-                  title="Quality Lab"
-                  description="Benchmark Gemini models & estimate INR costs."
-                  icon="mdi:matrix"
-                  color="text-indigo-600"
-                  bg="bg-indigo-50"
-                  onClick={() => setActiveSection('quality-lab')}
-                />
-                <AdminCard
-                  title="Batch Forge"
-                  description="Rapid database population from files."
-                  icon="mdi:factory"
-                  color="text-rose-600"
-                  bg="bg-rose-50"
-                  onClick={() => setActiveSection('lab')}
-                />
-                <AdminCard
-                  title="Question DB"
-                  description="Browse synced knowledge & materials."
-                  icon="mdi:database-search-outline"
-                  color="text-amber-600"
-                  bg="bg-amber-50"
-                  onClick={() => setActiveSection('question-db')}
-                />
-                <AdminCard
-                  title="Knowledge"
-                  description="Manage curriculum & PDF context."
-                  icon="mdi:book-open-variant"
-                  color="text-teal-600"
-                  bg="bg-teal-50"
-                  onClick={() => setActiveSection('knowledge-source')}
-                />
-                <AdminCard
-                  title="System Logic"
-                  description="Configure AI generation rules & prompts."
-                  icon="mdi:console"
-                  color="text-violet-600"
-                  bg="bg-violet-50"
-                  onClick={() => setActiveSection('prompts')}
-                />
-              </>
-            )}
-            {isSchoolAdmin && !isDeveloper && (
-              <p className="col-span-full text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                Use <strong className="text-slate-600">Institutes</strong> to manage your centres and classes.
-              </p>
-            )}
-          </div>
+          <p className="p-6 text-sm text-zinc-600">OMR Lab is only available to developers.</p>
         );
     }
   };
 
-  const getBreadcrumb = () => {
-      const base = (
-          <button 
-            onClick={() => setActiveSection('dashboard')}
-            className={`hover:text-accent transition-colors ${activeSection === 'dashboard' ? 'text-slate-900' : ''}`}
-          >
-            Admin
-          </button>
-      );
-      
-      if (activeSection === 'dashboard') return [base];
+  const navActive = (s: AdminSection) =>
+    activeSection === s || (s === 'knowledge-source' && activeSection === 'kb-explorer');
 
-      let parts = [base];
-      
-      if (activeSection === 'knowledge-source' || activeSection === 'kb-explorer') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(
-              <button 
-                onClick={() => setActiveSection('knowledge-source')}
-                className={`hover:text-accent transition-colors ${activeSection === 'knowledge-source' || activeSection === 'kb-explorer' ? 'text-slate-900' : ''}`}
-              >
-                Knowledge
-              </button>
-          );
-      } else if (activeSection === 'question-db') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button className='text-slate-900'>Question DB</button>);
-      } else if (activeSection === 'prompts') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button className='text-slate-900'>System Logic</button>);
-      } else if (activeSection === 'lab' || activeSection === 'quality-lab' || activeSection === 'omr-lab') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button type="button" className="text-slate-900">{
-            activeSection === 'lab' ? 'Batch Forge' : activeSection === 'quality-lab' ? 'Quality Lab' : 'OMR Lab'
-          }</button>);
-      } else if (activeSection === 'syllabus') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button className='text-slate-900'>Syllabus</button>);
-      } else if (activeSection === 'institutes') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button type="button" className="text-slate-900">Institutes</button>);
-      } else if (activeSection === 'users') {
-          parts.push(<iconify-icon icon="mdi:chevron-right" className="opacity-40" />);
-          parts.push(<button type="button" className="text-slate-900">Users</button>);
-      }
-      return parts;
-  };
-
-  const getTitle = () => {
-    switch(activeSection) {
-        case 'dashboard': return 'Administration';
-        case 'kb-explorer': return selectedKb?.name || 'Explorer';
-        case 'question-db': return 'Knowledge Database';
-        case 'prompts': return 'System Configuration';
-        case 'lab': return 'Rapid Forging Lab';
-        case 'quality-lab': return 'Model Benchmarking';
-        case 'syllabus': return 'Syllabus & exclusions';
-        case 'omr-lab': return 'OMR Lab';
-        case 'institutes': return 'Institutes & classes';
-        case 'users': return 'Users';
-        default: return activeSection.replace('-', ' ');
-    }
+  const navBtn = (id: AdminSection, label: string, icon: string) => {
+    const active = navActive(id);
+    return (
+      <button
+        type="button"
+        onClick={() => setActiveSection(id)}
+        title={label}
+        className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${navCollapsed ? 'justify-center gap-0' : 'gap-2.5'} ${
+          active
+            ? 'bg-zinc-900 text-white shadow-sm'
+            : 'text-zinc-600 hover:bg-zinc-100/90'
+        }`}
+      >
+        <iconify-icon icon={icon} className="h-5 w-5 shrink-0 opacity-90" />
+        {!navCollapsed && <span className="font-medium">{label}</span>}
+      </button>
+    );
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans">
-      <header className="mb-5 px-4 md:px-0 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
-        <div>
-          <div className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-widest text-slate-400 mb-1">
-            {getBreadcrumb().map((part, i) => <React.Fragment key={i}>{part}</React.Fragment>)}
+    <div className={`${workspacePageClass} min-h-0 flex-1 overflow-hidden font-sans`}>
+      <header className="shrink-0 border-b border-zinc-200 bg-white px-4 py-2.5 shadow-sm md:px-8">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="text-base font-semibold tracking-tight text-zinc-900">Admin</h1>
+            <p className="text-[12px] text-zinc-500">Tools and data for your workspace</p>
           </div>
-          <h1 className="text-lg font-black text-slate-900 tracking-tight capitalize">
-            {getTitle()}
-          </h1>
         </div>
-        
-        {activeSection !== 'dashboard' && (
-           <button 
-            onClick={() => setActiveSection('dashboard')}
-            className="px-2.5 py-1 bg-white rounded-md text-[8px] font-black text-slate-500 hover:text-slate-900 uppercase tracking-widest flex items-center gap-1.5 transition-all active:scale-95 border border-slate-200 shadow-sm w-fit"
-           >
-              <iconify-icon icon="mdi:arrow-left"></iconify-icon>
-              Exit Section
-           </button>
-        )}
       </header>
 
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
-        {renderContent()}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-0 md:px-8 md:py-5">
+          <nav
+            className={`hidden shrink-0 flex-col gap-0.5 pr-4 md:flex md:border-r md:border-zinc-200/90 ${navCollapsed ? 'w-[72px]' : 'w-[220px]'}`}
+            aria-label="Admin sections"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              {!navCollapsed && <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Sections</p>}
+              <button
+                type="button"
+                onClick={() => setNavCollapsed((v) => !v)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50"
+                title={navCollapsed ? 'Expand menu' : 'Collapse menu'}
+              >
+                <iconify-icon icon={navCollapsed ? 'mdi:chevron-right' : 'mdi:chevron-left'} />
+              </button>
+            </div>
+            {(isDeveloper || isSchoolAdmin) && navBtn('institutes', 'Business', 'mdi:briefcase-outline')}
+            {(isDeveloper || isSchoolAdmin) && navBtn('flags', 'Flags', 'mdi:flag-outline')}
+            {canUseSyllabusHub && navBtn('syllabus', 'Syllabus & exclusions', 'mdi:book-education-outline')}
+            {isDeveloper && (
+              <>
+                {navBtn('users', 'Users', 'mdi:account-cog-outline')}
+                {navBtn('roles', 'Roles & permissions', 'mdi:shield-account-outline')}
+                {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
+                {navBtn('question-db', 'Question DB', 'mdi:database-search-outline')}
+                {navBtn('prompts', 'Prompts', 'mdi:console')}
+                {navBtn('lab', 'Batch Forge', 'mdi:factory')}
+                {navBtn('quality-lab', 'Quality Lab', 'mdi:matrix')}
+                {navBtn('omr-lab', 'OMR Lab', 'mdi:flask-outline')}
+              </>
+            )}
+          </nav>
+
+          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto pb-1 md:hidden px-1">
+            <span className="shrink-0 pr-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Go to</span>
+            {(isDeveloper || isSchoolAdmin) && navBtn('institutes', 'Business', 'mdi:briefcase-outline')}
+            {(isDeveloper || isSchoolAdmin) && navBtn('flags', 'Flags', 'mdi:flag-outline')}
+            {canUseSyllabusHub && navBtn('syllabus', 'Syllabus', 'mdi:book-education-outline')}
+            {isDeveloper && (
+              <>
+                {navBtn('users', 'Users', 'mdi:account-cog-outline')}
+                {navBtn('roles', 'Roles', 'mdi:shield-account-outline')}
+                {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
+                {navBtn('question-db', 'QDB', 'mdi:database-search-outline')}
+                {navBtn('prompts', 'Prompts', 'mdi:console')}
+                {navBtn('lab', 'Forge', 'mdi:factory')}
+                {navBtn('quality-lab', 'Quality', 'mdi:matrix')}
+                {navBtn('omr-lab', 'OMR', 'mdi:flask-outline')}
+              </>
+            )}
+          </div>
+
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <AdminSectionFrame meta={activeMeta} bleed={isBleed} rolesLayout={isRolesLayout}>
+              {renderContent()}
+            </AdminSectionFrame>
+          </div>
+        </div>
       </div>
     </div>
   );
 };
-
-interface AdminCardProps {
-  title: string;
-  description: string;
-  icon: string;
-  color: string;
-  bg: string;
-  onClick: () => void;
-}
-
-const AdminCard: React.FC<AdminCardProps> = ({ title, description, icon, color, bg, onClick }) => (
-  <div 
-    onClick={onClick} 
-    className="group cursor-pointer bg-white rounded-xl p-3.5 border border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300 transition-all duration-200 flex flex-col gap-2"
-  >
-    <div className={`w-8 h-8 ${bg} ${color} rounded-md flex items-center justify-center group-hover:scale-105 transition-transform`}>
-      <iconify-icon icon={icon} width="18"></iconify-icon>
-    </div>
-    <div>
-      <h3 className="text-xs font-black text-slate-800">{title}</h3>
-      <p className="text-[9px] text-slate-500 font-medium leading-tight mt-0.5">{description}</p>
-    </div>
-    <div className={`mt-0.5 flex items-center gap-1 ${color} font-black text-[7px] uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all translate-x-[-3px] group-hover:translate-x-0`}>
-      <span>Enter</span>
-      <iconify-icon icon="mdi:arrow-right" width="10"></iconify-icon>
-    </div>
-  </div>
-);
 
 export default AdminView;

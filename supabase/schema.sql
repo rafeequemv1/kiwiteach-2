@@ -45,7 +45,8 @@ create table if not exists public.tests (
   layout_config jsonb default '{}'::jsonb,
   
   scheduled_at timestamp with time zone,
-  class_ids text[] default array[]::text[]
+  class_ids jsonb default '[]'::jsonb,
+  evaluation_pending boolean default false not null
 );
 
 -- RLS Policy for Tests

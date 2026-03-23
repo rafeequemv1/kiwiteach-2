@@ -12,6 +12,10 @@ export const parsePseudoLatexAndMath = (text: string): string => {
 
   let processedText = text;
 
+  // Normalize over-escaped LaTeX commands from imported/generated text.
+  // Example: "\\text{\\dfrac{m}{s}}" -> "\text{\dfrac{m}{s}}"
+  processedText = processedText.replace(/\\\\([a-zA-Z]+)/g, '\\$1');
+
   // 1. PROTECTION PHASE: Handle common \ce arrows and AI artifacts manually
   
   // Replace \ce{->} and variations with standard LaTeX Math arrows
@@ -101,7 +105,7 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   // - Lazy Scripts (x^2)
 
   // List of functions that typically require arguments {}
-  const funcs = 'sqrt|frac|dfrac|mathrm|mathbf|textit|underline|sum|int|lim|vec|hat|bar|over|binom';
+  const funcs = 'sqrt|frac|dfrac|mathrm|mathbf|text|textbf|textit|underline|sum|int|lim|vec|hat|bar|over|binom';
   
   // List of standalone symbols (Greek, operators) that don't necessarily need arguments
   const symbols = 'alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|omicron|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|infty|pm|approx|neq|leq|geq|times|div|cdot|partial|nabla|forall|exists|empty|emptyset|to|rightarrow|leftarrow|leftrightarrow|implies|iff|angle|circ|degree';

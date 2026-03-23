@@ -1,7 +1,8 @@
-/** Top nav on marketing site — Home + Test Prep only */
+/** Top nav on marketing site */
 export const landingNavLinks = [
   { id: 'home', label: 'Home' },
   { id: 'test-prep', label: 'Test Prep' },
+  { id: 'blog', label: 'Blog' },
 ];
 
 export const homePills = [

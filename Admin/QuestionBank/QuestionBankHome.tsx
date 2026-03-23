@@ -5,8 +5,9 @@ import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractImagesFromDoc, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
 import { QuestionType, Question } from '../../Quiz/types';
-import { GoogleGenAI, Type } from "@google/genai";
 import QuestionPaperItem from '../../Quiz/components/QuestionPaperItem';
+import { ChapterStatChips } from '../../Quiz/components/ChapterStatChips';
+import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
 const PAGE_SIZE = 12;
 
@@ -60,6 +61,7 @@ const COST_ESTIMATES = {
 
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
+  const [kbChapterCounts, setKbChapterCounts] = useState<Record<string, number>>({});
   const [chapters, setChapters] = useState<any[]>([]);
   const [chapterStats, setChapterStats] = useState<Record<string, ChapterStats>>({});
   const [selectedKbId, setSelectedKbId] = useState<string | null>(null);
@@ -96,6 +98,7 @@ const QuestionBankHome: React.FC = () => {
   const [reviewShowSource, setReviewShowSource] = useState(false);
   const [reviewShowChoices, setReviewShowChoices] = useState(true);
   const [reviewShowExplanations, setReviewShowExplanations] = useState(true);
+  const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
 
   const [chapterConfigs, setChapterConfigs] = useState<Record<string, ChapterConfig>>({});
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
@@ -104,6 +107,8 @@ const QuestionBankHome: React.FC = () => {
 
   const [activeChapterSyllabus, setActiveChapterSyllabus] = useState<string[]>([]);
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
+  /** Syllabus topic opened for full detail (Neural Studio — syllabus mode) */
+  const [syllabusDetailTopic, setSyllabusDetailTopic] = useState<string | null>(null);
   const [bankUserId, setBankUserId] = useState<string | null>(null);
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
   const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
@@ -111,10 +116,28 @@ const QuestionBankHome: React.FC = () => {
   const statsCache = useRef<Record<string, { data: Record<string, ChapterStats>, timestamp: number }>>({});
 
   // ... (Fetch logic remains the same) ...
+  const fetchKbChapterCounts = async (list: { id: string }[]) => {
+    if (!list.length) {
+      setKbChapterCounts({});
+      return;
+    }
+    const entries = await Promise.all(
+      list.map(async (kb) => {
+        const { count } = await supabase
+          .from('chapters')
+          .select('*', { count: 'exact', head: true })
+          .eq('kb_id', kb.id);
+        return [kb.id, count ?? 0] as const;
+      })
+    );
+    setKbChapterCounts(Object.fromEntries(entries));
+  };
+
   const fetchKbs = async () => {
     const { data } = await supabase.from('knowledge_bases').select('id, name').order('name');
     setKbList(data || []);
     if (data?.length && !selectedKbId) setSelectedKbId(data[0].id);
+    if (data?.length) await fetchKbChapterCounts(data);
   };
 
   const fetchChapters = async (kbId: string) => {
@@ -132,11 +155,10 @@ const QuestionBankHome: React.FC = () => {
     }
   };
 
-  const manualRefreshChapters = () => {
-      if (selectedKbId) {
-          statsCache.current = {};
-          fetchChapters(selectedKbId);
-      }
+  const manualRefreshChapters = async () => {
+    statsCache.current = {};
+    if (kbList.length) await fetchKbChapterCounts(kbList);
+    if (selectedKbId) await fetchChapters(selectedKbId);
   };
 
   useEffect(() => {
@@ -215,12 +237,16 @@ const QuestionBankHome: React.FC = () => {
 
   // ... (Syllabus and Extraction logic remains same) ...
   useEffect(() => {
-    if (mode === 'studio' && activeEditingChapterId) {
+      if (mode === 'studio' && activeEditingChapterId) {
         const config = chapterConfigs[activeEditingChapterId];
         if (config?.synthesisMode === 'syllabus') fetchActiveSyllabus();
         else setActiveChapterSyllabus([]);
     }
   }, [activeEditingChapterId, mode, activeEditingChapterId ? chapterConfigs[activeEditingChapterId]?.synthesisMode : undefined]);
+
+  useEffect(() => {
+    setSyllabusDetailTopic(null);
+  }, [activeEditingChapterId]);
 
   const fetchActiveSyllabus = async (force: boolean = false) => {
     // ... (same as original file) ...
@@ -429,20 +455,20 @@ const QuestionBankHome: React.FC = () => {
 
   // Helper inputs (StepNumberInput, etc)
   const StepNumberInput = ({ value, onChange, label, color, subText, min = 0, icon, disabled }: any) => (
-    <div className={`flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm ${disabled ? 'opacity-40 grayscale' : ''}`}>
+    <div className={`flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-zinc-100 shadow-sm ${disabled ? 'opacity-40 grayscale' : ''}`}>
         <div className="flex justify-between items-center px-1">
             <div className="flex items-center gap-2">
                 {icon && <iconify-icon icon={icon} className={`text-lg ${color}`} />}
                 <div className="flex flex-col">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
-                    {subText && <span className="text-[7px] font-bold text-slate-300 uppercase">{subText}</span>}
+                    <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">{label}</span>
+                    {subText && <span className="text-[7px] font-bold text-zinc-300 uppercase">{subText}</span>}
                 </div>
             </div>
         </div>
-        <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl overflow-hidden">
-            <button disabled={disabled} onClick={() => onChange(Math.max(min, value - 1))} className="w-10 h-9 flex items-center justify-center text-slate-400 hover:bg-rose-50 hover:text-rose-500"><iconify-icon icon="mdi:minus" /></button>
+        <div className="flex items-center bg-zinc-50 border border-zinc-200 rounded-xl overflow-hidden">
+            <button disabled={disabled} onClick={() => onChange(Math.max(min, value - 1))} className="w-10 h-9 flex items-center justify-center text-zinc-400 hover:bg-rose-50 hover:text-rose-500"><iconify-icon icon="mdi:minus" /></button>
             <input disabled={disabled} type="number" value={value} onChange={(e) => onChange(Math.max(min, parseInt(e.target.value) || min))} className={`flex-1 min-w-0 bg-transparent text-center font-black text-sm outline-none ${color}`} />
-            <button disabled={disabled} onClick={() => onChange(value + 1)} className="w-10 h-9 flex items-center justify-center text-slate-400 hover:bg-emerald-50 hover:text-emerald-500"><iconify-icon icon="mdi:plus" /></button>
+            <button disabled={disabled} onClick={() => onChange(value + 1)} className="w-10 h-9 flex items-center justify-center text-zinc-400 hover:bg-emerald-50 hover:text-emerald-500"><iconify-icon icon="mdi:plus" /></button>
         </div>
     </div>
   );
@@ -469,7 +495,12 @@ const QuestionBankHome: React.FC = () => {
           return { ...prev, [activeEditingChapterId!]: cfg };
       });
   };
-  const handleSynthesisModeChange = (mode: 'standard' | 'syllabus') => { updateActiveConfig('synthesisMode', null, mode); if (mode === 'syllabus') fetchActiveSyllabus(); else setActiveChapterSyllabus([]); };
+  const handleSynthesisModeChange = (synMode: 'standard' | 'syllabus') => {
+    setSyllabusDetailTopic(null);
+    updateActiveConfig('synthesisMode', null, synMode);
+    if (synMode === 'syllabus') fetchActiveSyllabus();
+    else setActiveChapterSyllabus([]);
+  };
   const handleUpdateFigureCount = (idx: number, count: number) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const nextSelected = { ...(cfg.selectedFigures || {}) }; if (count <= 0) delete nextSelected[idx]; else nextSelected[idx] = count; cfg.selectedFigures = nextSelected; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
   const handleTopicCountChange = (topic: string, count: number) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; cfg.topicCounts = { ...cfg.topicCounts, [topic]: { ...cfg.topicCounts[topic], count: Math.max(0, count) } }; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
   const handleTopicToggle = (topic: string) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const current = cfg.topicCounts[topic]; cfg.topicCounts = { ...cfg.topicCounts, [topic]: { ...current, enabled: !current.enabled } }; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
@@ -486,123 +517,392 @@ const QuestionBankHome: React.FC = () => {
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const displayQuestions = mode === 'review' ? reviewQueue : questions;
 
+  const isUuidLike = (value: string | undefined | null) =>
+    !!value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+  useEffect(() => {
+    const loadFlagsForVisibleQuestions = async () => {
+      if (!bankUserId) {
+        setFlaggedQuestionIds(new Set());
+        return;
+      }
+
+      const visibleIds = displayQuestions
+        .map((q: any) => String(q.id || ''))
+        .filter((id: string) => isUuidLike(id));
+
+      if (visibleIds.length === 0) {
+        setFlaggedQuestionIds(new Set());
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('out_of_syllabus_question_flags')
+        .select('question_id')
+        .in('question_id', visibleIds)
+        .eq('flagged_by', bankUserId)
+        .eq('exam_tag', 'neet');
+
+      if (error) {
+        console.warn('Could not load question flags:', error.message);
+        return;
+      }
+
+      setFlaggedQuestionIds(new Set(((data as { question_id: string }[]) || []).map((row) => row.question_id)));
+    };
+
+    void loadFlagsForVisibleQuestions();
+  }, [bankUserId, displayQuestions]);
+
+  const handleFlagOutOfSyllabus = async (questionId: string) => {
+    if (!isUuidLike(questionId)) {
+      alert('Only saved repository questions can be flagged.');
+      return;
+    }
+
+    const { error } = await supabase.rpc('flag_question_out_of_syllabus', {
+      p_question_id: questionId,
+      p_knowledge_base_id: selectedKbId,
+      p_reason: null,
+      p_exam_tag: 'neet',
+    });
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setFlaggedQuestionIds((prev) => new Set(prev).add(questionId));
+  };
+
   return (
-    <div className="w-full h-full flex flex-col bg-slate-50 overflow-hidden font-sans relative">
+    <div className={`${workspacePageClass} overflow-hidden relative`}>
         {/* PROGRESS OVERLAY - UPDATED TO SHOW DURING FORGE */}
         {(isSaving || isForgingBatch) && (
             <div className="fixed inset-0 z-[200] bg-white/90 backdrop-blur-md flex flex-col items-center justify-center animate-fade-in">
-                <div className="w-20 h-20 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-8"></div>
-                <h3 className="text-2xl font-black text-slate-800 tracking-tight mb-2 uppercase">{isForgingBatch ? 'Neural Forge Active' : 'Syncing Repository'}</h3>
+                <div className="w-20 h-20 border-4 border-zinc-100 border-t-indigo-600 rounded-full animate-spin mb-8"></div>
+                <h3 className="text-2xl font-black text-zinc-900 tracking-tight mb-2 uppercase">{isForgingBatch ? 'Neural Forge Active' : 'Syncing Repository'}</h3>
                 <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-[0.3em]">{forgeProgress || 'Processing...'}</p>
             </div>
         )}
         
         {/* Header ... */}
-        <header className="bg-white border-b border-slate-200 z-30 shadow-sm shrink-0">
-            <div className="h-16 px-6 flex items-center justify-between">
-                <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-inner">
-                    <button onClick={() => { setMode('browse'); setReviewQueue([]); }} className={`px-8 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'browse' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Browse Repository</button>
-                    <button onClick={() => { setMode('studio'); setReviewQueue([]); }} className={`px-8 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'studio' || mode === 'review' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>Neural Studio</button>
+        <header className="bg-white border-b border-zinc-200 z-30 shadow-sm shrink-0">
+            <div className="min-h-14 px-3 sm:px-6 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex bg-zinc-100 p-1 rounded-xl border border-zinc-200 shadow-inner w-full sm:w-auto">
+                    <button onClick={() => { setMode('browse'); setReviewQueue([]); }} className={`flex-1 sm:flex-none px-4 sm:px-8 py-2 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'browse' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}>Browse Repository</button>
+                    <button onClick={() => { setMode('studio'); setReviewQueue([]); }} className={`flex-1 sm:flex-none px-4 sm:px-8 py-2 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'studio' || mode === 'review' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Neural Studio</button>
                 </div>
                 {mode === 'review' && (
-                    <button onClick={handleCommitReview} disabled={isForgingBatch} className="bg-emerald-600 text-white px-8 py-3 rounded-2xl font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center gap-3 active:scale-95 disabled:opacity-50">
+                    <button onClick={handleCommitReview} disabled={isForgingBatch} className="w-full sm:w-auto shrink-0 bg-emerald-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-[0.2em] shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 sm:gap-3 active:scale-95 disabled:opacity-50">
                         <iconify-icon icon="mdi:cloud-check" width="20" /> Commit to Hub
                     </button>
                 )}
             </div>
             {(mode === 'browse' || mode === 'review') && (
-                <div className="bg-slate-50/50 border-t border-slate-100 px-6 py-2 flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="bg-zinc-50/90 border-t border-zinc-100 px-3 sm:px-6 py-2 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 md:gap-4">
                     <div className="flex items-center gap-4 overflow-x-auto no-scrollbar">
-                        <button onClick={handleSelectAllOnPage} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}><iconify-icon icon={selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? "mdi:check-circle" : "mdi:circle-outline"} /> Select All</button>
+                        <button onClick={handleSelectAllOnPage} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'}`}><iconify-icon icon={selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? "mdi:check-circle" : "mdi:circle-outline"} /> Select All</button>
                         {mode === 'browse' && (
                             <>
-                                <div className="w-px h-6 bg-slate-200 mx-2" />
-                                <div className="flex items-center gap-1.5"><span className="text-[8px] font-black text-slate-400 uppercase tracking-widest mr-1">Rigor:</span>{(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (<button key={d} onClick={() => { setBrowseFilters({...browseFilters, difficulty: d}); setCurrentPage(1); }} className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all border ${browseFilters.difficulty === d ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200 text-slate-400'}`}>{d}</button>))}</div>
-                                <div className="flex items-center gap-1.5 border-l border-slate-200 pl-4 ml-2"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
-                                <button onClick={() => { setBrowseFilters({...browseFilters, hasFigure: !browseFilters.hasFigure}); setCurrentPage(1); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.hasFigure ? 'bg-rose-500 border-rose-500 text-white' : 'bg-white border-slate-200 text-slate-400'}`}><iconify-icon icon="mdi:image-outline" /> Figure Only</button>
-                                <button onClick={() => { setBrowseFilters({...browseFilters, showSource: !browseFilters.showSource}); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.showSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-slate-200 text-slate-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Source</button>
+                                <div className="w-px h-6 bg-zinc-200 mx-2" />
+                                <div className="flex items-center gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest mr-1">Rigor:</span>{(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (<button key={d} onClick={() => { setBrowseFilters({...browseFilters, difficulty: d}); setCurrentPage(1); }} className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all border ${browseFilters.difficulty === d ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}>{d}</button>))}</div>
+                                <div className="flex items-center gap-1.5 border-l border-zinc-200 pl-4 ml-2"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
+                                <button onClick={() => { setBrowseFilters({...browseFilters, hasFigure: !browseFilters.hasFigure}); setCurrentPage(1); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.hasFigure ? 'bg-rose-500 border-rose-500 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-outline" /> Figure Only</button>
+                                <button onClick={() => { setBrowseFilters({...browseFilters, showSource: !browseFilters.showSource}); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.showSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Source</button>
                             </>
                         )}
                         {mode === 'review' && (
                              <>
-                                <div className="w-px h-6 bg-slate-200 mx-2" />
-                                <button onClick={() => setReviewShowSource(!reviewShowSource)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-slate-200 text-slate-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Reference</button>
-                                <button onClick={() => setReviewShowChoices(!reviewShowChoices)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowChoices ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-400'}`}><iconify-icon icon="mdi:format-list-numbered" /> Show Choices</button>
-                                <button onClick={() => setReviewShowExplanations(!reviewShowExplanations)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowExplanations ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-slate-200 text-slate-400'}`}><iconify-icon icon="mdi:lightbulb-on-outline" /> Show Solution</button>
+                                <div className="w-px h-6 bg-zinc-200 mx-2" />
+                                <button onClick={() => setReviewShowSource(!reviewShowSource)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Reference</button>
+                                <button onClick={() => setReviewShowChoices(!reviewShowChoices)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowChoices ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:format-list-numbered" /> Show Choices</button>
+                                <button onClick={() => setReviewShowExplanations(!reviewShowExplanations)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowExplanations ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:lightbulb-on-outline" /> Show Solution</button>
                              </>
                         )}
                     </div>
-                    <div className="flex items-center gap-3 shrink-0"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{mode === 'review' ? reviewQueue.length : totalCount} Items</span>{mode === 'browse' && (<div className="flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm"><button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-left" /></button><span className="text-[9px] font-black text-indigo-600 px-3 uppercase">P.{currentPage} / {totalPages || 1}</span><button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-right" /></button></div>)}</div>
+                    <div className="flex items-center gap-3 shrink-0"><span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">{mode === 'review' ? reviewQueue.length : totalCount} Items</span>{mode === 'browse' && (<div className="flex items-center bg-white border border-zinc-200 rounded-xl p-1 shadow-sm"><button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-left" /></button><span className="text-[9px] font-black text-indigo-600 px-3 uppercase">P.{currentPage} / {totalPages || 1}</span><button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-right" /></button></div>)}</div>
                 </div>
             )}
         </header>
 
-        <div className="flex-1 flex overflow-hidden">
-            <aside className="w-80 bg-white border-r border-slate-100 flex flex-col shrink-0 z-20 shadow-sm">
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
+            <aside className="w-full lg:w-80 lg:max-w-[20rem] lg:shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-zinc-100 flex flex-col shrink-0 z-20 shadow-sm max-h-[min(42vh,420px)] lg:max-h-none min-h-0">
                 {/* ... (Sidebar logic unchanged) ... */}
-                <div className="p-5 border-b border-slate-50 bg-slate-50/20 space-y-4">
-                    <div className="flex gap-2">
-                        <select value={selectedKbId || ''} onChange={e => setSelectedKbId(e.target.value)} className="flex-1 p-3 bg-white border border-slate-200 rounded-xl text-[11px] font-black uppercase text-indigo-700 outline-none">
-                            {kbList.map(kb => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-                        </select>
-                        <button onClick={manualRefreshChapters} className="w-11 h-11 bg-white border border-slate-200 rounded-xl flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-all shadow-sm group"><iconify-icon icon="mdi:refresh" className="group-active:rotate-180 transition-transform duration-500" /></button>
+                <div className="space-y-3 border-b border-zinc-50 bg-zinc-50/20 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Question DB</span>
+                        <button
+                            type="button"
+                            onClick={() => void manualRefreshChapters()}
+                            className="group flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-400 shadow-sm transition-all hover:text-indigo-600"
+                            title="Refresh databases & chapters"
+                        >
+                            <iconify-icon icon="mdi:refresh" className="transition-transform duration-500 group-active:rotate-180" />
+                        </button>
                     </div>
-                    <div className="relative group"><iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input type="text" placeholder="Search Chapters..." value={chapterSearch} onChange={e => setChapterSearch(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-2.5 text-[10px] font-black uppercase outline-none focus:border-indigo-500 shadow-sm" /></div>
+                    <div className="max-h-48 space-y-2 overflow-y-auto custom-scrollbar pr-0.5">
+                        {kbList.length === 0 ? (
+                            <p className="py-4 text-center text-[9px] font-bold uppercase text-zinc-400">No databases</p>
+                        ) : (
+                            kbList.map((kb) => {
+                                const active = selectedKbId === kb.id;
+                                const chCount = kbChapterCounts[kb.id];
+                                return (
+                                    <button
+                                        key={kb.id}
+                                        type="button"
+                                        onClick={() => setSelectedKbId(kb.id)}
+                                    className={`w-full rounded-2xl border-2 p-3 text-left transition-all ${
+                                            active
+                                                ? 'border-indigo-400 bg-indigo-50 shadow-sm ring-1 ring-indigo-100'
+                                                : 'border-zinc-100 bg-white hover:border-zinc-200 hover:bg-zinc-50/80'
+                                        }`}
+                                    >
+                                        <div className="flex items-start gap-2">
+                                            <div
+                                                className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+                                                    active ? 'bg-indigo-600 text-white' : 'bg-zinc-100 text-zinc-500'
+                                                }`}
+                                            >
+                                                <iconify-icon icon="mdi:database-outline" width="18" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <p
+                                                    className={`truncate text-[10px] font-black uppercase leading-tight ${
+                                                    active ? 'text-indigo-900' : 'text-zinc-800'
+                                                    }`}
+                                                >
+                                                    {kb.name}
+                                                </p>
+                                            <p className="mt-0.5 text-[8px] font-bold uppercase tracking-wider text-zinc-400">
+                                                    {chCount !== undefined ? `${chCount} chapters` : '…'}
+                                                </p>
+                                                {active && (
+                                                    <span className="mt-1 inline-block rounded-md bg-indigo-600 px-1.5 py-0.5 text-[6px] font-black uppercase tracking-widest text-white">
+                                                        Active
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </button>
+                                );
+                            })
+                        )}
+                    </div>
+                    <div className="relative group">
+                        <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                        <input
+                            type="text"
+                            placeholder="Search Chapters..."
+                            value={chapterSearch}
+                            onChange={(e) => setChapterSearch(e.target.value)}
+                            className="w-full rounded-xl border border-zinc-200 bg-white py-2.5 pl-9 pr-3 text-[10px] font-black uppercase shadow-sm outline-none focus:border-indigo-500"
+                        />
+                    </div>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
-                    {isFetching && chapters.length === 0 ? <div className="py-10 flex flex-col items-center justify-center text-slate-300 gap-2"><iconify-icon icon="mdi:loading" className="animate-spin" width="24" /><p className="text-[9px] font-black uppercase tracking-widest">Fetching chapters...</p></div> : filteredSidebarChapters.map(c => {
-                        const active = selectedChapterIds.has(String(c.id)); const stats = chapterStats[String(c.id)];
-                        return <div key={c.id} onClick={() => handleToggleChapter(String(c.id))} className={`p-4 rounded-[1.5rem] border-2 cursor-pointer transition-all ${ active ? 'bg-indigo-50 border-indigo-200 shadow-sm' : 'bg-white border-slate-50 hover:bg-slate-50/50'}`}><div className="flex justify-between items-start gap-2"><h4 className={`text-[10px] font-black uppercase leading-tight truncate flex-1 ${ active ? 'text-indigo-700' : 'text-slate-700'}`}>{c.name}</h4><button onClick={(e) => { e.stopPropagation(); openDocViewer(c.id); }} className="text-slate-300 hover:text-indigo-500 transition-colors" title="Quick View Source"><iconify-icon icon="mdi:file-document-outline" /></button></div>{stats && <div className="flex wrap gap-1 items-center mt-2"><span className="bg-slate-900 text-white text-[7px] font-black px-1.5 py-0.5 rounded">{stats.total} Qs</span>{stats.figure_count > 0 && <span className="bg-indigo-50 text-indigo-600 text-[7px] font-black px-1.5 py-0.5 rounded border border-indigo-100 uppercase tracking-tighter">FIG:{stats.figure_count}</span>}</div>}</div>;
-                    })}
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2 custom-scrollbar min-h-0">
+                    {isFetching && chapters.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center gap-2 py-10 text-zinc-300">
+                            <iconify-icon icon="mdi:loading" className="animate-spin" width="24" />
+                            <p className="text-[9px] font-black uppercase tracking-widest">Fetching chapters...</p>
+                        </div>
+                    ) : (
+                        filteredSidebarChapters.map((c) => {
+                            const active = selectedChapterIds.has(String(c.id));
+                            const stats = chapterStats[String(c.id)];
+                            return (
+                                <div
+                                    key={c.id}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => handleToggleChapter(String(c.id))}
+                                    onKeyDown={(e) => e.key === 'Enter' && handleToggleChapter(String(c.id))}
+                                    className={`cursor-pointer rounded-[1.5rem] border-2 p-3 sm:p-4 transition-all min-w-0 overflow-hidden ${
+                                        active ? 'border-indigo-200 bg-indigo-50 shadow-sm' : 'border-zinc-50 bg-white hover:bg-zinc-50/50'
+                                    }`}
+                                >
+                                    <div className="flex items-start justify-between gap-2">
+                                        <h4
+                                            title={c.name}
+                                            className={`flex-1 min-w-0 line-clamp-2 text-[10px] font-black uppercase leading-tight break-words [overflow-wrap:anywhere] ${
+                                                active ? 'text-indigo-700' : 'text-zinc-700'
+                                            }`}
+                                        >
+                                            {c.name}
+                                        </h4>
+                                        <button
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                openDocViewer(c.id);
+                                            }}
+                                            className="text-zinc-300 transition-colors hover:text-indigo-500"
+                                            title="Quick View Source"
+                                        >
+                                            <iconify-icon icon="mdi:file-document-outline" />
+                                        </button>
+                                    </div>
+                                    <ChapterStatChips stats={stats} dense />
+                                </div>
+                            );
+                        })
+                    )}
                 </div>
             </aside>
 
-            <main className="flex-1 overflow-y-auto custom-scrollbar bg-slate-100/40 p-10">
+            <main className="flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar bg-zinc-100/40 p-3 sm:p-6 lg:p-10">
                 {mode === 'studio' ? (
                     <div className="max-w-7xl mx-auto space-y-10 animate-fade-in pb-40">
                          {/* Studio content remains as-is, just rendering structure around configs */}
-                         {selectedChapterIds.size === 0 ? <div className="py-40 text-center opacity-30 flex flex-col items-center justify-center"><iconify-icon icon="mdi:arrow-left-bold" width="64" className="mb-4 animate-bounce-subtle text-slate-300" /><p className="text-sm font-black uppercase tracking-[0.3em] text-slate-400">Select Target Chapters</p></div> : (
+                         {selectedChapterIds.size === 0 ? <div className="py-40 text-center opacity-30 flex flex-col items-center justify-center"><iconify-icon icon="mdi:arrow-left-bold" width="64" className="mb-4 animate-bounce-subtle text-zinc-300" /><p className="text-sm font-black uppercase tracking-[0.3em] text-zinc-400">Select Target Chapters</p></div> : (
                             <>
-                                <header className="flex flex-col md:flex-row justify-between items-end gap-6"><div className="flex-1"><h2 className="text-4xl font-black text-slate-800 tracking-tight uppercase leading-none">Neural Studio</h2><div className="flex items-center gap-4 mt-4 bg-white p-1 rounded-2xl border border-slate-200 w-fit">{(['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-flash-lite-latest'] as const).map(m => (<button key={m} onClick={() => setSelectedModel(m)} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedModel === m ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}><iconify-icon icon={m.includes('pro') ? 'mdi:diamond-stone' : m.includes('flash') ? 'mdi:lightning-bolt' : 'mdi:feather'} /> {m.includes('pro') ? 'Pro' : m.includes('flash') ? 'Flash' : 'Lite'} Tier</button>))}</div></div><button onClick={handleRunForge} className="bg-slate-900 text-white px-10 py-5 rounded-[2rem] font-black text-xs uppercase tracking-[0.3em] shadow-2xl hover:bg-slate-800 transition-all flex items-center gap-3 active:scale-95 group shrink-0"><iconify-icon icon="mdi:lightning-bolt" width="20" className="group-hover:animate-pulse" /> Initiate Forge</button></header>
+                                <header className="flex flex-col md:flex-row justify-between items-stretch md:items-end gap-4 md:gap-6"><div className="flex-1 min-w-0"><h2 className="text-2xl sm:text-4xl font-black text-zinc-900 tracking-tight uppercase leading-none">Neural Studio</h2><div className="flex flex-wrap items-center gap-2 mt-3 sm:mt-4 bg-white p-1 rounded-2xl border border-zinc-200 w-full sm:w-fit">{(['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-flash-lite-latest'] as const).map(m => (<button key={m} onClick={() => setSelectedModel(m)} className={`flex-1 sm:flex-none px-3 sm:px-4 py-2 rounded-xl text-[8px] sm:text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1 sm:gap-2 ${selectedModel === m ? 'bg-indigo-600 text-white shadow-lg' : 'text-zinc-400 hover:text-zinc-600'}`}><iconify-icon icon={m.includes('pro') ? 'mdi:diamond-stone' : m.includes('flash') ? 'mdi:lightning-bolt' : 'mdi:feather'} /> {m.includes('pro') ? 'Pro' : m.includes('flash') ? 'Flash' : 'Lite'}</button>))}</div></div><button onClick={handleRunForge} className="bg-zinc-900 text-white px-6 sm:px-10 py-4 sm:py-5 rounded-2xl sm:rounded-[2rem] font-black text-[10px] sm:text-xs uppercase tracking-[0.2em] sm:tracking-[0.3em] shadow-2xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 sm:gap-3 active:scale-95 group shrink-0 w-full md:w-auto"><iconify-icon icon="mdi:lightning-bolt" width="20" className="group-hover:animate-pulse" /> Initiate Forge</button></header>
                                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                                     <div className="lg:col-span-5 space-y-6">
                                         {activeConfig && (
-                                            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-8 animate-fade-in">
-                                                <h3 className="text-xs font-black text-slate-800 uppercase tracking-tight truncate border-b border-slate-50 pb-4">Tuning Chapter Configuration</h3>
-                                                <div className="space-y-4"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Synthesis Mode</label><div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200"><button onClick={() => handleSynthesisModeChange('standard')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'standard' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>Standard</button><button onClick={() => handleSynthesisModeChange('syllabus')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'syllabus' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>Syllabus Focused</button></div></div>
+                                            <div className="bg-white p-4 sm:p-8 rounded-2xl sm:rounded-[3rem] border border-zinc-100 shadow-sm space-y-6 sm:space-y-8 animate-fade-in min-w-0 max-w-full overflow-hidden">
+                                                <h3 className="text-xs font-black text-zinc-900 uppercase tracking-tight truncate border-b border-zinc-50 pb-4">Tuning Chapter Configuration</h3>
+                                                <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Synthesis Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => handleSynthesisModeChange('standard')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'standard' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Standard</button><button onClick={() => handleSynthesisModeChange('syllabus')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'syllabus' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Syllabus Focused</button></div></div>
                                                 {/* (Rest of Studio Config as per original...) */}
                                                 {activeConfig.synthesisMode === 'syllabus' ? (
                                                     <div className="space-y-4">
-                                                        <div className="flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm"><div className="flex justify-between items-center px-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Difficulty</label><button onClick={() => fetchActiveSyllabus(true)} className="text-[8px] font-black uppercase text-indigo-400 hover:text-indigo-600 flex items-center gap-1 transition-colors" title="Force Fetch Topics"><iconify-icon icon="mdi:refresh" /> Refresh Topics</button></div><select value={activeConfig.syllabusDifficulty} onChange={(e) => updateActiveConfig('syllabusDifficulty', null, e.target.value)} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none"><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select></div>
-                                                        <div className="space-y-2"><div className="flex justify-between items-center px-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Authorized Topics</label><div className="flex gap-2"><button onClick={() => handleBulkTopicsAction('all')} className="text-[7px] font-black uppercase text-indigo-500 hover:text-indigo-700">All</button><button onClick={() => handleBulkTopicsAction('none')} className="text-[7px] font-black uppercase text-slate-400 hover:text-rose-500">None</button></div></div><div className="max-h-[350px] overflow-y-auto custom-scrollbar space-y-2 p-3 bg-slate-50 rounded-2xl border border-dashed border-slate-200">{isFetchingSyllabus && <p className="text-xs text-center p-4 text-slate-400 animate-pulse">Fetching Syllabus...</p>}{activeChapterSyllabus.length === 0 && !isFetchingSyllabus && <div className="text-center p-6 flex flex-col items-center justify-center opacity-50"><iconify-icon icon="mdi:file-search-outline" width="32" className="mb-2" /><p className="text-[10px] font-black uppercase tracking-widest">No Syllabus Found</p><p className="text-[8px] font-medium mt-1">Ensure this chapter is mapped in the Syllabus Manager.</p><button onClick={() => fetchActiveSyllabus(true)} className="mt-3 text-[9px] font-black uppercase text-indigo-600 bg-white border border-indigo-100 px-3 py-1.5 rounded-lg shadow-sm">Try Refetching</button></div>}{activeChapterSyllabus.map(topic => { const topicConf = activeConfig.topicCounts[topic] || { count: 0, enabled: false }; return <div key={topic} className={`p-3 rounded-xl flex items-center gap-3 transition-all ${topicConf.enabled ? 'bg-white shadow-sm' : 'bg-slate-100/50'}`}><input type="checkbox" checked={topicConf.enabled} onChange={() => handleTopicToggle(topic)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0" /><label className={`text-xs font-bold flex-1 transition-colors ${topicConf.enabled ? 'text-slate-700' : 'text-slate-400'}`}>{topic}</label><input type="number" value={topicConf.count} onChange={e => handleTopicCountChange(topic, parseInt(e.target.value))} className="w-14 bg-slate-100 border border-slate-200 rounded-md text-center font-bold text-indigo-600 text-xs py-1" /></div>; })}</div></div>
+                                                        <div className="flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-zinc-100 shadow-sm"><div className="flex justify-between items-center px-1"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Difficulty</label><button onClick={() => fetchActiveSyllabus(true)} className="text-[8px] font-black uppercase text-indigo-400 hover:text-indigo-600 flex items-center gap-1 transition-colors" title="Force Fetch Topics"><iconify-icon icon="mdi:refresh" /> Refresh Topics</button></div><select value={activeConfig.syllabusDifficulty} onChange={(e) => updateActiveConfig('syllabusDifficulty', null, e.target.value)} className="w-full p-2 bg-zinc-50 border border-zinc-200 rounded-lg text-xs font-bold outline-none"><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select></div>
+                                                        <div className="space-y-3">
+                                                          <div className="flex flex-wrap justify-between items-center gap-2 px-1">
+                                                            <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Syllabus topics</label>
+                                                            <div className="flex gap-2 shrink-0">
+                                                              <button type="button" onClick={() => handleBulkTopicsAction('all')} className="text-[7px] font-black uppercase text-indigo-500 hover:text-indigo-700">All</button>
+                                                              <button type="button" onClick={() => handleBulkTopicsAction('none')} className="text-[7px] font-black uppercase text-zinc-400 hover:text-rose-500">None</button>
+                                                            </div>
+                                                          </div>
+                                                          <p className="text-[8px] font-medium text-zinc-500 px-1 -mt-1">Tap a card to include/exclude and set question counts.</p>
+                                                          <div className="max-h-[min(420px,50vh)] overflow-y-auto custom-scrollbar p-2 sm:p-3 bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
+                                                            {isFetchingSyllabus && <p className="text-xs text-center p-4 text-zinc-400 animate-pulse">Fetching syllabus…</p>}
+                                                            {activeChapterSyllabus.length === 0 && !isFetchingSyllabus && (
+                                                              <div className="text-center p-6 flex flex-col items-center justify-center opacity-50">
+                                                                <iconify-icon icon="mdi:file-search-outline" width="32" className="mb-2" />
+                                                                <p className="text-[10px] font-black uppercase tracking-widest">No syllabus found</p>
+                                                                <p className="text-[8px] font-medium mt-1">Map this chapter in Syllabus Manager.</p>
+                                                                <button type="button" onClick={() => fetchActiveSyllabus(true)} className="mt-3 text-[9px] font-black uppercase text-indigo-600 bg-white border border-indigo-100 px-3 py-1.5 rounded-lg shadow-sm">Refetch</button>
+                                                              </div>
+                                                            )}
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                              {activeChapterSyllabus.map((topic) => {
+                                                                const topicConf = activeConfig.topicCounts[topic] || { count: 0, enabled: false };
+                                                                return (
+                                                                  <button
+                                                                    key={topic}
+                                                                    type="button"
+                                                                    onClick={() => setSyllabusDetailTopic(topic)}
+                                                                    className={`rounded-2xl border-2 p-3 text-left transition-all min-w-0 max-w-full ${
+                                                                      topicConf.enabled ? 'border-indigo-200 bg-indigo-50/90 shadow-sm' : 'border-zinc-100 bg-white hover:border-zinc-200'
+                                                                    }`}
+                                                                  >
+                                                                    <p className="text-[10px] font-bold text-zinc-800 line-clamp-3 break-words [overflow-wrap:anywhere] text-left">{topic}</p>
+                                                                    <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                                                                      <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded ${topicConf.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-100 text-zinc-500'}`}>
+                                                                        {topicConf.enabled ? 'Included' : 'Off'}
+                                                                      </span>
+                                                                      {topicConf.enabled && topicConf.count > 0 && (
+                                                                        <span className="text-[7px] font-black text-indigo-600">{topicConf.count} Q</span>
+                                                                      )}
+                                                                    </div>
+                                                                    <span className="mt-2 inline-block text-[7px] font-black uppercase tracking-widest text-indigo-500">Open details →</span>
+                                                                  </button>
+                                                                );
+                                                              })}
+                                                            </div>
+                                                          </div>
+                                                        </div>
                                                     </div>
                                                 ) : (
                                                     <>
-                                                        <div className="space-y-4"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Visual Mode</label><div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200"><button onClick={() => updateActiveConfig('visualMode', null, 'text')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'text' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>Text Only</button><button onClick={() => updateActiveConfig('visualMode', null, 'image')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'image' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>Reference Image</button></div></div>
-                                                        {activeConfig.visualMode === 'text' && <div className="bg-indigo-50/50 p-5 rounded-[2rem] border border-indigo-100 animate-slide-up"><div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><iconify-icon icon="mdi:auto-fix" className="text-indigo-600" /><span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Proportional Rigor Scalar</span></div><span className="bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-[10px] font-black text-indigo-700 shadow-sm">{activeConfig.total} Items</span></div><input type="range" min="1" max="100" value={activeConfig.total} onChange={(e) => handleUpdateProportionalTotal(parseInt(e.target.value))} className="w-full h-1.5 bg-indigo-200 rounded-full appearance-none cursor-pointer accent-indigo-600 mb-3" /><button onClick={() => updateActiveConfig('isProportional', null, !activeConfig.isProportional)} className="mt-4 w-full py-1.5 bg-white border border-indigo-100 rounded-xl text-[8px] font-black uppercase tracking-widest text-slate-400 hover:text-indigo-600 transition-colors">{activeConfig.isProportional ? 'Switch to Manual Distribution' : 'Lock Proportional Mode'}</button></div>}
-                                                        {activeConfig.visualMode === 'image' ? <div className="grid grid-cols-2 gap-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 p-1 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">{extractedFigures.length > 0 ? extractedFigures.map((fig, idx) => { const count = activeConfig.selectedFigures?.[idx] || 0; return <div key={idx} className={`relative group aspect-square bg-white border-2 rounded-2xl overflow-hidden transition-all ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-slate-100 opacity-60'}`}><img src={`data:${fig.mimeType};base64,${fig.data}`} className="w-full h-full object-cover mix-blend-multiply" /><div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/40 transition-all flex items-center justify-center gap-2"><button onClick={() => handleUpdateFigureCount(idx, count - 1)} className="w-8 h-8 rounded-full bg-white text-slate-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"><iconify-icon icon="mdi:minus" /></button><div className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center">{count}</div><button onClick={() => handleUpdateFigureCount(idx, count + 1)} className="w-8 h-8 rounded-full bg-white text-slate-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"><iconify-icon icon="mdi:plus" /></button></div></div>; }) : <p className="col-span-2 text-[9px] text-center py-10 font-bold text-slate-400">No figures found in chapter source.</p>}</div> : !activeConfig.isProportional && <StepNumberInput icon="mdi:molecule" label="Synthetic Visuals" subText="Circuits, Structures, Graphs" color="text-rose-600" value={activeConfig.syntheticFigureCount || 0} onChange={(v:number) => updateActiveConfig('syntheticFigureCount', null, v)} />}
+                                                        <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Visual Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => updateActiveConfig('visualMode', null, 'text')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'text' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Text Only</button><button onClick={() => updateActiveConfig('visualMode', null, 'image')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'image' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Reference Image</button></div></div>
+                                                        {activeConfig.visualMode === 'text' && <div className="bg-indigo-50/50 p-5 rounded-[2rem] border border-indigo-100 animate-slide-up"><div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><iconify-icon icon="mdi:auto-fix" className="text-indigo-600" /><span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Proportional Rigor Scalar</span></div><span className="bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-[10px] font-black text-indigo-700 shadow-sm">{activeConfig.total} Items</span></div><input type="range" min="1" max="100" value={activeConfig.total} onChange={(e) => handleUpdateProportionalTotal(parseInt(e.target.value))} className="w-full h-1.5 bg-indigo-200 rounded-full appearance-none cursor-pointer accent-indigo-600 mb-3" /><button onClick={() => updateActiveConfig('isProportional', null, !activeConfig.isProportional)} className="mt-4 w-full py-1.5 bg-white border border-indigo-100 rounded-xl text-[8px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600 transition-colors">{activeConfig.isProportional ? 'Switch to Manual Distribution' : 'Lock Proportional Mode'}</button></div>}
+                                                        {activeConfig.visualMode === 'image' ? <div className="grid grid-cols-2 gap-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 p-1 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">{extractedFigures.length > 0 ? extractedFigures.map((fig, idx) => { const count = activeConfig.selectedFigures?.[idx] || 0; return <div key={idx} className={`relative group aspect-square bg-white border-2 rounded-2xl overflow-hidden transition-all ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-zinc-100 opacity-60'}`}><img src={`data:${fig.mimeType};base64,${fig.data}`} className="w-full h-full object-cover mix-blend-multiply" /><div className="absolute inset-0 bg-zinc-900/0 group-hover:bg-zinc-900/40 transition-all flex items-center justify-center gap-2"><button onClick={() => handleUpdateFigureCount(idx, count - 1)} className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"><iconify-icon icon="mdi:minus" /></button><div className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center">{count}</div><button onClick={() => handleUpdateFigureCount(idx, count + 1)} className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"><iconify-icon icon="mdi:plus" /></button></div></div>; }) : <p className="col-span-2 text-[9px] text-center py-10 font-bold text-zinc-400">No figures found in chapter source.</p>}</div> : !activeConfig.isProportional && <StepNumberInput icon="mdi:molecule" label="Synthetic Visuals" subText="Circuits, Structures, Graphs" color="text-rose-600" value={activeConfig.syntheticFigureCount || 0} onChange={(v:number) => updateActiveConfig('syntheticFigureCount', null, v)} />}
                                                         <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
-                                                        <div className="border-t border-slate-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
+                                                        <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
                                                     </>
                                                 )}
                                             </div>
                                         )}
                                     </div>
-                                    <div className="lg:col-span-7 flex flex-col gap-6"><div className="bg-slate-900 rounded-[3rem] p-8 text-white shadow-xl flex items-center justify-between border-4 border-indigo-500/20"><div className="flex items-center gap-4"><div className="w-14 h-14 bg-indigo-500 text-white rounded-2xl flex items-center justify-center shadow-lg"><iconify-icon icon="mdi:currency-inr" width="28" /></div><div><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Estimated Batch Cost</span><div className="flex items-baseline gap-2"><span className="text-4xl font-black">₹{estimatedBatchCost}</span><span className="text-xs font-bold text-indigo-400 uppercase">INR</span></div></div></div><div className="text-right"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Batch Allocation</span><div className="flex flex-col items-end"><span className="text-2xl font-black">{grandTotals.questions} <span className="text-xs opacity-50 uppercase">Total Items</span></span><div className="flex items-center gap-2 mt-1"><span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">{grandTotals.figures} Figure-Based</span><span className="text-[10px] font-bold text-slate-500">•</span><span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">{grandTotals.questions - grandTotals.figures} Text-Only</span></div></div></div></div><div className="bg-white p-8 rounded-[3.5rem] border border-slate-100 shadow-sm flex-1 overflow-hidden"><h3 className="text-xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-3 mb-8"><iconify-icon icon="mdi:layers-triple" className="text-indigo-600" /> Selected Batch</h3><div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar max-h-[400px] pr-2">{Array.from(selectedChapterIds).map((id: string) => { const chapter = chapters.find(c => c.id === id); const config = chapterConfigs[id as string]; const isActive = activeEditingChapterId === id; let chapterTotalCount = 0; if (config?.synthesisMode === 'syllabus') { const topics = Object.values(config.topicCounts || {}) as { count: number; enabled: boolean }[]; chapterTotalCount = topics.reduce((sum, t) => sum + (t.enabled ? t.count : 0), 0); } else chapterTotalCount = config?.total || 0; return <div key={id} onClick={() => setActiveEditingChapterId(id)} className={`bg-slate-50 border-2 rounded-[2rem] p-5 flex items-center gap-5 transition-all cursor-pointer group ${isActive ? 'bg-white border-indigo-600 shadow-xl' : 'border-slate-100 hover:border-indigo-200'}`}><div className="flex-1 min-w-0"><h4 className={`text-xs font-black uppercase truncate mb-1 ${isActive ? 'text-indigo-700' : 'text-slate-700'}`}>{String(chapter?.name || 'Selected Chapter')}</h4><div className="flex flex-wrap gap-1.5"><span className="text-[8px] font-black text-slate-400 uppercase bg-white px-1.5 py-0.5 rounded border border-slate-100">{chapterTotalCount} Qs</span>{config?.synthesisMode === 'syllabus' ? <span className="text-[8px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 uppercase">SYLLABUS FOCUSED</span> : <><span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded uppercase">E:{config?.diff?.easy || 0}</span><span className="text-[8px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded uppercase">H:{config?.diff?.hard || 0}</span></>}</div></div><div className="flex items-center gap-2"><button onClick={(e) => { e.stopPropagation(); openDocViewer(id); }} className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-500 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center border border-indigo-100 shadow-sm" title="View Full Document"><iconify-icon icon="mdi:file-document-outline" /></button><button onClick={(e) => { e.stopPropagation(); handleToggleChapter(String(id)); }} className="text-slate-200 hover:text-rose-500"><iconify-icon icon="mdi:close-circle-outline" width="20" /></button></div></div>; })}</div></div></div></div>
+                                    <div className="lg:col-span-7 flex flex-col gap-6"><div className="bg-zinc-900 rounded-[3rem] p-8 text-white shadow-xl flex items-center justify-between border-4 border-indigo-500/20"><div className="flex items-center gap-4"><div className="w-14 h-14 bg-indigo-500 text-white rounded-2xl flex items-center justify-center shadow-lg"><iconify-icon icon="mdi:currency-inr" width="28" /></div><div><span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Estimated Batch Cost</span><div className="flex items-baseline gap-2"><span className="text-4xl font-black">₹{estimatedBatchCost}</span><span className="text-xs font-bold text-indigo-400 uppercase">INR</span></div></div></div><div className="text-right"><span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Batch Allocation</span><div className="flex flex-col items-end"><span className="text-2xl font-black">{grandTotals.questions} <span className="text-xs opacity-50 uppercase">Total Items</span></span><div className="flex items-center gap-2 mt-1"><span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">{grandTotals.figures} Figure-Based</span><span className="text-[10px] font-bold text-zinc-500">•</span><span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">{grandTotals.questions - grandTotals.figures} Text-Only</span></div></div></div></div><div className="bg-white p-8 rounded-[3.5rem] border border-zinc-100 shadow-sm flex-1 overflow-hidden"><h3 className="text-xl font-black text-zinc-800 uppercase tracking-tight flex items-center gap-3 mb-8"><iconify-icon icon="mdi:layers-triple" className="text-indigo-600" /> Selected Batch</h3><div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar max-h-[400px] pr-2">{Array.from(selectedChapterIds).map((id: string) => { const chapter = chapters.find(c => c.id === id); const config = chapterConfigs[id as string]; const isActive = activeEditingChapterId === id; let chapterTotalCount = 0; if (config?.synthesisMode === 'syllabus') { const topics = Object.values(config.topicCounts || {}) as { count: number; enabled: boolean }[]; chapterTotalCount = topics.reduce((sum, t) => sum + (t.enabled ? t.count : 0), 0); } else chapterTotalCount = config?.total || 0; return <div key={id} onClick={() => setActiveEditingChapterId(id)} className={`bg-zinc-50 border-2 rounded-[2rem] p-5 flex items-center gap-5 transition-all cursor-pointer group ${isActive ? 'bg-white border-indigo-600 shadow-xl' : 'border-zinc-100 hover:border-indigo-200'}`}><div className="flex-1 min-w-0"><h4 className={`text-xs font-black uppercase truncate mb-1 ${isActive ? 'text-indigo-700' : 'text-zinc-700'}`}>{String(chapter?.name || 'Selected Chapter')}</h4><div className="flex flex-wrap gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase bg-white px-1.5 py-0.5 rounded border border-zinc-100">{chapterTotalCount} Qs</span>{config?.synthesisMode === 'syllabus' ? <span className="text-[8px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 uppercase">SYLLABUS FOCUSED</span> : <><span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded uppercase">E:{config?.diff?.easy || 0}</span><span className="text-[8px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded uppercase">H:{config?.diff?.hard || 0}</span></>}</div></div><div className="flex items-center gap-2"><button onClick={(e) => { e.stopPropagation(); openDocViewer(id); }} className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-500 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center border border-indigo-100 shadow-sm" title="View Full Document"><iconify-icon icon="mdi:file-document-outline" /></button><button onClick={(e) => { e.stopPropagation(); handleToggleChapter(String(id)); }} className="text-zinc-200 hover:text-rose-500"><iconify-icon icon="mdi:close-circle-outline" width="20" /></button></div></div>; })}</div></div></div></div>
+                            {syllabusDetailTopic && activeConfig && (
+                              <div
+                                className="fixed inset-0 z-[140] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-zinc-900/50 backdrop-blur-sm"
+                                onClick={() => setSyllabusDetailTopic(null)}
+                                role="presentation"
+                              >
+                                <div
+                                  className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-lg max-h-[min(90vh,640px)] overflow-y-auto p-5 sm:p-6 shadow-2xl border border-zinc-200"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <div className="flex items-start justify-between gap-2 mb-4">
+                                    <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Topic detail</h4>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSyllabusDetailTopic(null)}
+                                      className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100"
+                                      aria-label="Close"
+                                    >
+                                      <iconify-icon icon="mdi:close" width="22" />
+                                    </button>
+                                  </div>
+                                  <p className="text-sm font-bold text-zinc-900 break-words [overflow-wrap:anywhere] leading-snug mb-6">{syllabusDetailTopic}</p>
+                                  {(() => {
+                                    const tc = activeConfig.topicCounts[syllabusDetailTopic] || { count: 0, enabled: false };
+                                    return (
+                                      <div className="space-y-4">
+                                        <label className="flex items-center gap-3 cursor-pointer">
+                                          <input
+                                            type="checkbox"
+                                            checked={tc.enabled}
+                                            onChange={() => handleTopicToggle(syllabusDetailTopic)}
+                                            className="w-5 h-5 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 shrink-0"
+                                          />
+                                          <span className="text-xs font-bold text-zinc-700">Include in batch</span>
+                                        </label>
+                                        <div>
+                                          <label className="block text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-1">Questions for this topic</label>
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            value={tc.count}
+                                            onChange={(e) =>
+                                              handleTopicCountChange(syllabusDetailTopic, Math.max(0, parseInt(e.target.value, 10) || 0))
+                                            }
+                                            className="w-full max-w-[120px] bg-zinc-50 border border-zinc-200 rounded-xl text-center font-black text-indigo-600 text-sm py-2"
+                                          />
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setSyllabusDetailTopic(null)}
+                                          className="w-full py-3 rounded-xl bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700"
+                                        >
+                                          Done
+                                        </button>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            )}
                             </>
                          )}
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 pb-40">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-6 lg:gap-8 pb-24 sm:pb-40 w-full min-w-0">
                          {isFetching ? (
-                             <div className="col-span-full h-full flex flex-col items-center justify-center text-slate-300 animate-pulse py-40">
+                             <div className="col-span-full h-full flex flex-col items-center justify-center text-zinc-300 animate-pulse py-40">
                                  <iconify-icon icon="mdi:database-search" width="64" className="mb-4" />
                                  <p className="text-xs font-black uppercase tracking-[0.3em]">Querying Hub...</p>
                              </div>
                          ) : displayQuestions.length === 0 ? (
                             <div className="col-span-full py-40 text-center opacity-30 flex flex-col items-center justify-center">
-                                <iconify-icon icon="mdi:database-off-outline" width="64" className="mb-4 text-slate-300" />
-                                <p className="text-sm font-black uppercase tracking-[0.3em] text-slate-400">{mode === 'review' ? 'Review queue empty.' : 'No questions found.'}</p>
+                                <iconify-icon icon="mdi:database-off-outline" width="64" className="mb-4 text-zinc-300" />
+                                <p className="text-sm font-black uppercase tracking-[0.3em] text-zinc-400">{mode === 'review' ? 'Review queue empty.' : 'No questions found.'}</p>
                             </div>
                          ) : (
                             displayQuestions.map((q: any, idx) => (
@@ -625,6 +925,8 @@ const QuestionBankHome: React.FC = () => {
                                     showSource={(mode === 'browse' && browseFilters.showSource) || (mode === 'review' && reviewShowSource)}
                                     isSelected={selectedIds.has(String(q.id))}
                                     onToggleSelect={(id) => handleToggleSelect(String(id))}
+                                    onFlagOutOfSyllabus={mode === 'browse' ? handleFlagOutOfSyllabus : undefined}
+                                    isFlaggedOutOfSyllabus={flaggedQuestionIds.has(String(q.id))}
                                 />
                             ))
                          )}

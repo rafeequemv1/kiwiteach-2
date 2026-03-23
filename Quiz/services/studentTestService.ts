@@ -1,6 +1,20 @@
 import { supabase } from '../../supabase/client';
 import type { Question } from '../types';
 
+/**
+ * Online exams are rows in `public.tests` with `config.mode === 'online'` (legacy: `online-exam`).
+ * Paper tests use `config.mode === 'paper'` or omit mode; they must never appear in the student online zone.
+ */
+export function isOnlineExamAssignment(row: {
+  status?: string | null;
+  config?: { mode?: string } | null;
+}): boolean {
+  if (!row || row.status === 'draft') return false;
+  const mode = row.config?.mode;
+  if (mode === 'paper') return false;
+  return mode === 'online' || mode === 'online-exam';
+}
+
 /** Strip correct answers before sending exam to the client (teachers keep full rows in DB). */
 export function sanitizeQuestionsForStudentExam(questions: Question[]): Question[] {
   return (questions || []).map((q) => ({
@@ -62,4 +76,22 @@ export async function submitTestAttempt(
 export async function setStudentClass(classId: string): Promise<void> {
   const { error } = await supabase.rpc('set_student_class', { p_class_id: classId });
   if (error) throw new Error(error.message || 'Could not save class');
+}
+
+/** Teacher (class owner) or developer assigns a registered student to a class. */
+export async function teacherSetStudentClass(studentId: string, classId: string): Promise<void> {
+  const { error } = await supabase.rpc('teacher_set_student_class', {
+    p_student_id: studentId,
+    p_class_id: classId,
+  });
+  if (error) throw new Error(error.message || 'Could not assign class');
+}
+
+/** Teacher (institute owner) or developer assigns a registered student’s school/campus. */
+export async function teacherSetStudentInstitute(studentId: string, instituteId: string): Promise<void> {
+  const { error } = await supabase.rpc('teacher_set_student_institute', {
+    p_student_id: studentId,
+    p_institute_id: instituteId,
+  });
+  if (error) throw new Error(error.message || 'Could not assign institute');
 }

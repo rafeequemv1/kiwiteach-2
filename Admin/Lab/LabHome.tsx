@@ -10,6 +10,8 @@ declare const mammoth: any;
 
 interface LabHomeProps {
   onBack: () => void;
+  /** Fill admin section panel (no outer max-width / padding) */
+  embedded?: boolean;
 }
 
 /**
@@ -32,7 +34,7 @@ const sanitizeForPostgres = (obj: any): any => {
     return obj;
 };
 
-const LabHome: React.FC<LabHomeProps> = ({ onBack }) => {
+const LabHome: React.FC<LabHomeProps> = ({ onBack, embedded }) => {
   const [file, setFile] = useState<File | null>(null);
   const [cleanText, setCleanText] = useState('');
   const [isForging, setIsForging] = useState(false);
@@ -156,28 +158,38 @@ const LabHome: React.FC<LabHomeProps> = ({ onBack }) => {
   };
 
   return (
-    <div className="max-w-5xl mx-auto p-6 animate-fade-in font-sans">
-      <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-2xl overflow-hidden relative min-h-[500px] flex flex-col">
+    <div
+      className={
+        embedded
+          ? 'flex h-full min-h-0 w-full flex-1 flex-col font-sans'
+          : 'mx-auto max-w-5xl animate-fade-in p-2 font-sans md:p-4'
+      }
+    >
+      <div
+        className={`relative flex flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm ${
+          embedded ? 'min-h-0 flex-1' : 'min-h-[500px]'
+        }`}
+      >
         
         {(isForging || isSaving) && (
-            <div className="absolute inset-0 bg-white/95 backdrop-blur-md z-50 flex flex-col items-center justify-center p-12 text-center animate-fade-in">
-                <div className="w-16 h-16 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
-                <h3 className="text-2xl font-black text-slate-800 tracking-tight mb-2 uppercase">{isSaving ? 'Syncing Repository' : 'Neural Forge Active'}</h3>
-                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-[0.3em]">{forgeStatus}</p>
+            <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white/95 p-12 text-center backdrop-blur-md animate-fade-in">
+                <div className="mb-6 h-16 w-16 animate-spin rounded-full border-4 border-zinc-100 border-t-zinc-900"></div>
+                <h3 className="mb-2 text-lg font-semibold tracking-tight text-zinc-900">{isSaving ? 'Syncing repository' : 'Neural forge active'}</h3>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">{forgeStatus}</p>
             </div>
         )}
 
-        <header className="bg-slate-900 p-8 flex justify-between items-center shrink-0">
-            <div className="flex items-center gap-5">
-                <div className="w-14 h-14 bg-indigo-500 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
-                    <iconify-icon icon="mdi:database-plus" width="32" />
+        <header className="flex shrink-0 items-center justify-between border-b border-zinc-200 bg-zinc-900 px-6 py-5">
+            <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-800 text-white shadow-inner">
+                    <iconify-icon icon="mdi:database-plus" width="26" />
                 </div>
                 <div>
-                    <h2 className="text-xl font-black text-white uppercase tracking-tight">Rapid Forging Lab</h2>
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">High-Speed Database Population Engine</p>
+                    <h2 className="text-base font-semibold tracking-tight text-white">Batch Forge</h2>
+                    <p className="mt-0.5 text-[11px] font-medium text-zinc-400">Rapid database population</p>
                 </div>
             </div>
-            <button onClick={onBack} className="px-6 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl font-black uppercase tracking-widest text-[9px] transition-all">Exit Lab</button>
+            <button type="button" onClick={onBack} className="rounded-lg bg-white/10 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-white transition-colors hover:bg-white/20">Exit</button>
         </header>
 
         {showReview ? (

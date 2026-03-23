@@ -1,6 +1,7 @@
 
 import '../../types';
 import React, { useState, useMemo, useEffect } from 'react';
+import { WorkspacePageHeader, WorkspacePanel, workspacePageClass } from '../components/WorkspaceChrome';
 
 interface Institute {
   id: string;
@@ -110,97 +111,92 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, cla
   }, [studentStats, searchQuery, filterSchool]);
 
   return (
-    <div className="w-full h-full p-6 md:p-10 animate-fade-in bg-slate-50/50 overflow-y-auto custom-scrollbar font-sans">
-      <header className="mb-10 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
-        <div>
-          <h1 className="text-4xl font-black text-slate-800 tracking-tight">Organization Analytics</h1>
-          <p className="text-sm font-bold text-slate-400 uppercase tracking-widest mt-1">Zaitoon International Campus Performance</p>
-        </div>
-        <div className="flex bg-white p-1 rounded-2xl border border-slate-200 shadow-sm">
-            <div className="px-5 py-3 border-r border-slate-100 flex flex-col items-center min-w-[100px]">
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Students</span>
-                <span className="text-xl font-black text-sky-700">{globalStats.totalStudents}</span>
+    <div className={`${workspacePageClass} min-h-0 flex-1 overflow-hidden`}>
+      <WorkspacePageHeader
+        title="Reports"
+        subtitle="Organization analytics and merit ranking"
+        actions={
+          <div className="inline-flex rounded-md border border-zinc-200 bg-white p-0.5 shadow-sm">
+            <div className="flex min-w-[88px] flex-col items-center border-r border-zinc-100 px-4 py-2">
+              <span className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">Students</span>
+              <span className="text-lg font-semibold text-sky-700">{globalStats.totalStudents}</span>
             </div>
-            <div className="px-5 py-3 border-r border-slate-100 flex flex-col items-center min-w-[100px]">
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Tests</span>
-                <span className="text-xl font-black text-emerald-600">{globalStats.totalTests}</span>
+            <div className="flex min-w-[88px] flex-col items-center border-r border-zinc-100 px-4 py-2">
+              <span className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">Tests</span>
+              <span className="text-lg font-semibold text-emerald-700">{globalStats.totalTests}</span>
             </div>
-            <div className="px-5 py-3 flex flex-col items-center min-w-[100px]">
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg Accuracy</span>
-                <span className="text-xl font-black text-amber-500">{globalStats.avgAccuracy}%</span>
+            <div className="flex min-w-[88px] flex-col items-center px-4 py-2">
+              <span className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">Avg</span>
+              <span className="text-lg font-semibold text-amber-600">{globalStats.avgAccuracy}%</span>
             </div>
-        </div>
-      </header>
+          </div>
+        }
+      />
 
-      {/* School Comparison Section */}
-      <section className="mb-12">
-        <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em] mb-6 ml-2">Campus Comparison</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {schoolStats.map(school => (
-                <div key={school.id} className="bg-white rounded-[2.5rem] border border-slate-100 p-8 shadow-sm hover:shadow-xl transition-all group">
-                    <div className="flex justify-between items-start mb-6">
-                        {/* Fix: Added fallbacks for school.color to handle potential missing values in dynamic Tailwind classes */}
-                        <div className={`w-14 h-14 bg-${school.color || 'indigo'}-50 text-${school.color || 'indigo'}-600 rounded-2xl flex items-center justify-center border border-${school.color || 'indigo'}-100 shadow-sm transition-transform group-hover:scale-110`}>
-                            <iconify-icon icon="mdi:school" width="32" />
-                        </div>
-                        <div className="text-right">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Avg Accuracy</span>
-                            <span className={`text-3xl font-black text-${school.color || 'indigo'}-600`}>{school.avgAccuracy}%</span>
-                        </div>
-                    </div>
-                    <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-2 truncate">{school.name}</h3>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">{school.studentCount} Students Enrolled</p>
-                    
-                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                        <div 
-                            className={`h-full bg-${school.color || 'indigo'}-500 transition-all duration-1000`} 
-                            style={{ width: `${school.avgAccuracy}%` }} 
-                        />
-                    </div>
-                </div>
-            ))}
-        </div>
-      </section>
-
-      {/* Student Merit List Section */}
-      <section className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden pb-10">
-        <div className="px-8 py-8 border-b border-slate-50 flex flex-col lg:flex-row justify-between items-center gap-6">
-            <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-sky-600 rounded-xl flex items-center justify-center text-white shadow-lg">
-                    <iconify-icon icon="mdi:trophy-outline" width="24" />
-                </div>
-                <div>
-                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Student Leaderboard</h3>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cross-Campus Merit Ranking</p>
-                </div>
-            </div>
-            
-            <div className="flex flex-col sm:flex-row gap-4 w-full lg:w-auto">
-                <div className="relative group">
-                    <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input 
-                        type="text" 
-                        placeholder="Search students..." 
-                        value={searchQuery}
-                        onChange={e => setSearchQuery(e.target.value)}
-                        className="bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-xs font-bold outline-none focus:border-sky-400 w-full sm:w-64 transition-all"
-                    />
-                </div>
-                <select 
-                    value={filterSchool}
-                    onChange={e => setFilterSchool(e.target.value)}
-                    className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold outline-none focus:border-sky-400 appearance-none cursor-pointer pr-10 relative"
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 custom-scrollbar">
+        <div className="mx-auto w-full max-w-6xl space-y-4">
+          <WorkspacePanel title="Campus comparison">
+            <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
+              {schoolStats.map((school) => (
+                <div
+                  key={school.id}
+                  className="group rounded-md border border-zinc-200 bg-zinc-50/40 p-5 shadow-sm transition-shadow hover:shadow-md"
                 >
-                    <option value="all">All Campuses</option>
-                    {institutesList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                  <div className="mb-4 flex items-start justify-between">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 shadow-sm transition-transform group-hover:scale-[1.02]">
+                      <iconify-icon icon="mdi:school" width="26" />
+                    </div>
+                    <div className="text-right">
+                      <span className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-zinc-500">Avg accuracy</span>
+                      <span className="text-2xl font-semibold text-zinc-900">{school.avgAccuracy}%</span>
+                    </div>
+                  </div>
+                  <h3 className="mb-1 truncate text-sm font-semibold text-zinc-900">{school.name}</h3>
+                  <p className="mb-4 text-[11px] text-zinc-500">{school.studentCount} students</p>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-200">
+                    <div
+                      className="h-full bg-zinc-800 transition-all duration-1000"
+                      style={{ width: `${Math.min(100, school.avgAccuracy)}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
-        </div>
+          </WorkspacePanel>
 
-        <div className="overflow-x-auto">
-            <table className="w-full text-left">
+          <WorkspacePanel title="Student leaderboard">
+            <div className="flex flex-col gap-4 border-b border-zinc-100 bg-zinc-50/50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+              <p className="text-[13px] text-zinc-500">Cross-campus merit ranking (local demo data)</p>
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
+                <div className="relative flex-1">
+                  <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="text"
+                    placeholder="Search students…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full rounded-md border border-zinc-200 bg-white py-2 pl-10 pr-4 text-xs font-medium text-zinc-800 shadow-sm outline-none placeholder:text-zinc-400 focus:border-zinc-400 sm:w-64"
+                  />
+                </div>
+                <select
+                  value={filterSchool}
+                  onChange={(e) => setFilterSchool(e.target.value)}
+                  className="rounded-md border border-zinc-200 bg-white px-4 py-2 text-xs font-medium text-zinc-700 shadow-sm outline-none focus:border-zinc-400"
+                >
+                  <option value="all">All campuses</option>
+                  {institutesList.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
                 <thead>
-                    <tr className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                  <tr className="border-b border-zinc-200 bg-zinc-50/90 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                         <th className="px-8 py-4 w-16">Rank</th>
                         <th className="px-4 py-4">Student</th>
                         <th className="px-4 py-4">Class / Campus</th>
@@ -209,7 +205,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, cla
                         <th className="px-8 py-4 text-right">Merit Status</th>
                     </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-50">
+                <tbody className="divide-y divide-zinc-100">
                     {filteredMeritList.map((s, idx) => (
                         <tr key={s.id} className="hover:bg-slate-50/30 transition-colors group">
                             <td className="px-8 py-5">
@@ -274,8 +270,10 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, cla
                     )}
                 </tbody>
             </table>
+            </div>
+          </WorkspacePanel>
         </div>
-      </section>
+      </div>
     </div>
   );
 };

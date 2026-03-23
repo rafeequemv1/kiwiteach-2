@@ -27,6 +27,7 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
   onSignOut,
 }) => {
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   const showTeacherNav = appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
   const showStudentZone = appRole === 'developer' || appRole === 'student';
@@ -68,38 +69,43 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
     <aside
       className={`
         no-print
-        flex flex-col border-r h-screen font-sans z-50 transition-transform duration-300 ease-out
-        fixed top-0 left-0 w-64 lg:w-56
-        lg:sticky lg:translate-x-0
+        fixed left-0 top-0 z-50 flex h-screen w-64 flex-col border-r font-sans transition-all duration-300 ease-out
+        lg:sticky lg:translate-x-0 ${isCollapsed ? 'lg:w-[72px]' : 'lg:w-56'}
         ${appShellTheme.sidebar.border}
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
     `}
       style={{ background: appShellTheme.sidebar.gradient, boxShadow: '4px 0 24px rgba(8, 25, 48, 0.12)' }}
     >
-      {/* Header - Compact */}
-      <div className="p-4 pb-0 shrink-0 flex items-center justify-between lg:block">
+      <button
+        type="button"
+        onClick={() => setIsCollapsed((v) => !v)}
+        className="absolute -right-3 top-4 hidden h-6 w-6 items-center justify-center rounded-full border border-indigo-200 bg-white text-indigo-600 shadow-sm transition hover:bg-indigo-50 lg:flex"
+        title={isCollapsed ? 'Expand menu' : 'Collapse menu'}
+      >
+        <iconify-icon icon={isCollapsed ? 'mdi:chevron-right' : 'mdi:chevron-left'} width="14" />
+      </button>
+      <div className="flex shrink-0 items-center justify-between p-4 pb-2 lg:block">
         <button
           type="button"
           onClick={onHomeClick}
-          className="flex items-center gap-2.5 mb-6 text-left"
+          className="mb-4 flex items-center gap-2.5 text-left"
           title="Go to Landing Page"
         >
-          <div className={`p-1.5 rounded-lg overflow-hidden flex items-center justify-center min-w-[32px] min-h-[32px] ${appShellTheme.sidebar.logoWrap}`}>
+          <div className={`flex min-h-[32px] min-w-[32px] items-center justify-center overflow-hidden rounded-md p-1.5 ${appShellTheme.sidebar.logoWrap}`}>
             {brandConfig.logo ? (
-              <img src={brandConfig.logo} alt="Brand Logo" className="w-5 h-5 object-contain" />
+              <img src={brandConfig.logo} alt="Brand Logo" className="h-5 w-5 object-contain" />
             ) : (
-              <iconify-icon icon="carbon:machine-learning-model" className="w-5 h-5 text-indigo-300"></iconify-icon>
+              <iconify-icon icon="carbon:machine-learning-model" className="h-5 w-5 text-indigo-300" />
             )}
           </div>
-          <h1 className="text-lg font-bold text-white tracking-tight truncate">{brandConfig.name}</h1>
+          {!isCollapsed && <h1 className="truncate text-lg font-semibold tracking-tight text-white">{brandConfig.name}</h1>}
         </button>
-        <button onClick={onClose} className="lg:hidden text-indigo-200/80 hover:text-white -mt-6">
+        <button type="button" onClick={onClose} className="-mt-4 text-indigo-200/80 hover:text-white lg:hidden">
             <iconify-icon icon="mdi:close" width="20"></iconify-icon>
         </button>
       </div>
 
-      {/* Nav - Compact */}
-      <nav className="flex-1 overflow-y-auto px-4 pb-4 flex flex-col gap-1.5">
+      <nav className={`flex flex-1 flex-col gap-0.5 overflow-y-auto pb-4 ${isCollapsed ? 'px-2' : 'px-3'}`}>
         
         {/* Teacher nav */}
         {showTeacherNav &&
@@ -110,12 +116,13 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
                 key={item.id}
                 type="button"
                 onClick={() => handleNavClick(item.id)}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors shrink-0 ${
+                title={item.label}
+                className={`flex shrink-0 items-center rounded-md px-3 py-2 text-sm transition-colors ${isCollapsed ? 'justify-center gap-0' : 'gap-3'} ${
                   isActive ? appShellTheme.sidebar.navActiveClass : appShellTheme.sidebar.navInactiveClass
                 }`}
               >
                 <iconify-icon icon={item.icon} className="w-5 h-5"></iconify-icon>
-                <span>{item.label}</span>
+                {!isCollapsed && <span>{item.label}</span>}
               </button>
             );
           })}
@@ -123,21 +130,22 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
         {/* Student Section */}
         {showStudentZone && (
             <>
-                <div className="mt-4 mb-2 px-3 text-[10px] font-bold text-indigo-300/70 uppercase tracking-widest">Student Zone</div>
+                {!isCollapsed && <div className="mb-1 mt-4 px-3 text-[10px] font-medium uppercase tracking-widest text-indigo-300/70">Student</div>}
                 {studentItems.map(item => {
                     const isActive = activeView === item.id;
                     return (
                         <button
                         key={item.id}
+                        title={item.label}
                         onClick={() => handleNavClick(item.id)}
-                        className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors shrink-0 ${
+                        className={`flex shrink-0 items-center rounded-md px-3 py-2 text-sm transition-colors ${isCollapsed ? 'justify-center gap-0' : 'gap-3'} ${
                             isActive 
                             ? appShellTheme.sidebar.navActiveClass
                             : appShellTheme.sidebar.navInactiveClass
                         }`}
                         >
                         <iconify-icon icon={item.icon} className="w-5 h-5"></iconify-icon>
-                        <span>{item.label}</span>
+                        {!isCollapsed && <span>{item.label}</span>}
                         </button>
                     )
                 })}
@@ -146,17 +154,18 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
       </nav>
 
       {/* Footer — Admin (syllabus, OMR lab, etc. live inside Admin) */}
-      <div className={`p-4 mt-auto border-t shrink-0 z-10 flex flex-col gap-2 ${appShellTheme.sidebar.footerBorder}`} style={{ background: 'rgba(15, 39, 68, 0.35)' }}>
+      <div className={`mt-auto flex shrink-0 flex-col gap-1.5 border-t z-10 ${isCollapsed ? 'p-2' : 'p-3'} ${appShellTheme.sidebar.footerBorder}`} style={{ background: 'rgba(15, 39, 68, 0.35)' }}>
         {showAdminInFooter && (
           <button
             type="button"
             onClick={() => handleNavClick('admin')}
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors shrink-0 ${
+            title="Admin"
+            className={`flex shrink-0 items-center rounded-md px-3 py-2 text-sm transition-colors ${isCollapsed ? 'justify-center gap-0' : 'gap-3'} ${
               activeView === 'admin' ? appShellTheme.sidebar.navActiveClass : appShellTheme.sidebar.navInactiveClass
             }`}
           >
             <iconify-icon icon="mdi:shield-account-outline" className="w-5 h-5"></iconify-icon>
-            <span>Admin</span>
+            {!isCollapsed && <span>Admin</span>}
           </button>
         )}
 
@@ -165,24 +174,24 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
             type="button"
             onClick={downloadBlankOmr}
             disabled={isDownloading}
-            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-xs font-bold disabled:opacity-50 border ${appShellTheme.button.outlineOnDark}`}
+            className={`flex w-full items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all disabled:opacity-50 ${appShellTheme.button.outlineOnDark}`}
           >
             {isDownloading ? (
-              <div className="w-3.5 h-3.5 border-2 border-indigo-300/30 border-t-indigo-200 rounded-full animate-spin"></div>
+              <div className={`h-3.5 w-3.5 animate-spin rounded-full border-2 ${appShellTheme.accent.spinner}`}></div>
             ) : (
               <iconify-icon icon="mdi:file-document-outline" className="w-4 h-4"></iconify-icon>
             )}
-            <span>OMR Template</span>
+            {!isCollapsed && <span>OMR Template</span>}
           </button>
         )}
         {onSignOut && (
           <button
             type="button"
             onClick={onSignOut}
-            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-xs font-bold border ${appShellTheme.button.outlineOnDark}`}
+            className={`flex w-full items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${appShellTheme.button.outlineOnDark}`}
           >
             <iconify-icon icon="mdi:logout" className="w-4 h-4"></iconify-icon>
-            <span>Logout</span>
+            {!isCollapsed && <span>Logout</span>}
           </button>
         )}
       </div>
