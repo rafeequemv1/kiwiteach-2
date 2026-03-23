@@ -1,6 +1,8 @@
 import '../../types';
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../supabase/client';
+import { GoogleGenAI, Type } from '@google/genai';
+import { assertGeminiApiKey } from '../../config/env';
 
 interface PYQRow {
   id: string;
@@ -9,6 +11,7 @@ interface PYQRow {
   correct_index: number | null;
   explanation: string | null;
   question_type: string | null;
+  question_format: string | null;
   difficulty: string | null;
   subject_name: string | null;
   chapter_name: string | null;
@@ -24,10 +27,12 @@ interface PYQRow {
 
 type Draft = {
   question_text: string;
+  question_format: string;
   option_a: string;
   option_b: string;
   option_c: string;
   option_d: string;
+  correct_answer: string;
   correct_index: number;
   explanation: string;
   question_type: string;
@@ -42,12 +47,16 @@ type Draft = {
   image_url: string;
 };
 
+type GeminiDocRow = Partial<Draft>;
+
 const emptyDraft: Draft = {
   question_text: '',
+  question_format: 'text',
   option_a: '',
   option_b: '',
   option_c: '',
   option_d: '',
+  correct_answer: 'A',
   correct_index: 0,
   explanation: '',
   question_type: 'mcq',
@@ -95,9 +104,15 @@ const toOptionArray = (d: Draft) => [d.option_a, d.option_b, d.option_c, d.optio
 const toInsertPayload = (d: Draft) => ({
   question_text: d.question_text.trim(),
   options: toOptionArray(d),
+  choice_a: d.option_a.trim() || null,
+  choice_b: d.option_b.trim() || null,
+  choice_c: d.option_c.trim() || null,
+  choice_d: d.option_d.trim() || null,
+  correct_answer: d.correct_answer.trim() || null,
   correct_index: Number.isFinite(d.correct_index) ? d.correct_index : 0,
   explanation: d.explanation.trim() || null,
   question_type: d.question_type.trim() || 'mcq',
+  question_format: d.question_format.trim() || 'text',
   difficulty: d.difficulty.trim() || null,
   subject_name: d.subject_name.trim() || null,
   chapter_name: d.chapter_name.trim() || null,
@@ -113,13 +128,17 @@ const toInsertPayload = (d: Draft) => ({
 const applyMapped = (base: Draft, mapped: Record<string, string>) => ({
   ...base,
   question_text: mapped.question_text || mapped.question || '',
+  question_format: (mapped.question_format || mapped.format || 'text').toLowerCase(),
   option_a: mapped.option_a || mapped.a || '',
   option_b: mapped.option_b || mapped.b || '',
   option_c: mapped.option_c || mapped.c || '',
   option_d: mapped.option_d || mapped.d || '',
-  correct_index: Number(mapped.correct_index || mapped.answer_index || 0) || 0,
+  correct_answer: (mapped.correct_answer || mapped.answer || 'A').toUpperCase(),
+  correct_index:
+    Number(mapped.correct_index || mapped.answer_index) ||
+    ({ A: 0, B: 1, C: 2, D: 3 }[(mapped.correct_answer || mapped.answer || '').toUpperCase() as 'A' | 'B' | 'C' | 'D'] ?? 0),
   explanation: mapped.explanation || '',
-  question_type: mapped.question_type || mapped.type || 'mcq',
+  question_type: (mapped.question_type || mapped.type || 'mcq').toLowerCase(),
   difficulty: mapped.difficulty || 'Medium',
   subject_name: mapped.subject_name || mapped.subject || '',
   chapter_name: mapped.chapter_name || mapped.chapter || '',
@@ -131,36 +150,46 @@ const applyMapped = (base: Draft, mapped: Record<string, string>) => ({
   image_url: mapped.image_url || mapped.figure_url || '',
 });
 
-const parseDocBlocks = (text: string): Draft[] => {
-  const blocks = text
-    .split(/\n\s*\n/g)
-    .map((b) => b.trim())
-    .filter(Boolean);
+const normalizeGeminiRow = (row: GeminiDocRow): Draft => ({
+  ...emptyDraft,
+  question_text: String(row.question_text || ''),
+  question_format: String((row as any).question_format || 'text').toLowerCase(),
+  option_a: String(row.option_a || ''),
+  option_b: String(row.option_b || ''),
+  option_c: String(row.option_c || ''),
+  option_d: String(row.option_d || ''),
+  correct_answer: String((row as any).correct_answer || 'A').toUpperCase(),
+  correct_index: Number(row.correct_index ?? 0) || 0,
+  explanation: String(row.explanation || ''),
+  question_type: String(row.question_type || 'mcq').toLowerCase(),
+  difficulty: String(row.difficulty || 'Medium'),
+  subject_name: String(row.subject_name || ''),
+  chapter_name: String(row.chapter_name || ''),
+  topic_tag: String(row.topic_tag || ''),
+  class_name: String(row.class_name || 'NEET'),
+  year: row.year == null ? '' : String(row.year),
+  source_exam: String(row.source_exam || 'NEET'),
+  paper_code: String(row.paper_code || ''),
+  image_url: String(row.image_url || ''),
+});
 
-  const rows: Draft[] = [];
-  for (const b of blocks) {
-    const lines = b
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const mapped: Record<string, string> = {};
-    for (const l of lines) {
-      const m = l.match(/^([A-Za-z_ ]+)\s*:\s*(.+)$/);
-      if (!m) continue;
-      mapped[normalizeHeader(m[1])] = m[2].trim();
-    }
-    const d = applyMapped(emptyDraft, mapped);
-    if (d.question_text.trim()) rows.push(d);
-  }
-  return rows;
+const parseGeminiJson = (txt: string): GeminiDocRow[] => {
+  const cleaned = txt
+    .trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  const parsed = JSON.parse(cleaned);
+  if (!Array.isArray(parsed)) return [];
+  return parsed as GeminiDocRow[];
 };
 
 const PYQManager: React.FC = () => {
   const [rows, setRows] = useState<PYQRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [parsingDoc, setParsingDoc] = useState(false);
   const [previewRows, setPreviewRows] = useState<Draft[]>([]);
 
   const load = async () => {
@@ -184,61 +213,6 @@ const PYQManager: React.FC = () => {
     void load();
   }, []);
 
-  const handleSave = async () => {
-    if (!draft.question_text.trim()) {
-      alert('Question text is required');
-      return;
-    }
-    setSaving(true);
-    try {
-      const payload = toInsertPayload(draft);
-      if (editingId) {
-        const { error } = await supabase
-          .from('pyq_questions_neet')
-          .update({ ...payload, updated_at: new Date().toISOString() })
-          .eq('id', editingId);
-        if (error) throw error;
-      } else {
-        const user = await supabase.auth.getUser();
-        const { error } = await supabase
-          .from('pyq_questions_neet')
-          .insert([{ ...payload, uploaded_by: user.data.user?.id || null }]);
-        if (error) throw error;
-      }
-      setDraft(emptyDraft);
-      setEditingId(null);
-      await load();
-    } catch (e: any) {
-      alert(e?.message || 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleEdit = (r: PYQRow) => {
-    const opts = (r.options || []) as string[];
-    setDraft({
-      question_text: r.question_text || '',
-      option_a: opts[0] || '',
-      option_b: opts[1] || '',
-      option_c: opts[2] || '',
-      option_d: opts[3] || '',
-      correct_index: r.correct_index ?? 0,
-      explanation: r.explanation || '',
-      question_type: r.question_type || 'mcq',
-      difficulty: r.difficulty || 'Medium',
-      subject_name: r.subject_name || '',
-      chapter_name: r.chapter_name || '',
-      topic_tag: r.topic_tag || '',
-      class_name: r.class_name || 'NEET',
-      year: r.year ? String(r.year) : '',
-      source_exam: r.source_exam || 'NEET',
-      paper_code: r.paper_code || '',
-      image_url: r.image_url || '',
-    });
-    setEditingId(r.id);
-  };
-
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this PYQ?')) return;
     const { error } = await supabase.from('pyq_questions_neet').delete().eq('id', id);
@@ -247,17 +221,6 @@ const PYQManager: React.FC = () => {
       return;
     }
     await load();
-  };
-
-  const handleImageUpload = async (f: File) => {
-    const path = `pyq/${Date.now()}-${f.name.replace(/\s+/g, '_')}`;
-    const { error } = await supabase.storage.from('pyq-images').upload(path, f, { upsert: true });
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    const { data } = supabase.storage.from('pyq-images').getPublicUrl(path);
-    setDraft((p) => ({ ...p, image_url: data.publicUrl }));
   };
 
   const handleCsv = async (file: File) => {
@@ -282,21 +245,88 @@ const PYQManager: React.FC = () => {
   };
 
   const handleDoc = async (file: File) => {
-    const ext = file.name.toLowerCase();
-    if (ext.endsWith('.txt')) {
-      const txt = await file.text();
-      setPreviewRows(parseDocBlocks(txt));
-      return;
-    }
+    setParsingDoc(true);
+    try {
+      const ext = file.name.toLowerCase();
+      let rawText = '';
+      if (ext.endsWith('.txt')) {
+        rawText = await file.text();
+      } else {
+        const mammoth = (window as any)?.mammoth;
+        if (!mammoth?.extractRawText) {
+          alert('DOC/DOCX parser not available.');
+          return;
+        }
+        const buffer = await file.arrayBuffer();
+        const out = await mammoth.extractRawText({ arrayBuffer: buffer });
+        rawText = out.value || '';
+      }
 
-    const mammoth = (window as any)?.mammoth;
-    if (!mammoth?.extractRawText) {
-      alert('DOC/DOCX parser not available. Please use CSV or TXT.');
-      return;
+      if (!rawText.trim()) {
+        alert('No readable text found in document.');
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text:
+                  'Convert the following NEET PYQ source text into a strictly structured JSON array. ' +
+                  'Do not paraphrase or alter factual content. Keep text verbatim wherever present. ' +
+                  'If value is missing, use empty string. Output JSON only, no markdown.\n\n' +
+                  'Each row must include keys: question_text, option_a, option_b, option_c, option_d, correct_index, explanation, question_type, difficulty, subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url.\n\n' +
+                  'Allowed question_format: text, figure. ' +
+                  'Allowed question_type: mcq, assertion_reason, reason_based, match_list. ' +
+                  'Allowed difficulty: easy, medium, hard.\n\n' +
+                  `Source filename: ${file.name}\n\nSOURCE TEXT:\n${rawText}`,
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                question_text: { type: Type.STRING },
+                option_a: { type: Type.STRING },
+                option_b: { type: Type.STRING },
+                option_c: { type: Type.STRING },
+                option_d: { type: Type.STRING },
+                correct_answer: { type: Type.STRING },
+                correct_index: { type: Type.NUMBER },
+                explanation: { type: Type.STRING },
+                question_type: { type: Type.STRING },
+                question_format: { type: Type.STRING },
+                difficulty: { type: Type.STRING },
+                subject_name: { type: Type.STRING },
+                chapter_name: { type: Type.STRING },
+                topic_tag: { type: Type.STRING },
+                class_name: { type: Type.STRING },
+                year: { type: Type.STRING },
+                source_exam: { type: Type.STRING },
+                paper_code: { type: Type.STRING },
+                image_url: { type: Type.STRING },
+              },
+            },
+          },
+        },
+      });
+      const outText = response.text || '[]';
+      const parsed = parseGeminiJson(outText).map(normalizeGeminiRow).filter((r) => r.question_text.trim());
+      setPreviewRows(parsed);
+    } catch (e: any) {
+      alert(e?.message || 'Failed to parse document with Gemini');
+    } finally {
+      setParsingDoc(false);
     }
-    const buffer = await file.arrayBuffer();
-    const out = await mammoth.extractRawText({ arrayBuffer: buffer });
-    setPreviewRows(parseDocBlocks(out.value || ''));
   };
 
   const uploadPreviewRows = async () => {
@@ -319,67 +349,79 @@ const PYQManager: React.FC = () => {
 
   const previewCountText = useMemo(() => `${previewRows.length} parsed rows`, [previewRows.length]);
 
+  const downloadCsvTemplate = () => {
+    const headers = [
+      'question_text',
+      'question_format',
+      'option_a',
+      'option_b',
+      'option_c',
+      'option_d',
+      'correct_answer',
+      'correct_index',
+      'explanation',
+      'question_type',
+      'difficulty',
+      'subject_name',
+      'chapter_name',
+      'topic_tag',
+      'class_name',
+      'year',
+      'source_exam',
+      'paper_code',
+      'image_url',
+    ];
+    const sample = [
+      'Assertion reason question sample',
+      'text',
+      'Option A',
+      'Option B',
+      'Option C',
+      'Option D',
+      'B',
+      '1',
+      'Reasoning for the answer',
+      'assertion_reason',
+      'medium',
+      'Biology',
+      'Genetics',
+      'Mendelian inheritance',
+      'NEET',
+      '2023',
+      'NEET',
+      'SET-A',
+      'https://example.com/image.png',
+    ];
+    const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+    const csv = `${headers.map(esc).join(',')}\n${sample.map(esc).join(',')}\n`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pyq_neet_template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-4 p-4 md:p-5">
       <div className="rounded-lg border border-zinc-200 bg-white p-4">
         <h3 className="text-sm font-semibold text-zinc-900">Upload and manage NEET PYQs</h3>
-        <p className="mt-1 text-[12px] text-zinc-500">Manual CRUD, image upload, CSV import, and DOC/TXT parsing with preview.</p>
+        <p className="mt-1 text-[12px] text-zinc-500">Bulk upload only. CSV import or DOC/DOCX/TXT to Gemini structured parsing, then preview and upload.</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-3 rounded-lg border border-zinc-200 bg-white p-4">
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            <textarea
-              value={draft.question_text}
-              onChange={(e) => setDraft((p) => ({ ...p, question_text: e.target.value }))}
-              placeholder="Question text"
-              className="md:col-span-2 min-h-[92px] rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
-            />
-            <input value={draft.option_a} onChange={(e) => setDraft((p) => ({ ...p, option_a: e.target.value }))} placeholder="Option A" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.option_b} onChange={(e) => setDraft((p) => ({ ...p, option_b: e.target.value }))} placeholder="Option B" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.option_c} onChange={(e) => setDraft((p) => ({ ...p, option_c: e.target.value }))} placeholder="Option C" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.option_d} onChange={(e) => setDraft((p) => ({ ...p, option_d: e.target.value }))} placeholder="Option D" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={String(draft.correct_index)} onChange={(e) => setDraft((p) => ({ ...p, correct_index: Number(e.target.value) || 0 }))} placeholder="Correct index (0-3)" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.difficulty} onChange={(e) => setDraft((p) => ({ ...p, difficulty: e.target.value }))} placeholder="Difficulty" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.question_type} onChange={(e) => setDraft((p) => ({ ...p, question_type: e.target.value }))} placeholder="Question type" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.subject_name} onChange={(e) => setDraft((p) => ({ ...p, subject_name: e.target.value }))} placeholder="Subject" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.chapter_name} onChange={(e) => setDraft((p) => ({ ...p, chapter_name: e.target.value }))} placeholder="Chapter" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.topic_tag} onChange={(e) => setDraft((p) => ({ ...p, topic_tag: e.target.value }))} placeholder="Topic tag" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.year} onChange={(e) => setDraft((p) => ({ ...p, year: e.target.value }))} placeholder="Year" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.source_exam} onChange={(e) => setDraft((p) => ({ ...p, source_exam: e.target.value }))} placeholder="Source exam" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.paper_code} onChange={(e) => setDraft((p) => ({ ...p, paper_code: e.target.value }))} placeholder="Paper code" className="rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <input value={draft.image_url} onChange={(e) => setDraft((p) => ({ ...p, image_url: e.target.value }))} placeholder="Image URL (optional)" className="md:col-span-2 rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-            <textarea value={draft.explanation} onChange={(e) => setDraft((p) => ({ ...p, explanation: e.target.value }))} placeholder="Explanation" className="md:col-span-2 min-h-[78px] rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-indigo-500" />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">
-              <iconify-icon icon="mdi:image-plus-outline" />
-              Upload image
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void handleImageUpload(f);
-                }}
-              />
-            </label>
-            <button type="button" onClick={() => void handleSave()} disabled={saving} className="rounded-md bg-zinc-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-zinc-800 disabled:opacity-60">
-              {editingId ? 'Update PYQ' : 'Create PYQ'}
-            </button>
-            {editingId && (
-              <button type="button" onClick={() => { setEditingId(null); setDraft(emptyDraft); }} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-700 hover:bg-zinc-50">
-                Cancel edit
-              </button>
-            )}
-          </div>
-        </div>
-
+      <div className="grid grid-cols-1 gap-4">
         <div className="space-y-3 rounded-lg border border-zinc-200 bg-white p-4">
           <p className="text-[11px] font-black uppercase tracking-widest text-zinc-500">Bulk upload with preview</p>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={downloadCsvTemplate}
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100"
+            >
+              <iconify-icon icon="mdi:download-outline" />
+              Download CSV template
+            </button>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">
               <iconify-icon icon="mdi:file-delimited-outline" />
               Import CSV
@@ -395,7 +437,7 @@ const PYQManager: React.FC = () => {
             </label>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">
               <iconify-icon icon="mdi:file-document-outline" />
-              Import DOC/DOCX/TXT
+              Import DOC/DOCX/TXT via Gemini
               <input
                 type="file"
                 accept=".doc,.docx,.txt"
@@ -407,6 +449,7 @@ const PYQManager: React.FC = () => {
               />
             </label>
           </div>
+          {parsingDoc && <p className="text-[12px] text-indigo-600">Parsing document with Gemini...</p>}
           <p className="text-[12px] text-zinc-500">{previewCountText}</p>
           <button type="button" onClick={() => void uploadPreviewRows()} disabled={saving || previewRows.length === 0} className="rounded-md bg-indigo-600 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700 disabled:opacity-60">
             Upload parsed rows
@@ -417,22 +460,28 @@ const PYQManager: React.FC = () => {
               <thead className="sticky top-0 bg-zinc-50 text-zinc-600">
                 <tr>
                   <th className="px-2 py-1.5">Question</th>
+                  <th className="px-2 py-1.5">Format</th>
+                  <th className="px-2 py-1.5">Type</th>
                   <th className="px-2 py-1.5">Subject</th>
                   <th className="px-2 py-1.5">Chapter</th>
+                  <th className="px-2 py-1.5">Difficulty</th>
                   <th className="px-2 py-1.5">Year</th>
                 </tr>
               </thead>
               <tbody>
                 {previewRows.length === 0 ? (
                   <tr>
-                    <td className="px-2 py-4 text-zinc-400" colSpan={4}>No parsed rows yet.</td>
+                    <td className="px-2 py-4 text-zinc-400" colSpan={7}>No parsed rows yet.</td>
                   </tr>
                 ) : (
                   previewRows.map((r, i) => (
                     <tr key={`${i}-${r.question_text.slice(0, 12)}`} className="border-t border-zinc-100">
                       <td className="px-2 py-1.5 text-zinc-700">{r.question_text.slice(0, 90)}</td>
+                      <td className="px-2 py-1.5 text-zinc-600">{r.question_format || 'text'}</td>
+                      <td className="px-2 py-1.5 text-zinc-600">{r.question_type || 'mcq'}</td>
                       <td className="px-2 py-1.5 text-zinc-600">{r.subject_name || '-'}</td>
                       <td className="px-2 py-1.5 text-zinc-600">{r.chapter_name || '-'}</td>
+                      <td className="px-2 py-1.5 text-zinc-600">{r.difficulty || '-'}</td>
                       <td className="px-2 py-1.5 text-zinc-600">{r.year || '-'}</td>
                     </tr>
                   ))
@@ -469,7 +518,6 @@ const PYQManager: React.FC = () => {
                     <td className="px-2 py-1.5 text-zinc-600">{r.year || '-'}</td>
                     <td className="px-2 py-1.5">
                       <div className="flex gap-1">
-                        <button type="button" onClick={() => handleEdit(r)} className="rounded border border-zinc-200 bg-white px-2 py-1 text-[10px] font-semibold text-zinc-700 hover:bg-zinc-50">Edit</button>
                         <button type="button" onClick={() => void handleDelete(r.id)} className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-100">Delete</button>
                       </div>
                     </td>
