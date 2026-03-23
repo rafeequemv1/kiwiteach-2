@@ -14,6 +14,7 @@ import InstituteOrgPanel from '../Settings/Institutes/InstituteOrgPanel';
 import UsersRoleManager from './Users/UsersRoleManager';
 import RolesPermissionsManager from './Roles/RolesPermissionsManager';
 import OutOfSyllabusFlagsPanel from './Flags/OutOfSyllabusFlagsPanel';
+import SubscriptionTiersPanel from './Subscriptions/SubscriptionTiersPanel';
 import type { AppRole } from '../auth/roles';
 
 type AdminSection =
@@ -21,6 +22,7 @@ type AdminSection =
   | 'users'
   | 'roles'
   | 'flags'
+  | 'subscriptions'
   | 'knowledge-source'
   | 'kb-explorer'
   | 'question-db'
@@ -63,6 +65,11 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     title: 'Flags',
     subtitle: 'Out-of-syllabus reports and moderation',
     icon: 'mdi:flag-outline',
+  },
+  subscriptions: {
+    title: 'Subscriptions',
+    subtitle: 'B2B tier features (limits later)',
+    icon: 'mdi:ticket-percent-outline',
   },
   'knowledge-source': {
     title: 'Knowledge',
@@ -199,6 +206,8 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         return <RolesPermissionsManager embedded />;
       case 'flags':
         return <OutOfSyllabusFlagsPanel />;
+      case 'subscriptions':
+        return <SubscriptionTiersPanel />;
       case 'knowledge-source':
         return <KnowledgeSourceHome onSelectKb={handleSelectKb} />;
       case 'kb-explorer':
@@ -285,6 +294,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
               <>
                 {navBtn('users', 'Users', 'mdi:account-cog-outline')}
                 {navBtn('roles', 'Roles & permissions', 'mdi:shield-account-outline')}
+                {navBtn('subscriptions', 'Subscriptions', 'mdi:ticket-percent-outline')}
                 {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
                 {navBtn('question-db', 'Question DB', 'mdi:database-search-outline')}
                 {navBtn('prompts', 'Prompts', 'mdi:console')}
@@ -304,6 +314,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
               <>
                 {navBtn('users', 'Users', 'mdi:account-cog-outline')}
                 {navBtn('roles', 'Roles', 'mdi:shield-account-outline')}
+                {navBtn('subscriptions', 'Subscriptions', 'mdi:ticket-percent-outline')}
                 {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
                 {navBtn('question-db', 'QDB', 'mdi:database-search-outline')}
                 {navBtn('prompts', 'Prompts', 'mdi:console')}

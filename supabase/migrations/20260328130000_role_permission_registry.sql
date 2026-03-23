@@ -78,7 +78,8 @@ insert into public.permission_registry (perm_key, label, description, category, 
   ('admin.quality_lab', 'Admin: quality lab', 'Model benchmarking', 'admin', 160),
   ('admin.syllabus', 'Admin: syllabus', 'Syllabus & topic exclusions', 'admin', 170),
   ('admin.omr_lab', 'Admin: OMR lab', 'OMR accuracy tools', 'admin', 180),
-  ('admin.roles', 'Admin: roles & permissions', 'This screen — role matrix', 'admin', 190)
+  ('admin.roles', 'Admin: roles & permissions', 'This screen — role matrix', 'admin', 190),
+  ('admin.team', 'Admin: team management', 'Assign roles and business team members in institutes settings', 'admin', 195)
 on conflict (perm_key) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -121,7 +122,7 @@ select r.id, p.id, true
 from public.role_registry r
 join public.permission_registry p on p.perm_key in (
   'nav.paper_tests', 'nav.online_exam', 'nav.students', 'nav.reports', 'nav.settings', 'nav.admin',
-  'admin.institutes', 'admin.syllabus'
+  'admin.institutes', 'admin.syllabus', 'admin.team'
 )
 where r.role_slug = 'school_admin'
 on conflict (role_id, permission_id) do update set allowed = excluded.allowed;

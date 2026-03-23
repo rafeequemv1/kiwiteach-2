@@ -610,8 +610,70 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         return;
       }
       setFlaggedQuestionIds((prev) => new Set(prev).add(questionId));
-      // Remove flagged question from current paper immediately.
-      setCurrentQuestions((prev) => prev.filter((item) => item.id !== q.id));
+
+      const currentIds = currentQuestions
+        .map((item) => item.originalId || item.id)
+        .filter((id): id is string => isUuid(id));
+
+      let candidates: Question[] = [];
+      if (q.sourceChapterId) {
+        candidates = await fetchEligibleQuestions({
+          classId: sourceOptions?.targetClassId || null,
+          chapterId: q.sourceChapterId,
+          difficulty: q.difficulty,
+          excludeIds: currentIds,
+          limit: 40,
+          allowRepeats: allowPastReplacements,
+        });
+      } else {
+        let query = supabase.from('question_bank_neet').select('*');
+        if (q.difficulty) query = query.eq('difficulty', q.difficulty);
+        if (q.type) query = query.eq('question_type', q.type);
+        if (q.topic_tag) query = query.eq('topic_tag', q.topic_tag);
+        if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
+        const { data } = await query.limit(40);
+        candidates = ((data || []) as any[]).map((bq) => ({
+          id: bq.id,
+          originalId: bq.id,
+          text: bq.question_text,
+          type: (bq.question_type || 'mcq') as any,
+          difficulty: bq.difficulty as any,
+          options: bq.options,
+          correctIndex: bq.correct_index,
+          explanation: bq.explanation,
+          figureDataUrl: bq.figure_url,
+          sourceFigureDataUrl: bq.source_figure_url,
+          columnA: bq.column_a,
+          columnB: bq.column_b,
+          correctMatches: bq.correct_matches,
+          sourceChapterId: bq.chapter_id,
+          sourceSubjectName: bq.subject_name,
+          sourceChapterName: bq.chapter_name,
+          pageNumber: bq.page_number,
+          topic_tag: bq.topic_tag,
+        })) as Question[];
+      }
+
+      const sameTopic = (c: Question) =>
+        (c.topic_tag || '').trim().toLowerCase() === (q.topic_tag || '').trim().toLowerCase();
+      const sameType = (c: Question) => (c.type || '') === (q.type || '');
+      const sameDifficulty = (c: Question) => (c.difficulty || '') === (q.difficulty || '');
+
+      const priorityBuckets = [
+        candidates.filter((c) => sameType(c) && sameDifficulty(c) && sameTopic(c)),
+        candidates.filter((c) => sameType(c) && sameDifficulty(c)),
+        candidates.filter((c) => sameDifficulty(c) && sameTopic(c)),
+        candidates.filter((c) => sameType(c)),
+        candidates,
+      ];
+      const replacement = priorityBuckets.find((b) => b.length > 0)?.[0] || null;
+
+      if (replacement) {
+        setCurrentQuestions((prev) => prev.map((item) => (item.id === q.id ? replacement : item)));
+      } else {
+        setCurrentQuestions((prev) => prev.filter((item) => item.id !== q.id));
+        alert('Flag saved. No close replacement found, so this question was removed.');
+      }
     } finally {
       setFlaggingQuestionId(null);
     }

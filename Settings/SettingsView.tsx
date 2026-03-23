@@ -6,6 +6,7 @@ import SchoolManager from './Schools/SchoolManager';
 import { BrandingConfig } from '../Quiz/types';
 import { workspacePageClass } from '../Teacher/components/WorkspaceChrome';
 import UserProfilePanel from './Profile/UserProfilePanel';
+import TeamManager from './Institutes/TeamManager';
 
 interface SettingsViewProps {
   brandConfig: BrandingConfig;
@@ -18,7 +19,7 @@ interface SettingsViewProps {
   onDeleteFolder?: any;
 }
 
-type SettingsSection = 'branding' | 'institutes' | 'profile';
+type SettingsSection = 'branding' | 'institutes' | 'team' | 'profile';
 
 const SettingsView: React.FC<SettingsViewProps> = ({ 
   brandConfig, 
@@ -85,12 +86,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({
             {navBtn('branding', 'Branding', 'mdi:palette-outline')}
             {navBtn('profile', 'Profile', 'mdi:account-circle-outline')}
             {navBtn('institutes', 'Institutes', 'mdi:domain')}
+            {navBtn('team', 'Team', 'mdi:account-multiple-outline')}
           </nav>
 
           <div className="grid grid-cols-2 gap-1 md:hidden">
             {navBtn('branding', 'Branding', 'mdi:palette-outline')}
             {navBtn('profile', 'Profile', 'mdi:account-circle-outline')}
             {navBtn('institutes', 'Institutes', 'mdi:domain')}
+            {navBtn('team', 'Team', 'mdi:account-multiple-outline')}
           </div>
 
           <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-transparent p-0">
@@ -102,6 +105,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({
             )}
             {section === 'institutes' && (
               <SchoolManager userId={userId} onRefresh={onRefresh} embedded />
+            )}
+            {section === 'team' && (
+              <TeamManager userId={userId} />
             )}
           </div>
         </div>

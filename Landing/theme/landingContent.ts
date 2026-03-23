@@ -2,6 +2,7 @@
 export const landingNavLinks = [
   { id: 'home', label: 'Home' },
   { id: 'test-prep', label: 'Test Prep' },
+  { id: 'pricing', label: 'Pricing' },
   { id: 'blog', label: 'Blog' },
 ];
 

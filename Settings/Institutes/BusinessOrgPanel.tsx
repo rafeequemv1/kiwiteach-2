@@ -6,6 +6,7 @@ import { fetchBusinessesForUser, fetchClassesForUser, fetchInstitutesForUser } f
 export interface BusinessRow {
   id: string;
   name: string;
+  subscription_tier_id?: string | null;
   details?: Record<string, unknown> | null;
 }
 
@@ -29,6 +30,12 @@ interface BusinessOrgPanelProps {
   subtitle?: string;
   embedded?: boolean;
   mode?: 'admin' | 'settings';
+}
+
+interface SubscriptionTierRow {
+  id: string;
+  name: string;
+  sort_order: number;
 }
 
 const COLORS = ['indigo', 'rose', 'emerald', 'amber', 'violet'] as const;
@@ -56,6 +63,7 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
   const [showUnassigned, setShowUnassigned] = useState(true);
   const [loading, setLoading] = useState(true);
   const [studentCountByClass, setStudentCountByClass] = useState<Record<string, number>>({});
+  const [subscriptionTiers, setSubscriptionTiers] = useState<SubscriptionTierRow[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,6 +96,22 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
       } else {
         if (irErr) console.warn('institutes:', irErr.message);
         setInstitutes([]);
+      }
+
+      if (mode === 'admin') {
+        const { data: tierRows, error: tierErr } = await supabase
+          .from('subscription_tiers')
+          .select('id, name, sort_order')
+          .eq('audience', 'b2b')
+          .eq('is_active', true)
+          .order('sort_order', { ascending: true });
+        if (!tierErr && tierRows) setSubscriptionTiers(tierRows as SubscriptionTierRow[]);
+        else {
+          if (tierErr) console.warn('subscription tiers:', tierErr.message);
+          setSubscriptionTiers([]);
+        }
+      } else {
+        setSubscriptionTiers([]);
       }
 
       const instIds = (instRows || []).map((r) => r.id);
@@ -125,7 +149,7 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, mode]);
 
   useEffect(() => {
     void load();
@@ -151,6 +175,19 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
       return;
     }
     setNewBusinessName('');
+    await load();
+    onRefresh?.();
+  };
+
+  const handleAssignBusinessTier = async (businessId: string, tierId: string | null) => {
+    const { error } = await supabase
+      .from('businesses')
+      .update({ subscription_tier_id: tierId })
+      .eq('id', businessId);
+    if (error) {
+      alert(error.message);
+      return;
+    }
     await load();
     onRefresh?.();
   };
@@ -443,10 +480,30 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
                   </div>
                   <div className="min-w-0">
                     <span className="block truncate text-[13px] font-semibold text-zinc-900">{biz.name}</span>
-                    <span className="text-[10px] text-zinc-500">{nested.length} institutes</span>
+                    <span className="text-[10px] text-zinc-500">
+                      {nested.length} institutes
+                      {biz.subscription_tier_id
+                        ? ` • ${
+                            subscriptionTiers.find((t) => t.id === biz.subscription_tier_id)?.name || 'Tier assigned'
+                          }`
+                        : ' • No tier'}
+                    </span>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-1">
+                <div className="flex shrink-0 items-center gap-2">
+                  <select
+                    value={biz.subscription_tier_id || ''}
+                    onChange={(e) => void handleAssignBusinessTier(biz.id, e.target.value || null)}
+                    className="min-w-[160px] rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-medium text-zinc-700 outline-none focus:border-zinc-400"
+                    title="Assign subscription tier"
+                  >
+                    <option value="">No tier</option>
+                    {subscriptionTiers.map((tier) => (
+                      <option key={tier.id} value={tier.id}>
+                        {tier.name}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="button"
                     onClick={() => setActiveBusinessId(activeBusinessId === biz.id ? null : biz.id)}

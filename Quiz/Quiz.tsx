@@ -82,7 +82,16 @@ const sanitizeForPostgres = (obj: any): any => {
 
 const Quiz: React.FC = () => {
   const [session, setSession] = useState<any>(null);
-  const [showAuth, setShowAuth] = useState(false);
+  const initialAuthMode = useMemo(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      return sp.get('type') === 'recovery' ? 'reset-password' : undefined;
+    } catch {
+      return undefined;
+    }
+  }, []);
+
+  const [showAuth, setShowAuth] = useState(() => initialAuthMode === 'reset-password');
   const [activeView, setActiveView] = useState('test');
   const [appRole, setAppRole] = useState<AppRole>('student');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
@@ -897,6 +906,7 @@ const Quiz: React.FC = () => {
         <AuthUI
           onBackHome={() => setShowAuth(false)}
           onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })}
+          initialMode={initialAuthMode}
         />
       );
     }

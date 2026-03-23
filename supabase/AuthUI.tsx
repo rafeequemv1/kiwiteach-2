@@ -3,16 +3,18 @@ import React, { useState } from 'react';
 import { supabase } from './client';
 import { appShellTheme, landingTheme } from '../Landing/theme';
 
+type AuthMode = 'login' | 'signup' | 'forgot-password' | 'reset-password';
+
 interface AuthUIProps {
     onDemoLogin?: () => void;
     onBackHome?: () => void;
+    initialMode?: AuthMode;
 }
 
-type AuthMode = 'login' | 'signup' | 'forgot-password';
 type SignupRole = 'student' | 'teacher';
 
-const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome }) => {
-  const [mode, setMode] = useState<AuthMode>('login');
+const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome, initialMode }) => {
+  const [mode, setMode] = useState<AuthMode>(initialMode ?? 'login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -48,6 +50,11 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome }) => {
         });
         if (error) throw error;
         setMessage('Password reset link sent to your email!');
+      } else if (mode === 'reset-password') {
+        const { error: updateErr } = await supabase.auth.updateUser({ password });
+        if (updateErr) throw updateErr;
+        setMessage('Password updated. You can sign in now.');
+        setMode('login');
       }
     } catch (err: any) {
       console.error("Auth Failure Details:", err);
@@ -154,22 +161,26 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome }) => {
             </div>
 
             <form onSubmit={handleAuth} className="space-y-5">
-              <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Email</label>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
-                  placeholder="you@school.edu"
-                />
-              </div>
+              {mode !== 'reset-password' && (
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Email</label>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
+                    placeholder="you@school.edu"
+                  />
+                </div>
+              )}
 
               {mode !== 'forgot-password' && (
                 <div>
                   <div className="flex justify-between items-center mb-2 px-1">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Password</label>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      {mode === 'reset-password' ? 'New password' : 'Password'}
+                    </label>
                     {mode === 'login' && (
                       <button 
                         type="button"
@@ -188,6 +199,11 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome }) => {
                     className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 focus:bg-white text-slate-900 rounded-2xl px-5 py-4 outline-none font-bold text-sm transition-all placeholder:text-slate-300"
                     placeholder="••••••••"
                   />
+                  {mode === 'reset-password' && (
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      If this link is expired or already used, request a fresh reset link.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -248,7 +264,13 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome }) => {
                 {loading ? (
                   <div className="w-5 h-5 border-2 border-indigo-200/60 border-t-indigo-700 rounded-full animate-spin"></div>
                 ) : (
-                  mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Sign Up' : 'Send Reset Link'
+                  mode === 'login'
+                    ? 'Sign In'
+                    : mode === 'signup'
+                      ? 'Sign Up'
+                      : mode === 'reset-password'
+                        ? 'Update Password'
+                        : 'Send Reset Link'
                 )}
               </button>
 

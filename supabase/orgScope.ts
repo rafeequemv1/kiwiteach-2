@@ -35,7 +35,7 @@ export async function fetchClassesForUser(userId: string, instituteIds: string[]
 /** Businesses the user created or is assigned to via profile.business_id. */
 export async function fetchBusinessesForUser(userId: string) {
   const bid = await fetchProfileBusinessId(userId);
-  let q = supabase.from('businesses').select('id, name, details').order('name');
+  let q = supabase.from('businesses').select('id, name, details, subscription_tier_id').order('name');
   if (bid) {
     q = q.or(`user_id.eq.${userId},id.eq.${bid}`);
   } else {
