@@ -56,13 +56,13 @@ const SubscriptionTiersPanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      const tierRes = await supabase
         .from('subscription_tiers')
         .select('*')
         .eq('audience', 'b2b')
         .order('sort_order', { ascending: true });
-      if (error) throw error;
-      const rows = (data || []) as SubscriptionTierRow[];
+      if (tierRes.error) throw tierRes.error;
+      const rows = (tierRes.data || []) as SubscriptionTierRow[];
       setTiers(rows);
       if (!selectedTierId && rows.length) setSelectedTierId(rows[0].id);
       const nextSelected = rows.find((r) => r.id === (selectedTierId || rows[0]?.id)) || rows[0] || null;

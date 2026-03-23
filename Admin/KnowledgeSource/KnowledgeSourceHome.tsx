@@ -31,7 +31,6 @@ const KnowledgeSourceHome: React.FC<KnowledgeSourceHomeProps> = ({ onSelectKb })
       const { data, error } = await supabase
         .from('knowledge_bases')
         .select('*')
-        .or(`user_id.eq.${user.id},is_catalog.eq.true`)
         .order('created_at', { ascending: false });
 
       if (error) throw error;

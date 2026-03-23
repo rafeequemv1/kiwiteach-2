@@ -85,13 +85,57 @@ const Quiz: React.FC = () => {
   const initialAuthMode = useMemo(() => {
     try {
       const sp = new URLSearchParams(window.location.search);
-      return sp.get('type') === 'recovery' ? 'reset-password' : undefined;
+      const searchType = sp.get('type');
+
+      const hash = window.location.hash?.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+      const hp = new URLSearchParams(hash);
+      const hashType = hp.get('type');
+
+      if (searchType === 'recovery' || hashType === 'recovery') return 'reset-password';
+      if (hp.get('error_code') === 'otp_expired') return 'forgot-password';
+      return undefined;
     } catch {
       return undefined;
     }
   }, []);
 
-  const [showAuth, setShowAuth] = useState(() => initialAuthMode === 'reset-password');
+  const initialRecoveryAccessToken = useMemo(() => {
+    try {
+      const hash = window.location.hash?.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+      const hp = new URLSearchParams(hash);
+      return hp.get('access_token');
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const initialRecoveryRefreshToken = useMemo(() => {
+    try {
+      const hash = window.location.hash?.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+      const hp = new URLSearchParams(hash);
+      return hp.get('refresh_token');
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const initialAuthError = useMemo(() => {
+    try {
+      const hash = window.location.hash?.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+      const hp = new URLSearchParams(hash);
+      const code = hp.get('error_code');
+      const desc = hp.get('error_description');
+      if (!code) return null;
+      if (code === 'otp_expired') {
+        return 'This reset link is invalid or expired. Please request a new password reset email.';
+      }
+      return desc ? decodeURIComponent(desc.replace(/\+/g, ' ')) : `Authentication error: ${code}`;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const [showAuth, setShowAuth] = useState(() => initialAuthMode === 'reset-password' || !!initialAuthError);
   const [activeView, setActiveView] = useState('test');
   const [appRole, setAppRole] = useState<AppRole>('student');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
@@ -907,6 +951,9 @@ const Quiz: React.FC = () => {
           onBackHome={() => setShowAuth(false)}
           onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })}
           initialMode={initialAuthMode}
+          recoveryAccessToken={initialRecoveryAccessToken}
+          recoveryRefreshToken={initialRecoveryRefreshToken}
+          initialError={initialAuthError}
         />
       );
     }

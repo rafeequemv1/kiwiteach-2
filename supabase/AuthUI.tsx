@@ -9,16 +9,19 @@ interface AuthUIProps {
     onDemoLogin?: () => void;
     onBackHome?: () => void;
     initialMode?: AuthMode;
+    recoveryAccessToken?: string | null;
+    recoveryRefreshToken?: string | null;
+    initialError?: string | null;
 }
 
 type SignupRole = 'student' | 'teacher';
 
-const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome, initialMode }) => {
+const AuthUI: React.FC<AuthUIProps> = ({ onBackHome, initialMode, recoveryAccessToken, recoveryRefreshToken, initialError }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode ?? 'login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError ?? null);
   const [message, setMessage] = useState<string | null>(null);
   const [signupRole, setSignupRole] = useState<SignupRole>('student');
 
@@ -45,12 +48,22 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome, initialMode })
         if (error) throw error;
         setMessage('Verification email sent! Check your inbox.');
       } else if (mode === 'forgot-password') {
+        const redirectTo = (import.meta.env.VITE_SITE_URL || window.location.origin).replace(/\/+$/, '');
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: window.location.origin,
+          redirectTo,
         });
         if (error) throw error;
         setMessage('Password reset link sent to your email!');
       } else if (mode === 'reset-password') {
+        if (!recoveryAccessToken || !recoveryRefreshToken) {
+          setError('Missing recovery token. Request a new reset link.');
+          return;
+        }
+        const { error: setSessionErr } = await supabase.auth.setSession({
+          access_token: recoveryAccessToken,
+          refresh_token: recoveryRefreshToken,
+        });
+        if (setSessionErr) throw setSessionErr;
         const { error: updateErr } = await supabase.auth.updateUser({ password });
         if (updateErr) throw updateErr;
         setMessage('Password updated. You can sign in now.');
@@ -274,16 +287,6 @@ const AuthUI: React.FC<AuthUIProps> = ({ onDemoLogin, onBackHome, initialMode })
                 )}
               </button>
 
-              {onDemoLogin && mode !== 'forgot-password' && (
-                  <button
-                      type="button"
-                      onClick={onDemoLogin}
-                      className={`w-full font-bold py-3 rounded-2xl text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${appShellTheme.button.primarySubtle}`}
-                  >
-                      <iconify-icon icon="mdi:eye-outline" />
-                      Bypass to Demo Access
-                  </button>
-              )}
             </form>
 
             <div className="mt-10 text-center pt-8 border-t border-slate-100 space-y-4">

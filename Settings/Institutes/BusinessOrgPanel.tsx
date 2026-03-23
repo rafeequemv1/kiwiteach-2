@@ -38,6 +38,16 @@ interface SubscriptionTierRow {
   sort_order: number;
 }
 
+interface KnowledgeBaseRow {
+  id: string;
+  name: string;
+}
+
+interface BusinessKnowledgeBaseAccessRow {
+  business_id: string;
+  knowledge_base_id: string;
+}
+
 const COLORS = ['indigo', 'rose', 'emerald', 'amber', 'violet'] as const;
 
 /**
@@ -64,6 +74,9 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
   const [loading, setLoading] = useState(true);
   const [studentCountByClass, setStudentCountByClass] = useState<Record<string, number>>({});
   const [subscriptionTiers, setSubscriptionTiers] = useState<SubscriptionTierRow[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRow[]>([]);
+  const [businessKbAccess, setBusinessKbAccess] = useState<BusinessKnowledgeBaseAccessRow[]>([]);
+  const [savingBusinessKb, setSavingBusinessKb] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,19 +112,35 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
       }
 
       if (mode === 'admin') {
-        const { data: tierRows, error: tierErr } = await supabase
-          .from('subscription_tiers')
-          .select('id, name, sort_order')
-          .eq('audience', 'b2b')
-          .eq('is_active', true)
-          .order('sort_order', { ascending: true });
-        if (!tierErr && tierRows) setSubscriptionTiers(tierRows as SubscriptionTierRow[]);
+        const [tierRes, kbRes, bizKbRes] = await Promise.all([
+          supabase
+            .from('subscription_tiers')
+            .select('id, name, sort_order')
+            .eq('audience', 'b2b')
+            .eq('is_active', true)
+            .order('sort_order', { ascending: true }),
+          supabase.from('knowledge_bases').select('id, name').order('name', { ascending: true }),
+          supabase.from('business_knowledge_base_access').select('business_id, knowledge_base_id'),
+        ]);
+        if (!tierRes.error && tierRes.data) setSubscriptionTiers(tierRes.data as SubscriptionTierRow[]);
         else {
-          if (tierErr) console.warn('subscription tiers:', tierErr.message);
+          if (tierRes.error) console.warn('subscription tiers:', tierRes.error.message);
           setSubscriptionTiers([]);
+        }
+        if (!kbRes.error && kbRes.data) setKnowledgeBases(kbRes.data as KnowledgeBaseRow[]);
+        else {
+          if (kbRes.error) console.warn('knowledge bases:', kbRes.error.message);
+          setKnowledgeBases([]);
+        }
+        if (!bizKbRes.error && bizKbRes.data) setBusinessKbAccess(bizKbRes.data as BusinessKnowledgeBaseAccessRow[]);
+        else {
+          if (bizKbRes.error) console.warn('business KB access:', bizKbRes.error.message);
+          setBusinessKbAccess([]);
         }
       } else {
         setSubscriptionTiers([]);
+        setKnowledgeBases([]);
+        setBusinessKbAccess([]);
       }
 
       const instIds = (instRows || []).map((r) => r.id);
@@ -201,6 +230,36 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
     }
     await load();
     onRefresh?.();
+  };
+
+  const businessHasKb = (businessId: string, kbId: string) =>
+    businessKbAccess.some((r) => r.business_id === businessId && r.knowledge_base_id === kbId);
+
+  const handleToggleBusinessKb = async (businessId: string, kbId: string, nextChecked: boolean) => {
+    setSavingBusinessKb(`${businessId}:${kbId}`);
+    try {
+      if (nextChecked) {
+        const { error } = await supabase
+          .from('business_knowledge_base_access')
+          .insert({ business_id: businessId, knowledge_base_id: kbId });
+        if (error) throw error;
+        setBusinessKbAccess((prev) => [...prev, { business_id: businessId, knowledge_base_id: kbId }]);
+      } else {
+        const { error } = await supabase
+          .from('business_knowledge_base_access')
+          .delete()
+          .eq('business_id', businessId)
+          .eq('knowledge_base_id', kbId);
+        if (error) throw error;
+        setBusinessKbAccess((prev) =>
+          prev.filter((r) => !(r.business_id === businessId && r.knowledge_base_id === kbId)),
+        );
+      }
+    } catch (e: any) {
+      alert(e?.message || 'Failed to update business knowledge access');
+    } finally {
+      setSavingBusinessKb(null);
+    }
   };
 
   const handleAddInstitute = async (e: React.FormEvent, businessId: string | null) => {
@@ -527,6 +586,31 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
 
               {activeBusinessId === biz.id && (
                 <div className="space-y-2 border-t border-zinc-200 bg-white px-3 py-3">
+                  <div className="rounded-md border border-zinc-200 bg-zinc-50/60 p-2.5">
+                    <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                      Knowledge access for this business (paper creation)
+                    </p>
+                    <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2">
+                      {knowledgeBases.map((kb) => {
+                        const checked = businessHasKb(biz.id, kb.id);
+                        const disabled = savingBusinessKb === `${biz.id}:${kb.id}`;
+                        return (
+                          <label
+                            key={kb.id}
+                            className="flex items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5"
+                          >
+                            <span className="truncate text-[11px] font-medium text-zinc-800">{kb.name}</span>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={disabled}
+                              onChange={(e) => void handleToggleBusinessKb(biz.id, kb.id, e.target.checked)}
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
                   {nested.length === 0 ? (
                     <p className="text-[11px] text-zinc-400">No institutes under this business yet.</p>
                   ) : (

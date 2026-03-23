@@ -15,6 +15,8 @@ import UsersRoleManager from './Users/UsersRoleManager';
 import RolesPermissionsManager from './Roles/RolesPermissionsManager';
 import OutOfSyllabusFlagsPanel from './Flags/OutOfSyllabusFlagsPanel';
 import SubscriptionTiersPanel from './Subscriptions/SubscriptionTiersPanel';
+import PYQManager from './PYQ/PYQManager';
+import KnowledgeBaseAccessManager from './KnowledgeSource/KnowledgeBaseAccessManager';
 import type { AppRole } from '../auth/roles';
 
 type AdminSection =
@@ -23,6 +25,8 @@ type AdminSection =
   | 'roles'
   | 'flags'
   | 'subscriptions'
+  | 'knowledge-access'
+  | 'pyq'
   | 'knowledge-source'
   | 'kb-explorer'
   | 'question-db'
@@ -70,6 +74,16 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     title: 'Subscriptions',
     subtitle: 'B2B tier features (limits later)',
     icon: 'mdi:ticket-percent-outline',
+  },
+  'knowledge-access': {
+    title: 'Knowledge Access',
+    subtitle: 'Assign user-level access to knowledge bases',
+    icon: 'mdi:key-outline',
+  },
+  pyq: {
+    title: 'PYQ Upload',
+    subtitle: 'Upload and manage NEET previous year questions',
+    icon: 'mdi:file-upload-outline',
   },
   'knowledge-source': {
     title: 'Knowledge',
@@ -208,6 +222,10 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         return <OutOfSyllabusFlagsPanel />;
       case 'subscriptions':
         return <SubscriptionTiersPanel />;
+      case 'knowledge-access':
+        return <KnowledgeBaseAccessManager />;
+      case 'pyq':
+        return <PYQManager />;
       case 'knowledge-source':
         return <KnowledgeSourceHome onSelectKb={handleSelectKb} />;
       case 'kb-explorer':
@@ -295,6 +313,8 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
                 {navBtn('users', 'Users', 'mdi:account-cog-outline')}
                 {navBtn('roles', 'Roles & permissions', 'mdi:shield-account-outline')}
                 {navBtn('subscriptions', 'Subscriptions', 'mdi:ticket-percent-outline')}
+                {navBtn('knowledge-access', 'Knowledge Access', 'mdi:key-outline')}
+                {navBtn('pyq', 'PYQ Upload', 'mdi:file-upload-outline')}
                 {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
                 {navBtn('question-db', 'Question DB', 'mdi:database-search-outline')}
                 {navBtn('prompts', 'Prompts', 'mdi:console')}
@@ -315,6 +335,8 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
                 {navBtn('users', 'Users', 'mdi:account-cog-outline')}
                 {navBtn('roles', 'Roles', 'mdi:shield-account-outline')}
                 {navBtn('subscriptions', 'Subscriptions', 'mdi:ticket-percent-outline')}
+                {navBtn('knowledge-access', 'KB Access', 'mdi:key-outline')}
+                {navBtn('pyq', 'PYQ', 'mdi:file-upload-outline')}
                 {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
                 {navBtn('question-db', 'QDB', 'mdi:database-search-outline')}
                 {navBtn('prompts', 'Prompts', 'mdi:console')}
