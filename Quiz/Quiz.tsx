@@ -12,6 +12,7 @@ import SettingsView from '../Settings/SettingsView';
 import AdminView from '../Admin/AdminView';
 import OMRAccuracyTester from './components/OMR/OMRAccuracyTester';
 import TestCreatorView from './components/TestCreatorView';
+import NewTestChapterPickerModal from './components/NewTestChapterPickerModal';
 import QuestionListScreen from './components/ResultScreen';
 import InteractiveQuizSession from './components/InteractiveQuizSession';
 import StudentOnlineTestDashboard from '../Student/OnlineTest/StudentOnlineTestDashboard';
@@ -179,6 +180,9 @@ const Quiz: React.FC = () => {
   const [editInitialTopic, setEditInitialTopic] = useState<string | undefined>(undefined);
   const [editInitialSettings, setEditInitialSettings] = useState<any>(undefined);
   const [editInitialManualQuestions, setEditInitialManualQuestions] = useState<Question[] | undefined>(undefined);
+  const [editInitialKnowledgeBaseId, setEditInitialKnowledgeBaseId] = useState<string | null | undefined>(undefined);
+  const [newTestChapterPickerOpen, setNewTestChapterPickerOpen] = useState(false);
+  const [pendingNewTestKind, setPendingNewTestKind] = useState<'paper' | 'online' | null>(null);
 
   const loadProfileAndOrg = async (user: { id: string; email?: string | null }) => {
     const email = user.email ?? '';
@@ -502,24 +506,39 @@ const Quiz: React.FC = () => {
     }
   };
 
-  const handleStartTestCreator = (folderId: string | null) => { 
+  const handleStartTestCreator = (folderId: string | null) => {
       setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
+      setEditInitialKnowledgeBaseId(undefined);
       setEditingTestId(null); setCreatorFolderId(folderId);
       setIsForging(false); setForgeStep(''); setForgeError(null);
       setForgedResult(null); setOnlineExamResult(null);
-      setIsCreatorOpen(true); 
+      setPendingNewTestKind('paper');
+      setNewTestChapterPickerOpen(true);
   };
-  const handleStartOnlineExamCreator = (folderId: string | null) => { 
+  const handleStartOnlineExamCreator = (folderId: string | null) => {
       setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
+      setEditInitialKnowledgeBaseId(undefined);
       setEditingTestId(null); setCreatorFolderId(folderId);
       setIsForging(false); setForgeStep(''); setForgeError(null);
       setForgedResult(null); setOnlineExamResult(null);
-      setIsOnlineExamCreatorOpen(true); 
+      setPendingNewTestKind('online');
+      setNewTestChapterPickerOpen(true);
+  };
+
+  const handleNewTestChaptersConfirm = (chapters: SelectedChapter[], knowledgeBaseId: string) => {
+      setNewTestChapterPickerOpen(false);
+      const kind = pendingNewTestKind;
+      setPendingNewTestKind(null);
+      setEditInitialChapters(chapters);
+      setEditInitialKnowledgeBaseId(knowledgeBaseId);
+      if (kind === 'paper') setIsCreatorOpen(true);
+      else if (kind === 'online') setIsOnlineExamCreatorOpen(true);
   };
 
   const handleEditBlueprint = (questions: Question[]) => {
     if (forgedResult?.sourceOptions) {
         const options = forgedResult.sourceOptions;
+        setEditInitialKnowledgeBaseId(options.knowledgeBaseId ?? undefined);
         setEditInitialChapters(options.chapters);
         setEditInitialTopic(options.topic);
         setEditInitialManualQuestions(questions);
@@ -529,6 +548,7 @@ const Quiz: React.FC = () => {
             selectionMode: options.selectionMode || (options.manualQuestions && options.manualQuestions.length > 0 ? 'manual' : 'auto')
         });
     } else {
+        setEditInitialKnowledgeBaseId(undefined);
         const chaptersMap = new Map<string, SelectedChapter>();
         questions.forEach(q => {
             if (!q.sourceChapterId) return;
@@ -842,6 +862,7 @@ const Quiz: React.FC = () => {
               setIsCreatorOpen(false); setEditingTestId(test.id); setCreatorFolderId(test.folder_id); setEditInitialTopic(test.name);
               const options = test.config?.sourceOptions || test.config;
               if (options) {
+                  setEditInitialKnowledgeBaseId(options.knowledgeBaseId ?? undefined);
                   setEditInitialChapters(options.chapters); setEditInitialManualQuestions(test.questions || options.manualQuestions);
                   setEditInitialSettings({ totalQuestions: options.totalQuestions, globalDiff: options.globalDifficultyMix || options.globalDiff, globalTypes: options.globalTypeMix || options.globalTypes, useGlobalDifficulty: options.useGlobalDifficulty, globalFigureCount: options.globalFigureCount, selectionMode: options.selectionMode || (options.manualQuestions ? 'manual' : 'auto') });
                   if (options.mode === 'online-exam' || test.config.mode === 'online-exam') setIsOnlineExamCreatorOpen(true); else setIsCreatorOpen(true);
@@ -1078,6 +1099,15 @@ const Quiz: React.FC = () => {
           />
       )}
 
+      <NewTestChapterPickerModal
+          open={newTestChapterPickerOpen}
+          onClose={() => {
+              setNewTestChapterPickerOpen(false);
+              setPendingNewTestKind(null);
+          }}
+          onConfirm={handleNewTestChaptersConfirm}
+      />
+
       {isCreatorOpen && (
           <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden bg-white">
               {forgeError && (
@@ -1087,7 +1117,7 @@ const Quiz: React.FC = () => {
                   </div>
               )}
               <div className="min-h-0 flex-1">
-                  <TestCreatorView onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsCreatorOpen(false); }} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} />
+                  <TestCreatorView onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsCreatorOpen(false); setEditInitialKnowledgeBaseId(undefined); }} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialKnowledgeBaseId={editInitialKnowledgeBaseId ?? null} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} />
               </div>
           </div>
       )}
@@ -1102,7 +1132,7 @@ const Quiz: React.FC = () => {
               )}
               <div className="min-h-0 flex-1">
                   <TestCreatorView 
-                      onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsOnlineExamCreatorOpen(false); }} 
+                      onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsOnlineExamCreatorOpen(false); setEditInitialKnowledgeBaseId(undefined); }} 
                       onSaveDraft={handleSaveDraft}
                       onStart={async (opts) => {
                           setForgeError(null);
@@ -1119,6 +1149,7 @@ const Quiz: React.FC = () => {
                       isLoading={isForging} 
                       loadingStep={forgeStep} 
                       initialChapters={editInitialChapters} 
+                      initialKnowledgeBaseId={editInitialKnowledgeBaseId ?? null}
                       initialTopic={editInitialTopic} 
                       initialManualQuestions={editInitialManualQuestions}
                   />

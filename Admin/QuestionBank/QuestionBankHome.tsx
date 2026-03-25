@@ -53,6 +53,13 @@ interface ChapterConfig {
     isProportional: boolean;
 }
 
+interface GraphNode {
+  id: string;
+  label: string;
+  kind: 'kb' | 'class' | 'chapter';
+  count: number;
+}
+
 const COST_ESTIMATES = {
   'gemini-3-pro-preview': 4.50, 
   'gemini-3-flash-preview': 0.15,
@@ -69,7 +76,7 @@ const QuestionBankHome: React.FC = () => {
   const [activeEditingChapterId, setActiveEditingChapterId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3-pro-preview');
   
-  const [mode, setMode] = useState<'browse' | 'studio' | 'review'>('browse');
+  const [mode, setMode] = useState<'browse' | 'studio' | 'review' | 'graph'>('browse');
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [reviewQueue, setReviewQueue] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -78,6 +85,11 @@ const QuestionBankHome: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false); 
   const [isForgingBatch, setIsForgingBatch] = useState(false); 
   const [chapterSearch, setChapterSearch] = useState('');
+
+  // Sidebar filters for faster chapter targeting.
+  // Applies in both "Browse Repository" and "Neural Studio" modes.
+  const [selectedClassFilters, setSelectedClassFilters] = useState<Set<string>>(new Set());
+  const [selectedSubjectFilters, setSelectedSubjectFilters] = useState<Set<string>>(new Set());
   
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const stopForgingRef = useRef(false);
@@ -112,6 +124,8 @@ const QuestionBankHome: React.FC = () => {
   const [bankUserId, setBankUserId] = useState<string | null>(null);
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
   const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
+  const [graphPositions, setGraphPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
 
   const statsCache = useRef<Record<string, { data: Record<string, ChapterStats>, timestamp: number }>>({});
 
@@ -171,6 +185,12 @@ const QuestionBankHome: React.FC = () => {
 
   useEffect(() => {
       if (selectedKbId) fetchChapters(selectedKbId);
+  }, [selectedKbId]);
+
+  useEffect(() => {
+    // Reset filters when switching knowledge base.
+    setSelectedClassFilters(new Set());
+    setSelectedSubjectFilters(new Set());
   }, [selectedKbId]);
 
   // ... (Configs and Chat effects remain same) ...
@@ -513,7 +533,40 @@ const QuestionBankHome: React.FC = () => {
     try { const { data: blob } = await supabase.storage.from('chapters').download(chapter.doc_path); if (!blob) throw new Error(); const arrayBuffer = await blob.arrayBuffer(); const result = await (window as any).mammoth.convertToHtml({ arrayBuffer }); setDocViewer({ html: result.value, name: chapter.name }); } catch (e) { alert("Render failed."); } finally { setIsSaving(false); setForgeProgress(''); }
   };
 
-  const filteredSidebarChapters = useMemo(() => !chapterSearch.trim() ? chapters : chapters.filter(c => c.name.toLowerCase().includes(chapterSearch.toLowerCase())), [chapters, chapterSearch]);
+  const classFilterOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    chapters.forEach((c: any) => {
+      const v = String(c.class_name || 'Unassigned');
+      counts.set(v, (counts.get(v) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 12);
+  }, [chapters]);
+
+  const subjectFilterOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    chapters.forEach((c: any) => {
+      const v = String(c.subject_name || 'Unassigned');
+      counts.set(v, (counts.get(v) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 12);
+  }, [chapters]);
+
+  const filteredSidebarChapters = useMemo(() => {
+    const q = chapterSearch.trim().toLowerCase();
+    let base = !q ? chapters : chapters.filter(c => String(c.name || '').toLowerCase().includes(q));
+
+    if (selectedClassFilters.size > 0) {
+      base = base.filter(c => selectedClassFilters.has(String(c.class_name || 'Unassigned')));
+    }
+    if (selectedSubjectFilters.size > 0) {
+      base = base.filter(c => selectedSubjectFilters.has(String(c.subject_name || 'Unassigned')));
+    }
+    return base;
+  }, [chapters, chapterSearch, selectedClassFilters, selectedSubjectFilters]);
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const displayQuestions = mode === 'review' ? reviewQueue : questions;
 
@@ -700,6 +753,116 @@ const QuestionBankHome: React.FC = () => {
                             className="w-full rounded-xl border border-zinc-200 bg-white py-2.5 pl-9 pr-3 text-[10px] font-black uppercase shadow-sm outline-none focus:border-indigo-500"
                         />
                     </div>
+
+                    {(mode === 'browse' || mode === 'studio') && (
+                      <div className="space-y-2">
+                        <div>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Class</span>
+                            {selectedClassFilters.size > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedClassFilters(new Set())}
+                                className="text-[7px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedClassFilters(new Set())}
+                              className={`px-2 py-1 rounded-full border text-[7px] font-black uppercase tracking-widest ${
+                                selectedClassFilters.size === 0
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'
+                              }`}
+                            >
+                              All
+                            </button>
+                            {classFilterOptions.map(([cls, cnt]) => {
+                              const active = selectedClassFilters.has(cls);
+                              return (
+                                <button
+                                  key={cls}
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedClassFilters(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(cls)) next.delete(cls);
+                                      else next.add(cls);
+                                      return next;
+                                    })
+                                  }
+                                  className={`px-2 py-1 rounded-full border text-[7px] font-black uppercase tracking-widest ${
+                                    active
+                                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                                      : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'
+                                  }`}
+                                  title={`${cls} (${cnt} chapters)`}
+                                >
+                                  {cls}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Subject</span>
+                            {selectedSubjectFilters.size > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedSubjectFilters(new Set())}
+                                className="text-[7px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSubjectFilters(new Set())}
+                              className={`px-2 py-1 rounded-full border text-[7px] font-black uppercase tracking-widest ${
+                                selectedSubjectFilters.size === 0
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'
+                              }`}
+                            >
+                              All
+                            </button>
+                            {subjectFilterOptions.map(([sub, cnt]) => {
+                              const active = selectedSubjectFilters.has(sub);
+                              return (
+                                <button
+                                  key={sub}
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedSubjectFilters(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(sub)) next.delete(sub);
+                                      else next.add(sub);
+                                      return next;
+                                    })
+                                  }
+                                  className={`px-2 py-1 rounded-full border text-[7px] font-black uppercase tracking-widest ${
+                                    active
+                                      ? 'bg-amber-500 border-amber-500 text-white'
+                                      : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'
+                                  }`}
+                                  title={`${sub} (${cnt} chapters)`}
+                                >
+                                  {sub}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2 custom-scrollbar min-h-0">
                     {isFetching && chapters.length === 0 ? (

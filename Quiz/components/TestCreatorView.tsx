@@ -20,6 +20,8 @@ interface TestCreatorViewProps {
   isLoading: boolean;
   loadingStep?: string;
   initialChapters?: SelectedChapter[];
+  /** When opening from chapter picker, keep KB in sync with selected chapters */
+  initialKnowledgeBaseId?: string | null;
   initialTopic?: string;
   initialManualQuestions?: Question[];
 }
@@ -66,7 +68,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     onSaveDraft,
     isLoading, 
     loadingStep, 
-    initialChapters, 
+    initialChapters,
+    initialKnowledgeBaseId,
     initialTopic,
     initialManualQuestions
 }) => {
@@ -162,7 +165,11 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
             const { data } = await supabase.from('knowledge_bases').select('id, name');
             if (data?.length) {
                 setKbs(data);
-                setSelectedKb(data[0].id);
+                const preferred =
+                    initialKnowledgeBaseId && data.some((k) => k.id === initialKnowledgeBaseId)
+                        ? initialKnowledgeBaseId
+                        : data[0].id;
+                setSelectedKb(preferred);
                 const entries = await Promise.all(
                     data.map(async (kb) => {
                         const { count } = await supabase
@@ -175,8 +182,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                 setKbChapterCounts(Object.fromEntries(entries));
             }
         };
-        fetchKbs();
-    }, []);
+        void fetchKbs();
+    }, [initialKnowledgeBaseId]);
 
     useEffect(() => {
         if (!selectedKb) return;
