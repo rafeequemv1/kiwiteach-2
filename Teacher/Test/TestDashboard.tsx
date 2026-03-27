@@ -232,8 +232,11 @@ function addMonths(d: Date, delta: number): Date {
 const TestsCalendarDemo: React.FC<{
   tests: Test[];
   onTestClick: (t: Test) => void;
-}> = ({ tests, onTestClick }) => {
+  onAddAtDate: (dateISO: string) => void;
+  onDropToDate: (testId: string, dateISO: string) => void;
+}> = ({ tests, onTestClick, onAddAtDate, onDropToDate }) => {
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
+  const [dragOverDayKey, setDragOverDayKey] = useState<string | null>(null);
 
   const { label, weeks } = useMemo(() => {
     const y = cursor.getFullYear();
@@ -314,12 +317,53 @@ const TestsCalendarDemo: React.FC<{
                 return <div key={ci} className="min-h-[88px] border-r border-zinc-100 bg-zinc-50/30 last:border-r-0" />;
               }
               const list = testsByDay.get(dayKey(cell.date)) || [];
+              const key = dayKey(cell.date);
               return (
                 <div
                   key={ci}
-                  className="min-h-[88px] border-r border-zinc-100 bg-white p-1 last:border-r-0"
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverDayKey(key);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'move';
+                    setDragOverDayKey(key);
+                  }}
+                  onDragLeave={(e) => {
+                    const next = e.relatedTarget as Node | null;
+                    if (next && e.currentTarget.contains(next)) return;
+                    setDragOverDayKey((k) => (k === key ? null : k));
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const payload = parseTestDragPayload(e);
+                    setDragOverDayKey(null);
+                    if (!payload) return;
+                    onDropToDate(payload.id, cell.date!.toISOString().split('T')[0]);
+                  }}
+                  className={`min-h-[88px] border-r border-zinc-100 p-1 last:border-r-0 ${
+                    dragOverDayKey === key ? 'bg-sky-50 ring-1 ring-inset ring-sky-300' : 'bg-white'
+                  }`}
                 >
-                  <div className="text-right text-xs font-medium text-zinc-600">{cell.day}</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAddAtDate(cell.date!.toISOString().split('T')[0]);
+                      }}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded border border-zinc-200 bg-white text-zinc-500 hover:border-zinc-300 hover:text-zinc-800"
+                      title="Add test on this date"
+                      aria-label="Add test on this date"
+                    >
+                      +
+                    </button>
+                    <div className="text-right text-xs font-medium text-zinc-600">{cell.day}</div>
+                  </div>
                   <div className="mt-1 space-y-0.5">
                     {list.slice(0, 3).map(({ test: t, kind }) => {
                       const when = new Date(t.scheduledAt || t.generatedAt || '');
@@ -331,7 +375,12 @@ const TestsCalendarDemo: React.FC<{
                         <button
                           key={`${t.id}-${kind}`}
                           type="button"
-                          onClick={() => onTestClick(t)}
+                          draggable
+                          onDragStart={(e) => setTestDragPayload(e, t.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onTestClick(t);
+                          }}
                           className={`block w-full truncate rounded border px-1.5 py-0.5 text-left text-[10px] font-medium hover:bg-sky-50 ${
                             kind === 'scheduled'
                               ? 'border-sky-200 bg-sky-50/80 text-zinc-800 hover:border-sky-300'
@@ -398,6 +447,10 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   const [tempScheduleDate, setTempScheduleDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [dragOverParent, setDragOverParent] = useState(false);
+  const [editingTest, setEditingTest] = useState<Test | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editScheduleDate, setEditScheduleDate] = useState('');
+  const [editPendingEvaluation, setEditPendingEvaluation] = useState(false);
 
   useEffect(() => {
     if (schedulingTest) {
@@ -410,6 +463,14 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   useEffect(() => {
     if (assigningTest) setSelectedAssignmentIds(assigningTest.class_ids || []);
   }, [assigningTest]);
+
+  useEffect(() => {
+    if (!editingTest) return;
+    setEditName(editingTest.name || '');
+    const d = editingTest.scheduledAt ? new Date(editingTest.scheduledAt) : new Date();
+    setEditScheduleDate(!isNaN(d.getTime()) ? d.toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+    setEditPendingEvaluation(!!editingTest.evaluationPending);
+  }, [editingTest]);
 
   const displayedClasses = useMemo(() => {
     if (selectedInstituteId === 'all') return [];
@@ -509,6 +570,54 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     setDragOverParent(false);
   };
 
+  const applyStatusMove = async (test: Test, target: TestStatus) => {
+    if (target === 'pending_evaluation') {
+      if (onSetEvaluationPending && !test.evaluationPending) await onSetEvaluationPending(test.id, true);
+      return;
+    }
+
+    if (onSetEvaluationPending && test.evaluationPending) {
+      await onSetEvaluationPending(test.id, false);
+    }
+
+    if (target === 'scheduled') {
+      const date = test.scheduledAt ? new Date(test.scheduledAt) : new Date();
+      const iso = date.toISOString().split('T')[0];
+      setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
+      onScheduleTest(test.id, iso);
+      return;
+    }
+
+    if (target === 'completed') {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const iso = d.toISOString().split('T')[0];
+      setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
+      onScheduleTest(test.id, iso);
+      return;
+    }
+
+    if (target === 'generated') {
+      setOptimisticOverrides((o) => ({ ...o, [test.id]: null }));
+      onScheduleTest(test.id, null);
+      return;
+    }
+  };
+
+  const saveEditModal = async () => {
+    if (!editingTest) return;
+    const nextName = editName.trim();
+    if (nextName && nextName !== editingTest.name) onRenameTest(editingTest.id, nextName);
+    if (editScheduleDate) {
+      setOptimisticOverrides((o) => ({ ...o, [editingTest.id]: new Date(editScheduleDate).toISOString() }));
+      onScheduleTest(editingTest.id, editScheduleDate);
+    }
+    if (onSetEvaluationPending && editPendingEvaluation !== !!editingTest.evaluationPending) {
+      await onSetEvaluationPending(editingTest.id, editPendingEvaluation);
+    }
+    setEditingTest(null);
+  };
+
   const confirmAssignment = async () => {
     if (!assigningTest) return;
     setIsAssigningSaving(true);
@@ -532,6 +641,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
 
   const testKebabItems = (test: Test, status: TestStatus, setIsRenaming: (v: boolean) => void): MenuItem[] => {
     const items: MenuItem[] = [
+      { label: 'Edit details', icon: Pencil, onClick: () => setEditingTest(test) },
       { label: 'Rename', icon: Pencil, onClick: () => setIsRenaming(true) },
       { label: 'Duplicate', icon: Copy, onClick: () => onDuplicateTest(test) },
     ];
@@ -670,7 +780,20 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
         onClick={() => onTestClick(test)}
         className="cursor-grab active:cursor-grabbing rounded-sm border border-zinc-200 bg-zinc-50/80 px-2.5 py-2 text-left shadow-sm transition-colors hover:border-zinc-300 hover:bg-white"
       >
-        <p className="text-[13px] font-medium text-neutral-900 truncate">{test.name}</p>
+        <div className="flex items-start justify-between gap-2">
+          <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-neutral-900">{test.name}</p>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditingTest(test);
+            }}
+            className="rounded p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+            title="Edit"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <p className="text-[11px] text-neutral-500 mt-0.5">{test.questionCount} q · {statusLabel(status)}</p>
       </div>
     );
@@ -1003,14 +1126,31 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
 
         {viewMode === 'kanban' && (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 md:p-3">
-            <KanbanBoard tests={testsToDisplay} getTestStatus={getTestStatus} Card={KanbanMiniCard} />
+            <KanbanBoard
+              tests={testsToDisplay}
+              getTestStatus={getTestStatus}
+              Card={KanbanMiniCard}
+              onDropToStatus={(testId, targetStatus) => {
+                const test = testsToDisplay.find((t) => t.id === testId);
+                if (!test) return;
+                void applyStatusMove(test, targetStatus);
+              }}
+            />
           </div>
         )}
 
         {viewMode === 'calendar' && (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3 md:p-4">
             <div className="mx-auto h-full min-h-[420px] w-full max-w-5xl">
-              <TestsCalendarDemo tests={testsToDisplay} onTestClick={onTestClick} />
+              <TestsCalendarDemo
+                tests={testsToDisplay}
+                onTestClick={onTestClick}
+                onAddAtDate={(dateISO) => onStartNewTest(currentFolderId, dateISO)}
+                onDropToDate={(testId, dateISO) => {
+                  setOptimisticOverrides((o) => ({ ...o, [testId]: new Date(dateISO).toISOString() }));
+                  onScheduleTest(testId, dateISO);
+                }}
+              />
             </div>
           </div>
         )}
@@ -1113,6 +1253,60 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
         </div>
       )}
 
+      {editingTest && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/35 backdrop-blur-sm">
+          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-xl">
+            <h3 className="text-[17px] font-semibold text-neutral-900">Edit test details</h3>
+            <div className="mt-4 space-y-3">
+              <label className="block">
+                <span className="text-[12px] font-medium text-zinc-600">Name</span>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-[15px]"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[12px] font-medium text-zinc-600">Schedule date</span>
+                <input
+                  type="date"
+                  value={editScheduleDate}
+                  onChange={(e) => setEditScheduleDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-[15px]"
+                />
+              </label>
+              {onSetEvaluationPending && (
+                <label className="mt-1 inline-flex items-center gap-2 text-[13px] text-zinc-700">
+                  <input
+                    type="checkbox"
+                    checked={editPendingEvaluation}
+                    onChange={(e) => setEditPendingEvaluation(e.target.checked)}
+                  />
+                  Pending evaluation
+                </label>
+              )}
+            </div>
+            <div className="flex gap-2 justify-end mt-6">
+              <button
+                type="button"
+                onClick={() => setEditingTest(null)}
+                className="rounded-full px-4 py-2 text-[15px] font-medium text-neutral-600 hover:bg-neutral-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveEditModal()}
+                className="rounded-full px-5 py-2 text-[15px] font-semibold text-white bg-neutral-900"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {assigningTest && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/35 backdrop-blur-sm">
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-xl flex flex-col max-h-[85vh]">
@@ -1179,7 +1373,8 @@ const KanbanBoard: React.FC<{
   tests: Test[];
   getTestStatus: (t: Test) => TestStatus;
   Card: React.FC<{ test: Test }>;
-}> = ({ tests, getTestStatus, Card }) => {
+  onDropToStatus: (testId: string, status: TestStatus) => void;
+}> = ({ tests, getTestStatus, Card, onDropToStatus }) => {
   const columns = useMemo(() => {
     const cols: Record<TestStatus, Test[]> = {
       draft: [],
@@ -1210,6 +1405,18 @@ const KanbanBoard: React.FC<{
         return (
           <div
             key={key}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const payload = parseTestDragPayload(e);
+              if (!payload) return;
+              onDropToStatus(payload.id, key);
+            }}
             className="flex min-h-0 min-w-[160px] flex-1 flex-col border-r border-zinc-200 bg-white last:border-r-0"
           >
             <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 bg-zinc-50 px-3 py-2">

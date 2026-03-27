@@ -6,6 +6,7 @@ import {
   fetchSuggestedTopicLabelsForChapter,
   fetchTopicExclusions,
   insertTopicExclusion,
+  updateTopicExclusion,
   type TopicExclusionRow,
 } from '../../services/syllabusService';
 
@@ -22,9 +23,16 @@ const TopicExclusionsManager: React.FC = () => {
   const [topicLabel, setTopicLabel] = useState('');
   const [note, setNote] = useState('');
   const [rows, setRows] = useState<TopicExclusionRow[]>([]);
+  const [kbNameById, setKbNameById] = useState<Record<string, string>>({});
+  const [classNameById, setClassNameById] = useState<Record<string, string>>({});
+  const [subjectNameById, setSubjectNameById] = useState<Record<string, string>>({});
+  const [chapterNameById, setChapterNameById] = useState<Record<string, string>>({});
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTopicLabel, setEditTopicLabel] = useState('');
+  const [editNote, setEditNote] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -40,6 +48,39 @@ const TopicExclusionsManager: React.FC = () => {
     if (!userId) return;
     fetchTopicExclusions(supabase, userId).then(setRows).catch(console.error);
   }, [userId]);
+
+  useEffect(() => {
+    if (rows.length === 0) {
+      setKbNameById({});
+      setClassNameById({});
+      setSubjectNameById({});
+      setChapterNameById({});
+      return;
+    }
+    const kbIds = Array.from(new Set(rows.map((r) => r.knowledge_base_id).filter(Boolean))) as string[];
+    const classIds = Array.from(new Set(rows.map((r) => r.kb_class_id).filter(Boolean))) as string[];
+    const subjectIds = Array.from(new Set(rows.map((r) => r.subject_id).filter(Boolean))) as string[];
+    const chapterIds = Array.from(new Set(rows.map((r) => r.chapter_id).filter(Boolean))) as string[];
+
+    (async () => {
+      if (kbIds.length) {
+        const { data } = await supabase.from('knowledge_bases').select('id, name').in('id', kbIds);
+        setKbNameById(Object.fromEntries((data || []).map((x: any) => [x.id, x.name])));
+      }
+      if (classIds.length) {
+        const { data } = await supabase.from('kb_classes').select('id, name').in('id', classIds);
+        setClassNameById(Object.fromEntries((data || []).map((x: any) => [x.id, x.name])));
+      }
+      if (subjectIds.length) {
+        const { data } = await supabase.from('subjects').select('id, name').in('id', subjectIds);
+        setSubjectNameById(Object.fromEntries((data || []).map((x: any) => [x.id, x.name])));
+      }
+      if (chapterIds.length) {
+        const { data } = await supabase.from('chapters').select('id, name').in('id', chapterIds);
+        setChapterNameById(Object.fromEntries((data || []).map((x: any) => [x.id, x.name])));
+      }
+    })();
+  }, [rows]);
 
   useEffect(() => {
     if (!kbId) {
@@ -117,6 +158,36 @@ const TopicExclusionsManager: React.FC = () => {
     if (!userId || !confirm('Remove this exclusion?')) return;
     await deleteTopicExclusion(supabase, id, userId);
     setRows((r) => r.filter((x) => x.id !== id));
+  };
+
+  const beginEdit = (r: TopicExclusionRow) => {
+    setEditingId(r.id);
+    setEditTopicLabel(r.topic_label || '');
+    setEditNote(r.note || '');
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditTopicLabel('');
+    setEditNote('');
+  };
+
+  const saveEdit = async (id: string) => {
+    if (!userId || !editTopicLabel.trim()) return;
+    setSaving(true);
+    try {
+      await updateTopicExclusion(supabase, id, userId, {
+        topic_label: editTopicLabel.trim(),
+        note: editNote.trim() || null,
+      });
+      const next = await fetchTopicExclusions(supabase, userId);
+      setRows(next);
+      cancelEdit();
+    } catch (err: any) {
+      alert(err.message || 'Update failed');
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (loading) {
@@ -265,30 +336,82 @@ const TopicExclusionsManager: React.FC = () => {
             <li className="px-8 py-10 text-center text-xs text-slate-400 font-bold">No exclusions yet.</li>
           )}
           {rows.map((r) => {
-            const rowKb =
-              (r.knowledge_base_id && kbList.find((k) => k.id === r.knowledge_base_id)?.name) || null;
-            const scopeBits = [
-              rowKb ? `KB: ${rowKb}` : 'KB: any',
-              r.kb_class_id ? 'Class' : null,
-              r.subject_id ? 'Subject' : null,
-              r.chapter_id ? 'Chapter' : null,
-            ].filter(Boolean);
+            const rowKb = r.knowledge_base_id ? kbNameById[r.knowledge_base_id] || 'Unknown KB' : null;
+            const rowClass = r.kb_class_id ? classNameById[r.kb_class_id] || 'Unknown class' : null;
+            const rowSubject = r.subject_id ? subjectNameById[r.subject_id] || 'Unknown subject' : null;
+            const rowChapter = r.chapter_id ? chapterNameById[r.chapter_id] || 'Unknown chapter' : null;
             return (
             <li key={r.id} className="px-8 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <p className="text-sm font-black text-slate-800">{r.topic_label}</p>
-                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mt-1">
-                  {scopeBits.join(' · ')}
-                </p>
-                {r.note && <p className="text-xs text-slate-500 mt-1">{r.note}</p>}
+              <div className="min-w-0">
+                {editingId === r.id ? (
+                  <div className="space-y-2">
+                    <input
+                      value={editTopicLabel}
+                      onChange={(e) => setEditTopicLabel(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:border-indigo-400"
+                    />
+                    <input
+                      value={editNote}
+                      onChange={(e) => setEditNote(e.target.value)}
+                      placeholder="Note (optional)"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:border-indigo-400"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => saveEdit(r.id)}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-[10px] font-black uppercase"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm font-black text-slate-800">{r.topic_label}</p>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200">
+                        KB: {rowKb || 'Any'}
+                      </span>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100">
+                        Class: {rowClass || 'Any'}
+                      </span>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-cyan-50 text-cyan-700 border border-cyan-100">
+                        Subject: {rowSubject || 'Any'}
+                      </span>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-100">
+                        Chapter: {rowChapter || 'Any'}
+                      </span>
+                    </div>
+                    {r.note && <p className="text-xs text-slate-500 mt-1">{r.note}</p>}
+                  </>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => handleDelete(r.id)}
-                className="text-rose-500 text-[10px] font-black uppercase shrink-0"
-              >
-                Remove
-              </button>
+              {editingId !== r.id && (
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => beginEdit(r)}
+                    className="text-indigo-500 text-[10px] font-black uppercase"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(r.id)}
+                    className="text-rose-500 text-[10px] font-black uppercase"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
             </li>
           );
           })}

@@ -210,6 +210,22 @@ export async function deleteTopicExclusion(client: SupabaseClient, id: string, u
   if (error) throw error;
 }
 
+export async function updateTopicExclusion(
+  client: SupabaseClient,
+  id: string,
+  userId: string,
+  patch: {
+    topic_label?: string;
+    note?: string | null;
+  }
+): Promise<void> {
+  const updateRow: Record<string, unknown> = {};
+  if (typeof patch.topic_label === 'string') updateRow.topic_label = patch.topic_label.trim();
+  if (patch.note !== undefined) updateRow.note = patch.note ? patch.note : null;
+  const { error } = await client.from('question_topic_exclusions').update(updateRow).eq('id', id).eq('user_id', userId);
+  if (error) throw error;
+}
+
 /** Optional: suggest topic strings from syllabus rows for a chapter id (uses chapter name from DB). */
 export async function fetchSuggestedTopicLabelsForChapter(
   client: SupabaseClient,
