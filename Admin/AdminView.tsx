@@ -19,6 +19,7 @@ import PYQManager from './PYQ/PYQManager';
 import ReferenceQuestionsManager from './ReferenceQuestions/ReferenceQuestionsManager';
 import KnowledgeBaseAccessManager from './KnowledgeSource/KnowledgeBaseAccessManager';
 import PlatformBrandingPanel from './PlatformBranding/PlatformBrandingPanel';
+import ExamPaperHome from './ExamPaper/ExamPaperHome';
 import type { AppRole } from '../auth/roles';
 
 type AdminSection =
@@ -38,7 +39,8 @@ type AdminSection =
   | 'syllabus'
   | 'quality-lab'
   | 'omr-lab'
-  | 'platform-branding';
+  | 'platform-branding'
+  | 'exam-paper';
 
 interface AdminViewProps {
   appRole: AppRole;
@@ -139,6 +141,11 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     subtitle: 'KiwiTeach colors, typography, and button styles',
     icon: 'mdi:palette-swatch-outline',
   },
+  'exam-paper': {
+    title: 'Exam Paper',
+    subtitle: 'Blueprints: totals, styles, subjects, chapters, figures — per knowledge base',
+    icon: 'mdi:file-chart-outline',
+  },
 };
 
 /** Full-height tools with their own chrome */
@@ -191,6 +198,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
   const isTeacher = appRole === 'teacher';
   const canUseSyllabusHub = isDeveloper || isSchoolAdmin || isTeacher;
   const canManagePlatformBranding = isDeveloper || isSchoolAdmin;
+  const canManageExamPapers = isDeveloper || isSchoolAdmin;
 
   const fallbackSection: AdminSection = isDeveloper || isSchoolAdmin ? 'institutes' : 'syllabus';
 
@@ -275,30 +283,177 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         ) : (
           <p className="p-6 text-sm text-zinc-600">Branding is only available to administrators.</p>
         );
+      case 'exam-paper':
+        return canManageExamPapers ? (
+          <ExamPaperHome userId={userId} />
+        ) : (
+          <p className="p-6 text-sm text-zinc-600">Exam paper blueprints are only available to administrators.</p>
+        );
     }
   };
 
   const navActive = (s: AdminSection) =>
     activeSection === s || (s === 'knowledge-source' && activeSection === 'kb-explorer');
 
-  const navBtn = (id: AdminSection, label: string, icon: string) => {
-    const active = navActive(id);
+  type NavEntry = { id: AdminSection; label: string; icon: string; mobileLabel?: string };
+
+  const navBtn = (entry: NavEntry, layout: 'sidebar' | 'chip') => {
+    const active = navActive(entry.id);
+    const label = layout === 'chip' && entry.mobileLabel ? entry.mobileLabel : entry.label;
+    const isChip = layout === 'chip';
     return (
       <button
         type="button"
-        onClick={() => setActiveSection(id)}
-        title={label}
-        className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${navCollapsed ? 'justify-center gap-0' : 'gap-2.5'} ${
-          active
-            ? 'bg-zinc-900 text-white shadow-sm'
-            : 'text-zinc-600 hover:bg-zinc-100/90'
-        }`}
+        onClick={() => setActiveSection(entry.id)}
+        title={entry.label}
+        className={
+          isChip
+            ? `flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-colors ${
+                active ? 'bg-zinc-900 text-white shadow-sm' : 'border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50'
+              }`
+            : `flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${navCollapsed ? 'justify-center gap-0' : 'gap-2.5'} ${
+                active ? 'bg-zinc-900 text-white shadow-sm' : 'text-zinc-600 hover:bg-zinc-100/90'
+              }`
+        }
       >
-        <iconify-icon icon={icon} className="h-5 w-5 shrink-0 opacity-90" />
-        {!navCollapsed && <span className="font-medium">{label}</span>}
+        <iconify-icon icon={entry.icon} className={`shrink-0 opacity-90 ${isChip ? 'h-4 w-4' : 'h-5 w-5'}`} />
+        {(!navCollapsed || isChip) && <span className="font-medium whitespace-nowrap">{label}</span>}
       </button>
     );
   };
+
+  type NavGroupDef = { title: string; items: Array<NavEntry & { show: boolean }> };
+
+  const navGroups: NavGroupDef[] = useMemo(
+    () => [
+      {
+        title: 'Organization',
+        items: [
+          { id: 'institutes', label: 'Business', icon: 'mdi:briefcase-outline', show: isDeveloper || isSchoolAdmin },
+          {
+            id: 'platform-branding',
+            label: 'Branding',
+            icon: 'mdi:palette-swatch-outline',
+            mobileLabel: 'Brand',
+            show: canManagePlatformBranding,
+          },
+          {
+            id: 'exam-paper',
+            label: 'Exam Paper',
+            icon: 'mdi:file-chart-outline',
+            mobileLabel: 'Exam',
+            show: canManageExamPapers,
+          },
+        ],
+      },
+      {
+        title: 'Curriculum',
+        items: [
+          {
+            id: 'syllabus',
+            label: 'Syllabus & exclusions',
+            icon: 'mdi:book-education-outline',
+            mobileLabel: 'Syllabus',
+            show: canUseSyllabusHub,
+          },
+          { id: 'flags', label: 'Flags', icon: 'mdi:flag-outline', show: isDeveloper || isSchoolAdmin },
+        ],
+      },
+      {
+        title: 'People & access',
+        items: [
+          { id: 'users', label: 'Users', icon: 'mdi:account-cog-outline', show: isDeveloper },
+          {
+            id: 'roles',
+            label: 'Roles & permissions',
+            icon: 'mdi:shield-account-outline',
+            mobileLabel: 'Roles',
+            show: isDeveloper,
+          },
+          {
+            id: 'subscriptions',
+            label: 'Subscriptions',
+            icon: 'mdi:ticket-percent-outline',
+            mobileLabel: 'Subs',
+            show: isDeveloper,
+          },
+          {
+            id: 'knowledge-access',
+            label: 'Knowledge Access',
+            icon: 'mdi:key-outline',
+            mobileLabel: 'KB Access',
+            show: isDeveloper,
+          },
+        ],
+      },
+      {
+        title: 'Libraries',
+        items: [
+          {
+            id: 'pyq',
+            label: 'PYQ Upload',
+            icon: 'mdi:file-upload-outline',
+            mobileLabel: 'PYQ',
+            show: isDeveloper,
+          },
+          {
+            id: 'reference-questions',
+            label: 'Reference Qs',
+            icon: 'mdi:book-check-outline',
+            mobileLabel: 'Ref Qs',
+            show: isDeveloper,
+          },
+          {
+            id: 'knowledge-source',
+            label: 'Knowledge',
+            icon: 'mdi:book-open-variant',
+            show: isDeveloper,
+          },
+          {
+            id: 'question-db',
+            label: 'Question DB',
+            icon: 'mdi:database-search-outline',
+            mobileLabel: 'QDB',
+            show: isDeveloper,
+          },
+        ],
+      },
+      {
+        title: 'AI & labs',
+        items: [
+          { id: 'prompts', label: 'Prompts', icon: 'mdi:console', show: isDeveloper },
+          {
+            id: 'lab',
+            label: 'Batch Forge',
+            icon: 'mdi:factory',
+            mobileLabel: 'Forge',
+            show: isDeveloper,
+          },
+          {
+            id: 'quality-lab',
+            label: 'Quality Lab',
+            icon: 'mdi:matrix',
+            mobileLabel: 'Quality',
+            show: isDeveloper,
+          },
+          {
+            id: 'omr-lab',
+            label: 'OMR Lab',
+            icon: 'mdi:flask-outline',
+            mobileLabel: 'OMR',
+            show: isDeveloper,
+          },
+        ],
+      },
+    ],
+    [
+      isDeveloper,
+      isSchoolAdmin,
+      canManagePlatformBranding,
+      canManageExamPapers,
+      canUseSyllabusHub,
+    ]
+  );
 
   return (
     <div className={`${workspacePageClass} min-h-0 flex-1 overflow-hidden font-sans`}>
@@ -314,64 +469,66 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
       <div className="min-h-0 flex-1 overflow-hidden">
         <div className="flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-0 md:px-8 md:py-5">
           <nav
-            className={`hidden shrink-0 flex-col gap-0.5 pr-4 md:flex md:border-r md:border-zinc-200/90 ${navCollapsed ? 'w-[72px]' : 'w-[220px]'}`}
+            className={`hidden min-h-0 shrink-0 flex-col pr-4 md:flex md:border-r md:border-zinc-200/90 ${navCollapsed ? 'w-[72px]' : 'w-[220px]'}`}
             aria-label="Admin sections"
           >
             <div className="mb-2 flex items-center justify-between">
-              {!navCollapsed && <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Sections</p>}
+              {!navCollapsed && <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Navigate</p>}
               <button
                 type="button"
                 onClick={() => setNavCollapsed((v) => !v)}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50"
+                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50 ${navCollapsed ? 'mx-auto' : ''}`}
                 title={navCollapsed ? 'Expand menu' : 'Collapse menu'}
               >
                 <iconify-icon icon={navCollapsed ? 'mdi:chevron-right' : 'mdi:chevron-left'} />
               </button>
             </div>
-            {(isDeveloper || isSchoolAdmin) && navBtn('institutes', 'Business', 'mdi:briefcase-outline')}
-            {canManagePlatformBranding && navBtn('platform-branding', 'Branding', 'mdi:palette-swatch-outline')}
-            {(isDeveloper || isSchoolAdmin) && navBtn('flags', 'Flags', 'mdi:flag-outline')}
-            {canUseSyllabusHub && navBtn('syllabus', 'Syllabus & exclusions', 'mdi:book-education-outline')}
-            {isDeveloper && (
-              <>
-                {navBtn('users', 'Users', 'mdi:account-cog-outline')}
-                {navBtn('roles', 'Roles & permissions', 'mdi:shield-account-outline')}
-                {navBtn('subscriptions', 'Subscriptions', 'mdi:ticket-percent-outline')}
-                {navBtn('knowledge-access', 'Knowledge Access', 'mdi:key-outline')}
-                {navBtn('pyq', 'PYQ Upload', 'mdi:file-upload-outline')}
-                {navBtn('reference-questions', 'Reference Qs', 'mdi:book-check-outline')}
-                {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
-                {navBtn('question-db', 'Question DB', 'mdi:database-search-outline')}
-                {navBtn('prompts', 'Prompts', 'mdi:console')}
-                {navBtn('lab', 'Batch Forge', 'mdi:factory')}
-                {navBtn('quality-lab', 'Quality Lab', 'mdi:matrix')}
-                {navBtn('omr-lab', 'OMR Lab', 'mdi:flask-outline')}
-              </>
-            )}
+            <div className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto pb-2">
+              {navGroups
+                .map((group) => ({ group, visible: group.items.filter((i) => i.show) }))
+                .filter((x) => x.visible.length > 0)
+                .map(({ group, visible }, idx) => (
+                  <div
+                    key={group.title}
+                    className={
+                      navCollapsed
+                        ? idx > 0
+                          ? 'mt-2 border-t border-zinc-200/90 pt-2'
+                          : ''
+                        : 'mb-4 last:mb-0'
+                    }
+                  >
+                    {!navCollapsed && (
+                      <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">{group.title}</p>
+                    )}
+                    <div className="flex flex-col gap-0.5">
+                      {visible.map(({ show: _s, ...entry }) => (
+                        <React.Fragment key={entry.id}>{navBtn(entry, 'sidebar')}</React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+            </div>
           </nav>
 
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto pb-1 md:hidden px-1">
-            <span className="shrink-0 pr-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Go to</span>
-            {(isDeveloper || isSchoolAdmin) && navBtn('institutes', 'Business', 'mdi:briefcase-outline')}
-            {canManagePlatformBranding && navBtn('platform-branding', 'Branding', 'mdi:palette-swatch-outline')}
-            {(isDeveloper || isSchoolAdmin) && navBtn('flags', 'Flags', 'mdi:flag-outline')}
-            {canUseSyllabusHub && navBtn('syllabus', 'Syllabus', 'mdi:book-education-outline')}
-            {isDeveloper && (
-              <>
-                {navBtn('users', 'Users', 'mdi:account-cog-outline')}
-                {navBtn('roles', 'Roles', 'mdi:shield-account-outline')}
-                {navBtn('subscriptions', 'Subscriptions', 'mdi:ticket-percent-outline')}
-                {navBtn('knowledge-access', 'KB Access', 'mdi:key-outline')}
-                {navBtn('pyq', 'PYQ', 'mdi:file-upload-outline')}
-                {navBtn('reference-questions', 'Ref Qs', 'mdi:book-check-outline')}
-                {navBtn('knowledge-source', 'Knowledge', 'mdi:book-open-variant')}
-                {navBtn('question-db', 'QDB', 'mdi:database-search-outline')}
-                {navBtn('prompts', 'Prompts', 'mdi:console')}
-                {navBtn('lab', 'Forge', 'mdi:factory')}
-                {navBtn('quality-lab', 'Quality', 'mdi:matrix')}
-                {navBtn('omr-lab', 'OMR', 'mdi:flask-outline')}
-              </>
-            )}
+          <div className="-mx-1 flex flex-col gap-2 pb-1 md:hidden px-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Go to</p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+              {navGroups.map((group) => {
+                const visible = group.items.filter((i) => i.show);
+                if (visible.length === 0) return null;
+                return (
+                  <div key={group.title} className="flex w-full min-w-0 flex-col gap-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-400">{group.title}</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {visible.map(({ show: _s, ...entry }) => (
+                        <React.Fragment key={entry.id}>{navBtn(entry, 'chip')}</React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

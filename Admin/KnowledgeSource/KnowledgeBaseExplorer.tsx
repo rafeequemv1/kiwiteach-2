@@ -1,5 +1,5 @@
 import '../../types';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
 // @ts-ignore
 import * as pdfjs from 'pdfjs-dist';
@@ -71,7 +71,10 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
   const [newItemNumber, setNewItemNumber] = useState<string>('');
   /** Biology-only: botany / zoology; empty string = unset (null in DB). */
   const [biologyBranchDraft, setBiologyBranchDraft] = useState<'' | BiologyBranch>('');
-  
+  /** Edit chapter: reassign class / subject (same KB). */
+  const [editChapterClassId, setEditChapterClassId] = useState('');
+  const [editChapterSubjectId, setEditChapterSubjectId] = useState('');
+
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [docFile, setDocFile] = useState<File | null>(null);
 
@@ -132,17 +135,36 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         if (renamingItem.type === 'chapter') {
           const b = renamingItem.item.biology_branch;
           setBiologyBranchDraft(b === 'botany' || b === 'zoology' ? b : '');
+          setEditChapterClassId(renamingItem.item.class_id || '');
+          setEditChapterSubjectId(renamingItem.item.subject_id || '');
         } else {
           setBiologyBranchDraft('');
+          setEditChapterClassId('');
+          setEditChapterSubjectId('');
         }
     } else if (activeModal === 'chapter') {
         setNewItemName('');
         setNewItemNumber('');
         setBiologyBranchDraft('');
+        setEditChapterClassId('');
+        setEditChapterSubjectId('');
         setPdfFile(null);
         setDocFile(null);
+    } else {
+        setEditChapterClassId('');
+        setEditChapterSubjectId('');
     }
   }, [renamingItem, activeModal]);
+
+  const editChapterSubjectsFiltered = useMemo(
+    () => subjects.filter((s) => s.class_id === editChapterClassId),
+    [subjects, editChapterClassId]
+  );
+
+  const editChapterResolvedSubjectName =
+    renamingItem?.type === 'chapter'
+      ? subjects.find((s) => s.id === editChapterSubjectId)?.name ?? renamingItem.item.subject_name
+      : '';
 
   const slugify = (text: string | null | undefined) => {
     if (!text) return 'unknown';
@@ -281,6 +303,21 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     const newName = newItemName.trim();
     const newNum = newItemNumber ? parseInt(newItemNumber) : null;
 
+    let chapterEditCls: ClassItem | undefined;
+    let chapterEditSub: Subject | undefined;
+    if (type === 'chapter') {
+      chapterEditCls = classes.find((x) => x.id === editChapterClassId);
+      chapterEditSub = subjects.find((x) => x.id === editChapterSubjectId);
+      if (!chapterEditCls || !chapterEditSub) {
+        alert('Select a class and a subject.');
+        return;
+      }
+      if (chapterEditSub.class_id !== chapterEditCls.id) {
+        alert('Selected subject does not belong to that class.');
+        return;
+      }
+    }
+
     try {
       if (type === 'class') {
         await Promise.all([
@@ -297,15 +334,42 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         ]);
         await fetchData();
         setSelectedSubject(prev => prev ? { ...prev, name: newName } : null);
-      } else if (type === 'chapter') {
-        const payload: Record<string, unknown> = { name: newName, chapter_number: newNum };
-        if (isBiologySubjectName(item.subject_name)) {
+      } else if (type === 'chapter' && chapterEditCls && chapterEditSub) {
+        const cls = chapterEditCls;
+        const sub = chapterEditSub;
+        const payload: Record<string, unknown> = {
+          name: newName,
+          chapter_number: newNum,
+          class_id: cls.id,
+          class_name: cls.name,
+          subject_id: sub.id,
+          subject_name: sub.name,
+          kb_name: kbName,
+        };
+        if (isBiologySubjectName(sub.name)) {
           payload.biology_branch = biologyBranchDraft || null;
+        } else {
+          payload.biology_branch = null;
         }
         await supabase.from('chapters').update(payload).eq('id', item.id);
         setChapters((prev) =>
           prev
-            .map((c) => (c.id === item.id ? { ...c, ...payload, name: newName, chapter_number: newNum ?? undefined } : c))
+            .map((c) =>
+              c.id === item.id
+                ? {
+                    ...c,
+                    ...payload,
+                    name: newName,
+                    chapter_number: newNum ?? undefined,
+                    class_id: cls.id,
+                    class_name: cls.name,
+                    subject_id: sub.id,
+                    subject_name: sub.name,
+                    kb_name: kbName,
+                    biology_branch: (payload.biology_branch as BiologyBranch | null) ?? null,
+                  }
+                : c
+            )
             .sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
         );
       }
@@ -600,8 +664,14 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
 
       {(activeModal || renamingItem) && (
         <div className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => { setActiveModal(null); setRenamingItem(null); }}>
-          <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200" onClick={e => e.stopPropagation()}>
-            <h3 className="text-sm font-black text-slate-800 mb-4 uppercase tracking-widest">{renamingItem ? `Edit ${renamingItem.type}` : `New ${activeModal}`}</h3>
+          <div className={`bg-white w-full ${renamingItem?.type === 'chapter' ? 'max-w-md' : 'max-w-sm'} rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200`} onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-black text-slate-800 mb-4 uppercase tracking-widest">
+              {renamingItem
+                ? renamingItem.type === 'chapter'
+                  ? 'Edit chapter'
+                  : `Edit ${renamingItem.type}`
+                : `New ${activeModal}`}
+            </h3>
             <form onSubmit={renamingItem ? handleUpdateName : handleAddItem} className="space-y-4">
               {(activeModal === 'chapter' || renamingItem?.type === 'chapter') && (
                 <div>
@@ -615,8 +685,52 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                    />
                 </div>
               )}
+              {renamingItem?.type === 'chapter' && (
+                <>
+                  <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Class</label>
+                    <select
+                      value={editChapterClassId}
+                      onChange={(e) => {
+                        setEditChapterClassId(e.target.value);
+                        setEditChapterSubjectId('');
+                      }}
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2.5 outline-none focus:border-accent font-bold text-sm text-slate-800"
+                    >
+                      <option value="">Select class…</option>
+                      {classes.map((cl) => (
+                        <option key={cl.id} value={cl.id}>
+                          {cl.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Subject</label>
+                    <select
+                      value={editChapterSubjectId}
+                      onChange={(e) => setEditChapterSubjectId(e.target.value)}
+                      disabled={!editChapterClassId || editChapterSubjectsFiltered.length === 0}
+                      className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2.5 outline-none focus:border-accent font-bold text-sm text-slate-800 disabled:opacity-50"
+                    >
+                      <option value="">
+                        {!editChapterClassId
+                          ? 'Select a class first…'
+                          : editChapterSubjectsFiltered.length === 0
+                            ? 'No subjects under this class'
+                            : 'Select subject…'}
+                      </option>
+                      {editChapterSubjectsFiltered.map((su) => (
+                        <option key={su.id} value={su.id}>
+                          {su.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
               {((activeModal === 'chapter' && selectedSubject && isBiologySubjectName(selectedSubject.name)) ||
-                (renamingItem?.type === 'chapter' && isBiologySubjectName(renamingItem.item.subject_name))) && (
+                (renamingItem?.type === 'chapter' && isBiologySubjectName(editChapterResolvedSubjectName))) && (
                 <div>
                   <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Biology stream</label>
                   <select
