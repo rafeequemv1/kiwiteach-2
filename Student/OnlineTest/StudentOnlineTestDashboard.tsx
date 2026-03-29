@@ -107,13 +107,13 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
                   >
                       <span className="inline-flex items-center justify-center gap-2">
                         <iconify-icon icon={solutionsReleased ? "mdi:book-open-variant" : "mdi:file-document-outline"} width="16"/>
-                        {solutionsReleased ? 'View solutions' : 'View paper'}
+                        {solutionsReleased ? 'View solutions' : 'View test'}
                       </span>
                   </button>
               ) : (
                   <button 
                     type="button"
-                    onClick={() => status === 'live' ? onTakeExam(test) : alert(status === 'upcoming' ? "This exam has not started yet." : "This exam has ended.")}
+                    onClick={() => status === 'live' ? onTakeExam(test) : alert(status === 'upcoming' ? "This test has not started yet." : "This test has ended.")}
                     className={`w-full rounded-md py-2.5 text-[10px] font-medium uppercase tracking-wide transition-colors ${
                         status === 'live' 
                         ? 'bg-emerald-600 text-white hover:bg-emerald-700' 
@@ -122,7 +122,7 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
                             : 'cursor-not-allowed border border-zinc-200 bg-zinc-100 text-zinc-400'
                     }`}
                   >
-                      {status === 'live' ? <span className="inline-flex items-center justify-center gap-2"><iconify-icon icon="mdi:play-circle-outline" width="16"/> Start exam</span> : 
+                      {status === 'live' ? <span className="inline-flex items-center justify-center gap-2"><iconify-icon icon="mdi:play-circle-outline" width="16"/> Start test</span> : 
                        status === 'upcoming' ? 'Not started yet' : 'Ended'}
                   </button>
               )}
@@ -133,22 +133,22 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
   return (
     <div className={`${workspacePageClass} w-full overflow-y-auto p-6 md:p-10 custom-scrollbar`}>
         <header className="mb-8 border-b border-zinc-200 pb-6">
-            <h1 className="text-xl font-semibold tracking-tight text-zinc-900">Online exams</h1>
-            <p className="mt-1 text-[13px] text-zinc-500">Exams assigned to your class. Results save when you submit.</p>
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-900">Online tests</h1>
+            <p className="mt-1 text-[13px] text-zinc-500">Tests assigned to your class. Results save when you submit.</p>
         </header>
 
         {!hasAssignedClass && (
           <section className="mb-8 rounded-md border border-amber-200 bg-amber-50/80 p-4">
             <h2 className="text-sm font-semibold text-amber-950">Waiting for class assignment</h2>
             <p className="mt-1 text-xs font-medium leading-relaxed text-amber-900/90 max-w-2xl">
-              Your teacher assigns you to a class in <strong>Students</strong>. Use the same email your teacher registered. Then scheduled exams for that class appear here.
+              Your teacher assigns you to a class in <strong>Students</strong>. Use the same email your teacher registered. Then scheduled tests for that class appear here.
             </p>
           </section>
         )}
 
         {hasAssignedClass && onlineOnly.length === 0 && (
           <div className="mb-8 rounded-md border border-dashed border-zinc-300 bg-white px-6 py-10 text-center">
-            <p className="text-xs font-medium text-zinc-500">No online exams assigned yet.</p>
+            <p className="text-xs font-medium text-zinc-500">No online tests assigned yet.</p>
           </div>
         )}
 
@@ -176,7 +176,7 @@ const StudentOnlineTestDashboard: React.FC<StudentOnlineTestDashboardProps> = ({
                     </div>
                 ) : (
                     <div className="rounded-md border border-dashed border-zinc-200 bg-zinc-50/50 py-8 text-center">
-                        <p className="text-xs font-medium text-zinc-500">No upcoming exams.</p>
+                        <p className="text-xs font-medium text-zinc-500">No upcoming tests.</p>
                     </div>
                 )}
             </section>

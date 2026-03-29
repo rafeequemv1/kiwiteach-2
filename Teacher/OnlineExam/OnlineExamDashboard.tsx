@@ -30,9 +30,9 @@ const OnlineExamDashboard: React.FC<OnlineExamDashboardProps> = (props) => {
   return (
     <TestDashboard
       {...props}
-      title="Online exams"
+      title="Online tests"
       subtitle="Scheduled and deployed for your classes"
-      primaryActionLabel="New exam"
+      primaryActionLabel="New test"
       allTests={onlineExams}
       onStartNewTest={props.onStartNewExam}
     />

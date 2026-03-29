@@ -21,6 +21,8 @@ interface Subject {
   name: string;
 }
 
+type BiologyBranch = 'botany' | 'zoology';
+
 interface Chapter {
   id: string;
   subject_id: string;
@@ -35,8 +37,16 @@ interface Chapter {
   pdf_path?: string;
   doc_name?: string;
   doc_path?: string;
-  raw_text?: string; 
+  raw_text?: string;
   status: 'draft' | 'ready';
+  /** Set for Biology chapters: botany vs zoology; null when not applicable or unset. */
+  biology_branch?: BiologyBranch | null;
+}
+
+function isBiologySubjectName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.trim().toLowerCase();
+  return n === 'biology' || n.includes('biology');
 }
 
 interface KnowledgeBaseExplorerProps {
@@ -59,6 +69,8 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
   const [renamingItem, setRenamingItem] = useState<{ type: 'class' | 'subject' | 'chapter'; item: any } | null>(null);
   const [newItemName, setNewItemName] = useState('');
   const [newItemNumber, setNewItemNumber] = useState<string>('');
+  /** Biology-only: botany / zoology; empty string = unset (null in DB). */
+  const [biologyBranchDraft, setBiologyBranchDraft] = useState<'' | BiologyBranch>('');
   
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [docFile, setDocFile] = useState<File | null>(null);
@@ -96,7 +108,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       
       const { data: chaptersData, error: chaptersError } = await supabase
         .from('chapters')
-        .select('id, name, chapter_number, status, pdf_name, pdf_path, doc_name, doc_path, subject_id, subject_name, class_id, class_name, kb_id, kb_name')
+        .select('id, name, chapter_number, status, pdf_name, pdf_path, doc_name, doc_path, subject_id, subject_name, class_id, class_name, kb_id, kb_name, biology_branch')
         .eq('kb_id', kbId)
         .order('chapter_number', { ascending: true });
       if (chaptersError) throw chaptersError;
@@ -117,9 +129,16 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     if (renamingItem) {
         setNewItemName(renamingItem.item.name);
         setNewItemNumber(renamingItem.item.chapter_number?.toString() || '');
+        if (renamingItem.type === 'chapter') {
+          const b = renamingItem.item.biology_branch;
+          setBiologyBranchDraft(b === 'botany' || b === 'zoology' ? b : '');
+        } else {
+          setBiologyBranchDraft('');
+        }
     } else if (activeModal === 'chapter') {
         setNewItemName('');
         setNewItemNumber('');
+        setBiologyBranchDraft('');
         setPdfFile(null);
         setDocFile(null);
     }
@@ -166,9 +185,21 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       } 
       else if (activeModal === 'chapter' && selectedSubject) {
         const num = newItemNumber ? parseInt(newItemNumber) : null;
-        const { data: chapterData, error: chapterError } = await supabase.from('chapters').insert([{ 
-          subject_id: selectedSubject.id, subject_name: selectedSubject.name, class_id: selectedSubject.class_id, class_name: selectedSubject.class_name, kb_id: kbId, kb_name: kbName, name: newItemName, chapter_number: num, status: 'draft' 
-        }]).select().single();
+        const chapterRow: Record<string, unknown> = {
+          subject_id: selectedSubject.id,
+          subject_name: selectedSubject.name,
+          class_id: selectedSubject.class_id,
+          class_name: selectedSubject.class_name,
+          kb_id: kbId,
+          kb_name: kbName,
+          name: newItemName,
+          chapter_number: num,
+          status: 'draft',
+        };
+        if (isBiologySubjectName(selectedSubject.name)) {
+          chapterRow.biology_branch = biologyBranchDraft || null;
+        }
+        const { data: chapterData, error: chapterError } = await supabase.from('chapters').insert([chapterRow]).select().single();
 
         if (chapterError) throw chapterError;
 
@@ -225,6 +256,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       }
       setNewItemName('');
       setNewItemNumber('');
+      setBiologyBranchDraft('');
       setPdfFile(null);
       setDocFile(null);
     } catch (err: any) {
@@ -266,8 +298,16 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         await fetchData();
         setSelectedSubject(prev => prev ? { ...prev, name: newName } : null);
       } else if (type === 'chapter') {
-        await supabase.from('chapters').update({ name: newName, chapter_number: newNum }).eq('id', item.id);
-        setChapters(prev => prev.map(c => c.id === item.id ? { ...c, name: newName, chapter_number: newNum ?? undefined } : c).sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0)));
+        const payload: Record<string, unknown> = { name: newName, chapter_number: newNum };
+        if (isBiologySubjectName(item.subject_name)) {
+          payload.biology_branch = biologyBranchDraft || null;
+        }
+        await supabase.from('chapters').update(payload).eq('id', item.id);
+        setChapters((prev) =>
+          prev
+            .map((c) => (c.id === item.id ? { ...c, ...payload, name: newName, chapter_number: newNum ?? undefined } : c))
+            .sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
+        );
       }
     } catch (err: any) {
       alert("Update failed: " + err.message);
@@ -275,6 +315,17 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       setRenamingItem(null);
       setNewItemName('');
       setNewItemNumber('');
+      setBiologyBranchDraft('');
+    }
+  };
+
+  const updateChapterBiologyBranch = async (chapter: Chapter, branch: BiologyBranch | null) => {
+    try {
+      const { error } = await supabase.from('chapters').update({ biology_branch: branch }).eq('id', chapter.id);
+      if (error) throw error;
+      setChapters((prev) => prev.map((c) => (c.id === chapter.id ? { ...c, biology_branch: branch } : c)));
+    } catch (err: any) {
+      alert(err?.message || 'Could not update biology branch');
     }
   };
 
@@ -431,50 +482,108 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 md:p-6">
+        <div className="mx-auto grid max-w-[1600px] grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
           {selectedSubject ? (
             <>
               <button 
+                type="button"
                 onClick={() => setActiveModal('chapter')}
-                className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-2 hover:border-accent hover:bg-indigo-50/30 transition-all group"
+                className="flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-6 transition-all hover:border-accent hover:bg-indigo-50/40 group"
               >
-                <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 group-hover:text-accent group-hover:bg-white transition-all shadow-sm">
-                  <iconify-icon icon="mdi:plus" width="24" />
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm transition-all group-hover:text-accent group-hover:shadow-md">
+                  <iconify-icon icon="mdi:plus" width="28" />
                 </div>
-                <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider">New Chapter</span>
+                <span className="text-xs font-black uppercase tracking-widest text-slate-400 group-hover:text-accent">New chapter</span>
               </button>
 
               {filteredChapters.map(c => (
                 <div 
                   key={c.id} 
-                  className={`relative aspect-square bg-white border border-slate-100 rounded-xl p-3 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group flex flex-col ${c.status === 'ready' ? 'border-amber-200' : 'grayscale'}`}
+                  className={`group relative flex min-h-[220px] flex-col rounded-2xl border bg-white p-4 shadow-sm transition-all hover:shadow-lg ${c.status === 'ready' ? 'border-amber-200/80' : 'border-slate-200 grayscale-[0.35]'}`}
                 >
-                  {c.chapter_number !== undefined && c.chapter_number !== null && (
-                    <div className="absolute top-2 left-2 z-10">
-                        <span className="bg-slate-900 text-white text-[7px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-tighter shadow-sm">Ch {c.chapter_number.toString().padStart(2, '0')}</span>
-                    </div>
-                  )}
-
-                  <div className="flex-1 flex flex-col items-center justify-center text-center px-1 overflow-hidden">
-                    <h5 className="text-[10px] font-black text-slate-800 line-clamp-2 leading-tight uppercase tracking-tight">{c.name}</h5>
-                    <div className="mt-2 flex items-center gap-1">
-                        {c.pdf_path && <iconify-icon icon="mdi:file-pdf-box" className="text-rose-500 text-xs" />}
-                        {c.doc_path && <iconify-icon icon="mdi:file-document-outline" className="text-indigo-500 text-xs" />}
-                    </div>
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    {c.chapter_number !== undefined && c.chapter_number !== null && (
+                      <span className="rounded-lg bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-sm">
+                        Ch {c.chapter_number.toString().padStart(2, '0')}
+                      </span>
+                    )}
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                        c.status === 'ready' ? 'bg-amber-100 text-amber-950 ring-1 ring-amber-200/80' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {c.status === 'ready' ? 'Ready' : 'Draft'}
+                    </span>
+                    {isBiologySubjectName(c.subject_name) && c.biology_branch && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-900 ring-1 ring-emerald-200/80">
+                        {c.biology_branch}
+                      </span>
+                    )}
                   </div>
 
-                  <div className="absolute inset-0 bg-slate-900/90 backdrop-blur-sm rounded-xl opacity-0 group-hover:opacity-100 transition-all flex flex-col items-center justify-center gap-2 p-2">
+                  <h3 className="text-[15px] font-bold leading-snug text-slate-900 break-words">
+                    {c.name}
+                  </h3>
+
+                  <dl className="mt-3 flex flex-1 flex-col gap-1.5 border-t border-slate-100 pt-3 text-[12px] text-slate-600">
+                    <div className="flex gap-2">
+                      <dt className="w-14 shrink-0 font-semibold text-slate-400">Subject</dt>
+                      <dd className="min-w-0 font-medium text-slate-700">{c.subject_name}</dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-14 shrink-0 font-semibold text-slate-400">Class</dt>
+                      <dd className="min-w-0 font-medium text-slate-700">{c.class_name}</dd>
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {c.pdf_path ? (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-800 ring-1 ring-rose-100">
+                          <iconify-icon icon="mdi:file-pdf-box" className="text-base" />
+                          PDF
+                        </span>
+                      ) : null}
+                      {c.doc_path ? (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-800 ring-1 ring-indigo-100">
+                          <iconify-icon icon="mdi:file-document-outline" className="text-base" />
+                          Source doc
+                        </span>
+                      ) : null}
+                      {!c.pdf_path && !c.doc_path && (
+                        <span className="text-[11px] font-medium text-slate-400">No files uploaded</span>
+                      )}
+                    </div>
+                  </dl>
+
+                  <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-stretch justify-end gap-2 rounded-2xl bg-slate-900/0 p-3 opacity-0 transition-all duration-200 group-hover:pointer-events-auto group-hover:bg-slate-900/90 group-hover:opacity-100 group-hover:backdrop-blur-sm">
+                    <div className="mt-auto flex flex-col gap-2">
                     {c.status === 'ready' && c.pdf_path && (
-                        <button onClick={() => openPdfViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:eye" width="12" /> View PDF</button>
+                        <button type="button" onClick={() => openPdfViewer(c)} className="w-full rounded-lg bg-white py-2 text-[11px] font-black uppercase tracking-wide text-slate-900 shadow-sm hover:bg-indigo-50 flex items-center justify-center gap-2"><iconify-icon icon="mdi:eye" width="14" /> View PDF</button>
                     )}
                     {c.status === 'ready' && c.doc_path && (
-                        <button onClick={() => openDocViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:file-document-outline" width="12" /> View Doc</button>
+                        <button type="button" onClick={() => openDocViewer(c)} className="w-full rounded-lg bg-white py-2 text-[11px] font-black uppercase tracking-wide text-slate-900 shadow-sm hover:bg-indigo-50 flex items-center justify-center gap-2"><iconify-icon icon="mdi:file-document-outline" width="14" /> View Doc</button>
+                    )}
+
+                    {isBiologySubjectName(c.subject_name) && (
+                      <select
+                        aria-label="Biology stream: botany or zoology"
+                        value={c.biology_branch ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          void updateChapterBiologyBranch(c, v === '' ? null : (v as BiologyBranch));
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full rounded-lg border border-white/25 bg-white px-2 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-900 outline-none"
+                      >
+                        <option value="">Bio stream: not set</option>
+                        <option value="botany">Botany</option>
+                        <option value="zoology">Zoology</option>
+                      </select>
                     )}
                     
-                    <div className="flex gap-2 mt-1">
-                      <button onClick={() => setRenamingItem({ type: 'chapter', item: c })} className="text-white/40 hover:text-white transition-colors"><iconify-icon icon="mdi:pencil" width="14" /></button>
-                      <button onClick={() => deleteItem('chapter', c.id, c.name)} className="text-white/40 hover:text-rose-500 transition-colors"><iconify-icon icon="mdi:trash-can-outline" width="14" /></button>
+                    <div className="flex justify-center gap-4 pt-1">
+                      <button type="button" onClick={() => setRenamingItem({ type: 'chapter', item: c })} className="text-white/70 hover:text-white transition-colors" title="Edit"><iconify-icon icon="mdi:pencil" width="18" /></button>
+                      <button type="button" onClick={() => deleteItem('chapter', c.id, c.name)} className="text-white/70 hover:text-rose-400 transition-colors" title="Delete"><iconify-icon icon="mdi:trash-can-outline" width="18" /></button>
+                    </div>
                     </div>
                   </div>
                 </div>
@@ -504,6 +613,22 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                       onChange={e => setNewItemNumber(e.target.value)} 
                       className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 outline-none focus:border-accent font-bold text-sm" 
                    />
+                </div>
+              )}
+              {((activeModal === 'chapter' && selectedSubject && isBiologySubjectName(selectedSubject.name)) ||
+                (renamingItem?.type === 'chapter' && isBiologySubjectName(renamingItem.item.subject_name))) && (
+                <div>
+                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Biology stream</label>
+                  <select
+                    value={biologyBranchDraft}
+                    onChange={(e) => setBiologyBranchDraft(e.target.value as '' | BiologyBranch)}
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2.5 outline-none focus:border-accent font-bold text-sm text-slate-800"
+                  >
+                    <option value="">Not set</option>
+                    <option value="botany">Botany</option>
+                    <option value="zoology">Zoology</option>
+                  </select>
+                  <p className="mt-1 text-[8px] font-bold text-slate-400 uppercase tracking-tight">Tag NEET Biology chapters as plant vs animal focus.</p>
                 </div>
               )}
               <div>

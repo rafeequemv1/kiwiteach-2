@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../supabase/client';
 import { fetchClassesForUser, fetchInstitutesForUser } from '../supabase/orgScope';
 import AuthUI from '../supabase/AuthUI';
@@ -25,6 +25,7 @@ import {
   canAccessView,
   defaultViewForRole,
   type AppRole,
+  type DashboardView,
 } from '../auth/roles';
 import { BrandingConfig, Question, QuestionType, SelectedChapter, LayoutConfig, TypeDistribution, CreateTestOptions } from './types';
 import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractImagesFromDoc } from '../services/geminiService';
@@ -35,6 +36,12 @@ import {
 } from './services/questionUsageService';
 import { fetchUserExcludedTopicLabels } from '../services/syllabusService';
 import { isOnlineExamAssignment, sanitizeQuestionsForStudentExam } from './services/studentTestService';
+import { resolvePlatformBranding } from '../branding/defaults';
+import {
+  fetchPlatformBrandingRow,
+  PLATFORM_BRANDING_UPDATED_EVENT,
+} from '../branding/platformBrandingService';
+import { PlatformBrandingProvider } from '../branding/PlatformBrandingContext';
 import { Menu } from 'lucide-react';
 
 interface Institute {
@@ -53,6 +60,74 @@ interface Folder { id: string; name: string; parent_id?: string | null; tests: a
 /** Narrow columns for workspace lists — avoids huge JSON blobs. */
 const TESTS_LIST_COLUMNS =
   'id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids, config';
+
+const DASHBOARD_BASE = '/dashboard';
+
+const VIEW_TO_SLUG: Record<DashboardView, string> = {
+  test: 'paper-tests',
+  'online-exam': 'online-exams',
+  students: 'students',
+  reports: 'reports',
+  settings: 'settings',
+  admin: 'admin',
+  'student-online-test': 'online-tests',
+  'student-mock-test': 'mock-tests',
+};
+
+const SLUG_TO_VIEW: Record<string, DashboardView> = Object.entries(VIEW_TO_SLUG).reduce(
+  (acc, [view, slug]) => {
+    acc[slug] = view as DashboardView;
+    return acc;
+  },
+  {} as Record<string, DashboardView>
+);
+
+const VIEW_SEO: Record<DashboardView, { title: string; description: string }> = {
+  test: {
+    title: 'Class Tests',
+    description: 'Create, schedule, and manage class tests.',
+  },
+  'online-exam': {
+    title: 'Online Tests',
+    description: 'Schedule and manage online tests.',
+  },
+  students: {
+    title: 'Students',
+    description: 'Manage student records and classes.',
+  },
+  reports: {
+    title: 'Reports',
+    description: 'View performance reports and insights.',
+  },
+  settings: {
+    title: 'Settings',
+    description: 'Configure account, branding, and workspace settings.',
+  },
+  admin: {
+    title: 'Admin',
+    description: 'Admin controls for knowledge, question DB, prompts, and users.',
+  },
+  'student-online-test': {
+    title: 'Student Online Tests',
+    description: 'Take and review assigned online tests from your class.',
+  },
+  'student-mock-test': {
+    title: 'Student Mock Tests',
+    description: 'Practice with mock tests by chapter and difficulty.',
+  },
+};
+
+function viewFromPathname(pathname: string): DashboardView | null {
+  const clean = pathname.split('?')[0].split('#')[0].replace(/\/+$/, '');
+  const segments = clean.split('/').filter(Boolean);
+  if (segments.length < 2) return null;
+  if (segments[0] !== DASHBOARD_BASE.replace('/', '')) return null;
+  return SLUG_TO_VIEW[segments[1]] || null;
+}
+
+function pathForView(view: DashboardView): string {
+  return `${DASHBOARD_BASE}/${VIEW_TO_SLUG[view]}`;
+}
 
 function isMissingDbColumnError(err: { message?: string; code?: string } | null) {
   if (!err) return false;
@@ -145,6 +220,7 @@ const Quiz: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const fetchingRef = useRef(false);
   const lastFetchTime = useRef<number>(0);
+  const didInitRouteRef = useRef(false);
   
   const [institutes, setInstitutes] = useState<Institute[]>([]);
   const [orgClasses, setOrgClasses] = useState<OrgClass[]>([]);
@@ -155,6 +231,12 @@ const Quiz: React.FC = () => {
   const [calendarType, setCalendarType] = useState<'month' | 'week' | 'year'>('month');
 
   const [brandConfig, setBrandConfig] = useState<BrandingConfig>({ name: 'KiwiTeach', logo: null, showOnTest: true, showOnOmr: true });
+  const [platformTheme, setPlatformTheme] = useState(() => resolvePlatformBranding(null));
+
+  const loadPlatformBranding = useCallback(async () => {
+    const row = await fetchPlatformBrandingRow();
+    setPlatformTheme(resolvePlatformBranding(row));
+  }, []);
   const [showLanding, setShowLanding] = useState(false);
 
   const [isCreatorOpen, setIsCreatorOpen] = useState(false);
@@ -267,10 +349,68 @@ const Quiz: React.FC = () => {
     }
   }, [appRole, activeView]);
 
+  // Initialize dashboard view from URL slug on reload; fallback to role default.
+  useEffect(() => {
+    if (!session?.user || didInitRouteRef.current) return;
+    const fromPath = viewFromPathname(window.location.pathname);
+    const fallback = defaultViewForRole(appRole);
+    const nextView =
+      fromPath && canAccessView(appRole, fromPath) ? fromPath : fallback;
+    setActiveView(nextView);
+    didInitRouteRef.current = true;
+  }, [session?.user, appRole]);
+
+  // Keep URL slug + basic SEO tags in sync with active dashboard view.
+  useEffect(() => {
+    if (!session?.user) return;
+    const view = activeView as DashboardView;
+    if (!VIEW_TO_SLUG[view]) return;
+    const targetPath = pathForView(view);
+    if (window.location.pathname !== targetPath) {
+      window.history.replaceState(null, '', targetPath);
+    }
+    const seo = VIEW_SEO[view];
+    document.title = `${seo.title} | KiwiTeach`;
+    let meta = document.querySelector('meta[name="description"]') as HTMLMetaElement | null;
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.name = 'description';
+      document.head.appendChild(meta);
+    }
+    meta.content = seo.description;
+  }, [session?.user, activeView]);
+
+  // Handle browser back/forward between dashboard slugs.
+  useEffect(() => {
+    const onPopState = () => {
+      const v = viewFromPathname(window.location.pathname);
+      if (v && canAccessView(appRole, v)) setActiveView(v);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [appRole]);
+
   // Test repositories should open in icon card view by default.
   useEffect(() => {
     if (activeView === 'test' || activeView === 'online-exam') setViewMode('icons');
   }, [activeView]);
+
+  useEffect(() => {
+    if (!session?.user) {
+      setPlatformTheme(resolvePlatformBranding(null));
+      return;
+    }
+    void loadPlatformBranding();
+  }, [session?.user?.id, loadPlatformBranding]);
+
+  useEffect(() => {
+    const fn = () => {
+      if (!session?.user) return;
+      void loadPlatformBranding();
+    };
+    window.addEventListener(PLATFORM_BRANDING_UPDATED_EVENT, fn);
+    return () => window.removeEventListener(PLATFORM_BRANDING_UPDATED_EVENT, fn);
+  }, [session?.user?.id, loadPlatformBranding]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -436,14 +576,14 @@ const Quiz: React.FC = () => {
     }
   };
 
-  /** Refresh assigned online exams when opening student zone (teacher-created tests sync via Supabase). */
+  /** Refresh assigned online tests when opening student zone (teacher-created tests sync via Supabase). */
   useEffect(() => {
     if (!session?.user || activeView !== 'student-online-test') return;
     lastFetchTime.current = 0;
     void fetchWorkspace(session.user);
   }, [activeView, session?.user?.id]);
 
-  /** Student “Online exams” must only list online rows (developers load all tests for teacher UI). */
+  /** Student online tests must only list online rows (developers load all tests for teacher UI). */
   const studentOnlineExamsOnly = useMemo(() => allTests.filter((t) => isOnlineExamAssignment(t)), [allTests]);
 
   const handleAddFolder = async (folder: { name: string, parent_id: string | null }) => {
@@ -926,16 +1066,16 @@ const Quiz: React.FC = () => {
 
   const handleStudentTakeExam = async (test: any) => {
       if (!isOnlineExamAssignment(test)) {
-        alert('This assessment is not an online exam.');
+        alert('This assessment is not an online test.');
         return;
       }
-      setLoadingMessage('Loading Exam Environment...');
+      setLoadingMessage('Loading test…');
       setIsLoadingTest(true);
       try {
           const { data, error } = await supabase.from('tests').select('name, questions, config, status').eq('id', test.id).single();
           if (error) throw error;
           if (!isOnlineExamAssignment({ config: data.config, status: data.status })) {
-            alert('This assessment is not available as an online exam.');
+            alert('This assessment is not available as an online test.');
             return;
           }
           const rawQs = Array.isArray(data.questions) ? data.questions : [];
@@ -947,12 +1087,12 @@ const Quiz: React.FC = () => {
             questions: safeQs,
             examDurationSeconds: Math.max(300, Math.round(durationMin * 60)),
           });
-      } catch (e: any) { alert("Failed to load exam: " + e.message); } finally { setIsLoadingTest(false); }
+      } catch (e: any) { alert("Failed to load test: " + e.message); } finally { setIsLoadingTest(false); }
   };
 
   const handleStudentViewSolutions = async (test: any) => {
       if (!isOnlineExamAssignment(test)) {
-        alert('Solutions for this paper test are not shown here.');
+        alert('Solutions for this class test are not shown here.');
         return;
       }
       setLoadingMessage('Fetching Solution Key...');
@@ -988,7 +1128,8 @@ const Quiz: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden font-sans" style={{ backgroundColor: appShellTheme.mainBackground }}>
+    <PlatformBrandingProvider value={platformTheme}>
+    <div className="flex h-screen overflow-hidden font-sans" style={{ backgroundColor: platformTheme.page_background }}>
       <LeftPanel 
         activeView={activeView} 
         setActiveView={setActiveView} 
@@ -1017,16 +1158,16 @@ const Quiz: React.FC = () => {
           </button>
           <span className="text-sm font-black text-slate-700 truncate">{brandConfig.name}</span>
         </div>
-        {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className={`w-12 h-12 border-4 border-slate-100 rounded-full animate-spin mb-4 ${appShellTheme.accent.spinner}`}></div><h3 className="text-xl font-black uppercase tracking-tight text-slate-800">Syncing Hub</h3></div>}
+        {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className="w-12 h-12 border-4 border-slate-100 rounded-full animate-spin mb-4" style={{ borderTopColor: platformTheme.primary_color }}></div><h3 className="text-xl font-black uppercase tracking-tight text-slate-800">Syncing Hub</h3></div>}
         
         {isLoadingTest && (
             <div className="absolute inset-0 z-40 bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 flex flex-col items-center gap-5 transform scale-100 animate-slide-up" style={{ boxShadow: landingTheme.shadow.card }}>
                     <div className="relative w-16 h-16">
                         <div className="absolute inset-0 rounded-full border-4 border-slate-50"></div>
-                        <div className={`absolute inset-0 rounded-full border-4 border-t-transparent animate-spin ${appShellTheme.accent.spinner}`}></div>
+                        <div className="absolute inset-0 rounded-full border-4 border-t-transparent animate-spin" style={{ borderTopColor: platformTheme.primary_color }}></div>
                         <div className="absolute inset-0 flex items-center justify-center">
-                            <iconify-icon icon="mdi:lightning-bolt" className={`${appShellTheme.accent.icon} text-xl animate-pulse`} />
+                            <iconify-icon icon="mdi:lightning-bolt" className="text-xl animate-pulse" style={{ color: platformTheme.primary_color }} />
                         </div>
                     </div>
                     <div className="text-center">
@@ -1040,7 +1181,7 @@ const Quiz: React.FC = () => {
         {activeView === 'test' && (
           <TestDashboard
             username={session.user.email}
-            title="Paper tests"
+            title="Class tests"
             subtitle="Generate PDFs and OMR layouts"
             institutesList={institutes}
             classesList={orgClasses}
@@ -1136,7 +1277,7 @@ const Quiz: React.FC = () => {
                       onSaveDraft={handleSaveDraft}
                       onStart={async (opts) => {
                           setForgeError(null);
-                          setIsForging(true); setForgeStep('Forging Exam...');
+                          setIsForging(true); setForgeStep('Forging test…');
                           try {
                               const qs = await generateQuestionsLogic(opts, setForgeStep);
                               setOnlineExamResult({ topic: opts.topic, questions: qs, config: opts });
@@ -1173,6 +1314,7 @@ const Quiz: React.FC = () => {
           </div>
       )}
     </div>
+    </PlatformBrandingProvider>
   );
 };
 

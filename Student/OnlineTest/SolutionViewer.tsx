@@ -24,7 +24,7 @@ const SolutionViewer: React.FC<SolutionViewerProps> = ({ topic, questions, onClo
                     <iconify-icon icon="mdi:arrow-left" width="20" />
                 </button>
                 <div>
-                    <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight">{showAnswers ? 'Solution Key' : 'Question Paper'}</h1>
+                    <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight">{showAnswers ? 'Solution Key' : 'Test'}</h1>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-md">{topic}</p>
                 </div>
             </div>

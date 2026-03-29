@@ -65,7 +65,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
   };
 
   const handleDelete = (id: string) => {
-      if (localQuestions.length <= 1) return alert("Exam must have at least one question.");
+      if (localQuestions.length <= 1) return alert("Test must have at least one question.");
       setLocalQuestions(prev => prev.filter(q => q.id !== id));
   };
 
@@ -105,7 +105,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
     try {
         const scheduledAt = new Date(`${examDate}T${examTime}`).toISOString();
         await onSave({ title: examTitle, scheduledAt, duration, releaseAnswers, questions: localQuestions, classIds: selectedClassIds });
-    } catch (e: any) { alert("Failed to schedule exam: " + e.message); } finally { setIsSaving(false); }
+    } catch (e: any) { alert("Failed to schedule test: " + e.message); } finally { setIsSaving(false); }
   };
 
   const selectedPreviewSchool = useMemo(() => institutesList.find(s => s.id === previewSchoolId), [institutesList, previewSchoolId]);
@@ -120,7 +120,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                  <iconify-icon icon="mdi:arrow-left" width="20" />
              </button>
              <div>
-                 <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight leading-none mb-1">Deploy Online Exam</h1>
+                 <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight leading-none mb-1">Deploy Online Test</h1>
                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{localQuestions.length} Questions • {selectedClassIds.length} Classes Assigned</p>
              </div>
          </div>
@@ -150,7 +150,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
              </button>
              <button onClick={handleSave} disabled={isSaving} className="bg-sky-300 hover:bg-sky-200 text-sky-950 px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-md transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2">
                 {isSaving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <iconify-icon icon="mdi:cloud-upload-outline" width="18" />}
-                Publish Assessment
+                Publish test
              </button>
          </div>
       </div>
@@ -189,7 +189,7 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
                   <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-6">Forge Parameters</h3>
                   <div className="space-y-6">
                       <div>
-                          <label className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">Exam Identification</label>
+                          <label className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">Test title</label>
                           <input type="text" value={examTitle} onChange={e => setExamTitle(e.target.value)} className="w-full bg-white border-2 border-slate-100 rounded-2xl px-4 py-3 text-xs font-black text-slate-800 outline-none focus:border-sky-400 transition-all shadow-sm" />
                       </div>
                       <div className="grid grid-cols-2 gap-3">

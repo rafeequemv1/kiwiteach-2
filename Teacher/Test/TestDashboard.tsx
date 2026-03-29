@@ -86,7 +86,7 @@ interface TestDashboardProps {
   subtitle?: string;
   /** Primary CTA (default: New test) */
   primaryActionLabel?: string;
-  /** Paper tests: bordered segmented control. Online exams: flat zinc pills. */
+  /** Class tests: bordered segmented control. Online tests: flat zinc pills. */
   headerViewToggleStyle?: 'segmented' | 'flat';
 }
 
@@ -238,6 +238,20 @@ const TestsCalendarDemo: React.FC<{
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
   const [dragOverDayKey, setDragOverDayKey] = useState<string | null>(null);
 
+  const toYmd = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const ymdFromRaw = (raw: string | null | undefined) => {
+    if (!raw) return '';
+    // Works for ISO timestamps and plain YYYY-MM-DD.
+    const v = String(raw);
+    return v.length >= 10 ? v.slice(0, 10) : '';
+  };
+
   const { label, weeks } = useMemo(() => {
     const y = cursor.getFullYear();
     const m = cursor.getMonth();
@@ -261,12 +275,13 @@ const TestsCalendarDemo: React.FC<{
 
   const testsByDay = useMemo(() => {
     const map = new Map<string, { test: Test; kind: 'scheduled' | 'created' }[]>();
+    const cursorMonth = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
     tests.forEach((t) => {
       const raw = t.scheduledAt || t.generatedAt;
       if (!raw) return;
-      const d = new Date(raw);
-      if (d.getMonth() !== cursor.getMonth() || d.getFullYear() !== cursor.getFullYear()) return;
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const ymd = ymdFromRaw(raw);
+      if (!ymd || ymd.slice(0, 7) !== cursorMonth) return;
+      const key = ymd;
       const kind: 'scheduled' | 'created' = t.scheduledAt ? 'scheduled' : 'created';
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push({ test: t, kind });
@@ -274,7 +289,7 @@ const TestsCalendarDemo: React.FC<{
     return map;
   }, [tests, cursor]);
 
-  const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const dayKey = (date: Date) => toYmd(date);
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-md border border-zinc-200 bg-white shadow-sm">
@@ -343,7 +358,7 @@ const TestsCalendarDemo: React.FC<{
                     const payload = parseTestDragPayload(e);
                     setDragOverDayKey(null);
                     if (!payload) return;
-                    onDropToDate(payload.id, cell.date!.toISOString().split('T')[0]);
+                    onDropToDate(payload.id, dayKey(cell.date!));
                   }}
                   className={`min-h-[88px] border-r border-zinc-100 p-1 last:border-r-0 ${
                     dragOverDayKey === key ? 'bg-sky-50 ring-1 ring-inset ring-sky-300' : 'bg-white'
@@ -354,7 +369,7 @@ const TestsCalendarDemo: React.FC<{
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onAddAtDate(cell.date!.toISOString().split('T')[0]);
+                        onAddAtDate(dayKey(cell.date!));
                       }}
                       className="inline-flex h-5 w-5 items-center justify-center rounded border border-zinc-200 bg-white text-zinc-500 hover:border-zinc-300 hover:text-zinc-800"
                       title="Add test on this date"
@@ -948,7 +963,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
         <div className="flex flex-col gap-3">
           <div>
             <h1 className="text-lg font-semibold tracking-tight text-zinc-900">{title}</h1>
-            <p className="text-[13px] text-zinc-500">{subtitle ?? (username ? `${username.split('@')[0]}` : 'Paper tests')}</p>
+            <p className="text-[13px] text-zinc-500">{subtitle ?? (username ? `${username.split('@')[0]}` : 'Class tests')}</p>
           </div>
           <div className="grid gap-2 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
             <div className="flex items-center gap-2">

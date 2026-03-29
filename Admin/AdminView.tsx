@@ -18,6 +18,7 @@ import SubscriptionTiersPanel from './Subscriptions/SubscriptionTiersPanel';
 import PYQManager from './PYQ/PYQManager';
 import ReferenceQuestionsManager from './ReferenceQuestions/ReferenceQuestionsManager';
 import KnowledgeBaseAccessManager from './KnowledgeSource/KnowledgeBaseAccessManager';
+import PlatformBrandingPanel from './PlatformBranding/PlatformBrandingPanel';
 import type { AppRole } from '../auth/roles';
 
 type AdminSection =
@@ -36,7 +37,8 @@ type AdminSection =
   | 'lab'
   | 'syllabus'
   | 'quality-lab'
-  | 'omr-lab';
+  | 'omr-lab'
+  | 'platform-branding';
 
 interface AdminViewProps {
   appRole: AppRole;
@@ -132,6 +134,11 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     subtitle: 'Recognition tuning (developers)',
     icon: 'mdi:flask-outline',
   },
+  'platform-branding': {
+    title: 'Branding',
+    subtitle: 'KiwiTeach colors, typography, and button styles',
+    icon: 'mdi:palette-swatch-outline',
+  },
 };
 
 /** Full-height tools with their own chrome */
@@ -183,6 +190,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
   const isSchoolAdmin = appRole === 'school_admin';
   const isTeacher = appRole === 'teacher';
   const canUseSyllabusHub = isDeveloper || isSchoolAdmin || isTeacher;
+  const canManagePlatformBranding = isDeveloper || isSchoolAdmin;
 
   const fallbackSection: AdminSection = isDeveloper || isSchoolAdmin ? 'institutes' : 'syllabus';
 
@@ -261,6 +269,12 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         ) : (
           <p className="p-6 text-sm text-zinc-600">OMR Lab is only available to developers.</p>
         );
+      case 'platform-branding':
+        return canManagePlatformBranding ? (
+          <PlatformBrandingPanel userId={userId} />
+        ) : (
+          <p className="p-6 text-sm text-zinc-600">Branding is only available to administrators.</p>
+        );
     }
   };
 
@@ -315,6 +329,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
               </button>
             </div>
             {(isDeveloper || isSchoolAdmin) && navBtn('institutes', 'Business', 'mdi:briefcase-outline')}
+            {canManagePlatformBranding && navBtn('platform-branding', 'Branding', 'mdi:palette-swatch-outline')}
             {(isDeveloper || isSchoolAdmin) && navBtn('flags', 'Flags', 'mdi:flag-outline')}
             {canUseSyllabusHub && navBtn('syllabus', 'Syllabus & exclusions', 'mdi:book-education-outline')}
             {isDeveloper && (
@@ -338,6 +353,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
           <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto pb-1 md:hidden px-1">
             <span className="shrink-0 pr-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Go to</span>
             {(isDeveloper || isSchoolAdmin) && navBtn('institutes', 'Business', 'mdi:briefcase-outline')}
+            {canManagePlatformBranding && navBtn('platform-branding', 'Branding', 'mdi:palette-swatch-outline')}
             {(isDeveloper || isSchoolAdmin) && navBtn('flags', 'Flags', 'mdi:flag-outline')}
             {canUseSyllabusHub && navBtn('syllabus', 'Syllabus', 'mdi:book-education-outline')}
             {isDeveloper && (
