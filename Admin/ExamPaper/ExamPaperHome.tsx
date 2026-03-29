@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../../supabase/client';
 import ExamPaperFormModal from './ExamPaperFormModal';
 import type { ExamPaperProfileRow } from './types';
-import { STYLE_KEYS, STYLE_LABELS } from './types';
+import { BIO_BRANCH_SUFFIX, GLOBAL_BIO_PREFIX, STYLE_KEYS, STYLE_LABELS } from './types';
 
 interface KbOption {
   id: string;
@@ -101,7 +101,13 @@ const ExamPaperHome: React.FC<ExamPaperHomeProps> = ({ userId }) => {
   };
 
   const summarizeStyles = (row: ExamPaperProfileRow) => {
+    const meta =
+      row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+        ? (row.metadata as Record<string, unknown>)
+        : null;
+    const perSub = meta?.use_per_subject_style_mix === true;
     const parts: string[] = [];
+    if (perSub) parts.push('per-subject');
     STYLE_KEYS.forEach((k) => {
       const v = row.style_mix?.[k];
       if (v != null && v > 0) parts.push(`${STYLE_LABELS[k]} ${v}${row.style_mode === 'percent' ? '%' : ''}`);
@@ -110,10 +116,12 @@ const ExamPaperHome: React.FC<ExamPaperHomeProps> = ({ userId }) => {
   };
 
   const summarizeSubjects = (row: ExamPaperProfileRow) => {
-    const n = Object.keys(row.subject_mix || {}).length;
+    const keys = Object.keys(row.subject_mix || {});
     const s = sumMix(row.subject_mix);
-    if (n === 0) return '—';
-    return `${n} subject(s), sum ${s}${row.subject_mode === 'percent' ? '%' : ' q'}`;
+    if (keys.length === 0) return '—';
+    const bioSplit = keys.some((k) => k.includes(BIO_BRANCH_SUFFIX) || k.startsWith(GLOBAL_BIO_PREFIX));
+    const bioNote = bioSplit ? 'Bio botany/zoology · ' : '';
+    return `${bioNote}${keys.length} row(s) · sum ${s}${row.subject_mode === 'percent' ? '%' : ' q'}`;
   };
 
   return (

@@ -12,6 +12,7 @@ import {
   Copy,
   FileText,
   Folder,
+  GripVertical,
   FolderOpen,
   LayoutGrid,
   LayoutList,
@@ -78,6 +79,8 @@ interface TestDashboardProps {
   onAssignClasses: (testId: string, classIds: string[]) => Promise<void>;
   onMoveTestToFolder?: (testId: string, folderId: string | null) => Promise<void>;
   onSetEvaluationPending?: (testId: string, pending: boolean) => Promise<void>;
+  /** Move a test back to draft (board / kanban). */
+  onRevertTestToDraft?: (testId: string) => Promise<void>;
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
   calendarType: CalendarType;
@@ -437,6 +440,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   onAssignClasses,
   onMoveTestToFolder,
   onSetEvaluationPending,
+  onRevertTestToDraft,
   viewMode,
   setViewMode,
   calendarType: _calendarType,
@@ -586,6 +590,20 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   };
 
   const applyStatusMove = async (test: Test, target: TestStatus) => {
+    if (target === 'draft') {
+      if (!onRevertTestToDraft) {
+        alert('Move to draft is not configured.');
+        return;
+      }
+      setOptimisticOverrides((o) => {
+        const n = { ...o };
+        delete n[test.id];
+        return n;
+      });
+      await onRevertTestToDraft(test.id);
+      return;
+    }
+
     if (target === 'pending_evaluation') {
       if (onSetEvaluationPending && !test.evaluationPending) await onSetEvaluationPending(test.id, true);
       return;
@@ -786,30 +804,77 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     );
   };
 
+  const kanbanCardMenuItems = (test: Test): MenuItem[] => {
+    const status = getTestStatus(test);
+    const items: MenuItem[] = [
+      { label: 'Edit details', icon: Pencil, onClick: () => setEditingTest(test) },
+      { label: 'Duplicate', icon: Copy, onClick: () => onDuplicateTest(test) },
+    ];
+    if (status !== 'draft') {
+      items.push(
+        { label: 'Schedule', icon: Calendar, onClick: () => setSchedulingTest(test) },
+        { label: 'Assign classes', icon: Users2, onClick: () => setAssigningTest(test) },
+      );
+    }
+    if (onSetEvaluationPending && status !== 'draft') {
+      items.push(
+        test.evaluationPending
+          ? {
+              label: 'Clear pending evaluation',
+              icon: ClipboardCheck,
+              onClick: () => void onSetEvaluationPending(test.id, false),
+            }
+          : {
+              label: 'Pending evaluation',
+              icon: ClipboardList,
+              onClick: () => void onSetEvaluationPending(test.id, true),
+            },
+      );
+    }
+    items.push({
+      label: 'Delete',
+      icon: Trash2,
+      danger: true,
+      onClick: () => setDeletingItem({ type: 'test', id: test.id, name: test.name }),
+    });
+    return items;
+  };
+
   const KanbanMiniCard: React.FC<{ test: Test }> = ({ test }) => {
     const status = getTestStatus(test);
     return (
       <div
         draggable
-        onDragStart={(e) => setTestDragPayload(e, test.id)}
-        onClick={() => onTestClick(test)}
-        className="cursor-grab active:cursor-grabbing rounded-sm border border-zinc-200 bg-zinc-50/80 px-2.5 py-2 text-left shadow-sm transition-colors hover:border-zinc-300 hover:bg-white"
+        onDragStart={(e) => {
+          setTestDragPayload(e, test.id);
+          (e.currentTarget as HTMLDivElement).setAttribute('data-dragging', '1');
+        }}
+        className="group cursor-grab rounded-lg border border-zinc-200/90 bg-white px-2 py-2 shadow-sm ring-zinc-300/0 transition-[box-shadow,border-color,ring,opacity] active:cursor-grabbing hover:border-zinc-300 hover:shadow-md data-[dragging=1]:opacity-55"
+        onDragEnd={(e) => (e.currentTarget as HTMLDivElement).removeAttribute('data-dragging')}
       >
-        <div className="flex items-start justify-between gap-2">
-          <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-neutral-900">{test.name}</p>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setEditingTest(test);
-            }}
-            className="rounded p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
-            title="Edit"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
+        <div className="flex items-start gap-1.5">
+          <GripVertical
+            className="mt-0.5 h-4 w-4 shrink-0 text-zinc-300 group-hover:text-zinc-400"
+            aria-hidden
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-1">
+              <button
+                type="button"
+                onClick={() => onTestClick(test)}
+                className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-neutral-900 hover:underline"
+              >
+                {test.name}
+              </button>
+              <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                <ExplorerKebabMenu items={kanbanCardMenuItems(test)} />
+              </div>
+            </div>
+            <p className="mt-0.5 text-[11px] text-neutral-500">
+              {test.questionCount} q · {statusLabel(status)}
+            </p>
+          </div>
         </div>
-        <p className="text-[11px] text-neutral-500 mt-0.5">{test.questionCount} q · {statusLabel(status)}</p>
       </div>
     );
   };
@@ -1384,12 +1449,38 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
 
 const KANBAN_COLUMN_KEYS: TestStatus[] = ['draft', 'generated', 'scheduled', 'pending_evaluation', 'completed'];
 
+const KANBAN_HEADER_BG: Record<TestStatus, string> = {
+  draft: 'bg-stone-100/85 border-b border-stone-200/70',
+  generated: 'bg-emerald-50/70 border-b border-emerald-200/45',
+  scheduled: 'bg-sky-50/65 border-b border-sky-200/40',
+  pending_evaluation: 'bg-amber-50/55 border-b border-amber-200/35',
+  completed: 'bg-violet-50/50 border-b border-violet-200/35',
+};
+
+const KANBAN_HEADER_TEXT: Record<TestStatus, string> = {
+  draft: 'text-stone-600',
+  generated: 'text-emerald-900/75',
+  scheduled: 'text-sky-900/75',
+  pending_evaluation: 'text-amber-900/72',
+  completed: 'text-violet-900/68',
+};
+
+const KANBAN_HEADER_BADGE: Record<TestStatus, string> = {
+  draft: 'bg-stone-200/50 text-stone-600',
+  generated: 'bg-emerald-100/80 text-emerald-800/85',
+  scheduled: 'bg-sky-100/70 text-sky-800/85',
+  pending_evaluation: 'bg-amber-100/65 text-amber-900/75',
+  completed: 'bg-violet-100/55 text-violet-900/75',
+};
+
 const KanbanBoard: React.FC<{
   tests: Test[];
   getTestStatus: (t: Test) => TestStatus;
   Card: React.FC<{ test: Test }>;
   onDropToStatus: (testId: string, status: TestStatus) => void;
 }> = ({ tests, getTestStatus, Card, onDropToStatus }) => {
+  const [dragOverKey, setDragOverKey] = useState<TestStatus | null>(null);
+
   const columns = useMemo(() => {
     const cols: Record<TestStatus, Test[]> = {
       draft: [],
@@ -1414,9 +1505,13 @@ const KanbanBoard: React.FC<{
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full gap-0 overflow-x-auto overflow-y-hidden rounded-md border border-zinc-200 bg-zinc-100 shadow-sm">
+    <div
+      className="flex h-full min-h-0 w-full gap-0 overflow-x-auto overflow-y-hidden rounded-lg border border-zinc-200/90 bg-zinc-50/80 shadow-sm"
+      onDragEnd={() => setDragOverKey(null)}
+    >
       {KANBAN_COLUMN_KEYS.map((key) => {
         const items = columns[key];
+        const isDropTarget = dragOverKey === key;
         return (
           <div
             key={key}
@@ -1424,27 +1519,42 @@ const KanbanBoard: React.FC<{
               e.preventDefault();
               e.stopPropagation();
               e.dataTransfer.dropEffect = 'move';
+              setDragOverKey(key);
+            }}
+            onDragLeave={(e) => {
+              const next = e.relatedTarget as Node | null;
+              if (next && (e.currentTarget as HTMLElement).contains(next)) return;
+              setDragOverKey((k) => (k === key ? null : k));
             }}
             onDrop={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              setDragOverKey(null);
               const payload = parseTestDragPayload(e);
               if (!payload) return;
               onDropToStatus(payload.id, key);
             }}
-            className="flex min-h-0 min-w-[160px] flex-1 flex-col border-r border-zinc-200 bg-white last:border-r-0"
+            className={`flex min-h-0 min-w-[168px] flex-1 flex-col border-r border-zinc-200/80 bg-white/90 last:border-r-0 transition-[box-shadow,background-color] ${
+              isDropTarget ? 'bg-zinc-50 ring-2 ring-inset ring-zinc-300/50' : ''
+            }`}
           >
-            <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 bg-zinc-50 px-3 py-2">
-              <span className="text-xs font-semibold text-zinc-700">{titles[key]}</span>
-              <span className="rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-medium tabular-nums text-zinc-600">
+            <div className={`flex shrink-0 items-center justify-between px-3 py-2.5 ${KANBAN_HEADER_BG[key]}`}>
+              <span className={`text-[11px] font-semibold uppercase tracking-wide ${KANBAN_HEADER_TEXT[key]}`}>
+                {titles[key]}
+              </span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums ${KANBAN_HEADER_BADGE[key]}`}
+              >
                 {items.length}
               </span>
             </div>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2 custom-scrollbar">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2.5 custom-scrollbar">
               {items.map((t) => (
                 <Card key={t.id} test={t} />
               ))}
-              {items.length === 0 && <p className="py-8 text-center text-xs text-zinc-400">No items</p>}
+              {items.length === 0 && (
+                <p className="py-10 text-center text-[11px] text-zinc-400">Drop tests here</p>
+              )}
             </div>
           </div>
         );

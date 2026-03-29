@@ -24,6 +24,25 @@ interface TestCreatorViewProps {
   initialKnowledgeBaseId?: string | null;
   initialTopic?: string;
   initialManualQuestions?: Question[];
+  /** From exam paper preset / new-test picker */
+  initialTotalTarget?: number;
+  initialDistributionMode?: 'count' | 'percent';
+  initialGlobalTypes?: TypeDistribution;
+  initialGlobalFigureCount?: number;
+}
+
+const defaultTypeDistribution = (): TypeDistribution => ({
+  mcq: 70,
+  reasoning: 15,
+  matching: 10,
+  statements: 5,
+});
+
+function normalizeInitialGlobalTypes(t: TypeDistribution | undefined): TypeDistribution {
+  if (!t) return defaultTypeDistribution();
+  const sum = t.mcq + t.reasoning + t.matching + t.statements;
+  if (sum <= 0) return defaultTypeDistribution();
+  return { ...t };
 }
 
 interface KBItem { id: string; name: string; }
@@ -71,16 +90,20 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     initialChapters,
     initialKnowledgeBaseId,
     initialTopic,
-    initialManualQuestions
+    initialManualQuestions,
+    initialTotalTarget,
+    initialDistributionMode,
+    initialGlobalTypes,
+    initialGlobalFigureCount,
 }) => {
     const [activeMode, setActiveMode] = useState<'auto' | 'manual'>(initialManualQuestions && initialManualQuestions.length > 0 ? 'manual' : 'auto');
-    const [distributionMode, setDistributionMode] = useState<'count' | 'percent'>('count');
+    const [distributionMode, setDistributionMode] = useState<'count' | 'percent'>(initialDistributionMode ?? 'count');
     const [inventoryViewMode, setInventoryViewMode] = useState<'count' | 'percent'>('count');
     const [manualLayout, setManualLayout] = useState<'grid' | 'list'>('grid');
     const [showSelectedOnly, setShowSelectedOnly] = useState(false);
     const [inventoryFilterChapterId, setInventoryFilterChapterId] = useState<string | null>(null);
-    const [totalTarget, setTotalTarget] = useState(50); 
-    const [globalFigureCount, setGlobalFigureCount] = useState(0); 
+    const [totalTarget, setTotalTarget] = useState(initialTotalTarget ?? 50);
+    const [globalFigureCount, setGlobalFigureCount] = useState(initialGlobalFigureCount ?? 0);
     const [chapterSearch, setChapterSearch] = useState('');
     const [chapterStats, setChapterStats] = useState<Record<string, ChapterStats>>({});
 
@@ -90,7 +113,6 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'assistant', text: string }[]>([]);
     const [isChatThinking, setIsChatThinking] = useState(false);
     const chatScrollRef = useRef<HTMLDivElement>(null);
-    const [kbChaptersMap, setKbChaptersMap] = useState<any[]>([]);
     const [kbChapterCounts, setKbChapterCounts] = useState<Record<string, number>>({});
 
     // Manual Mode Config
@@ -122,7 +144,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     
     const [blueprint, setBlueprint] = useState<SelectedChapter[]>(initialChapters || []);
     const [globalDiff, setGlobalDiff] = useState({ easy: 30, medium: 50, hard: 20 });
-    const [globalTypes, setGlobalTypes] = useState<TypeDistribution>({ mcq: 70, reasoning: 15, matching: 10, statements: 5 });
+    const [globalTypes, setGlobalTypes] = useState<TypeDistribution>(normalizeInitialGlobalTypes(initialGlobalTypes));
     const [useGlobalDifficulty, setUseGlobalDifficulty] = useState(true);
 
     const [currentViewChapter, setCurrentViewChapter] = useState<ChapterItem | null>(null);
@@ -188,9 +210,6 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     useEffect(() => {
         if (!selectedKb) return;
         supabase.from('kb_classes').select('id, name').eq('kb_id', selectedKb).then(({ data }) => setClasses(data || []));
-        supabase.from('chapters').select('id, name, subject_name, class_name').eq('kb_id', selectedKb).then(({ data }) => {
-            setKbChaptersMap(data || []);
-        });
     }, [selectedKb]);
 
     useEffect(() => {

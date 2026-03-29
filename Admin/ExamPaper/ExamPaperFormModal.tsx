@@ -2,7 +2,18 @@ import '../../types';
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../supabase/client';
 import type { ExamPaperProfileRow, ExamType, MixMode, StyleKey } from './types';
-import { STYLE_KEYS, STYLE_LABELS } from './types';
+import {
+  BIO_BRANCH_SUFFIX,
+  GLOBAL_BIO_PREFIX,
+  GLOBAL_SUB_PREFIX,
+  STYLE_KEYS,
+  STYLE_LABELS,
+  globalSubjectMixBioKey,
+  globalSubjectMixSubKey,
+  humanizeGlobalSubSlug,
+  parseSubjectMixKey,
+  subjectNameToGlobalMixSlug,
+} from './types';
 
 function sumValues(r: Record<string, number>): number {
   return Object.values(r).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
@@ -12,11 +23,145 @@ function emptyStyleMix(): Record<StyleKey, number> {
   return { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
 }
 
+function cloneStyleMixFromUnknown(raw: unknown): Record<StyleKey, number> {
+  const out = emptyStyleMix();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const o = raw as Record<string, unknown>;
+  STYLE_KEYS.forEach((k) => {
+    const v = o[k];
+    out[k] = typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : 0;
+  });
+  return out;
+}
+
+function defaultTemplateStyleMixFromInitial(initial: ExamPaperProfileRow | null): Record<StyleKey, number> {
+  const tmpl = emptyStyleMix();
+  const gsm = initial?.style_mix;
+  if (gsm && typeof gsm === 'object') {
+    STYLE_KEYS.forEach((k) => {
+      const v = (gsm as Record<string, unknown>)[k];
+      tmpl[k] = typeof v === 'number' ? Math.max(0, v) : 0;
+    });
+    return tmpl;
+  }
+  tmpl.mcq = 70;
+  tmpl.reasoning = 10;
+  tmpl.matching = 10;
+  tmpl.statements = 10;
+  return tmpl;
+}
+
+/** Questions allocated to this subject row (from subject_mix + subject_mode). */
+function subjectQuestionAllocation(
+  subjectKey: string,
+  mix: Record<string, number>,
+  subjectMode: MixMode,
+  totalQuestions: number
+): number {
+  const raw = mix[subjectKey] ?? 0;
+  if (subjectMode === 'percent') {
+    return Math.max(0, Math.round((raw / 100) * totalQuestions));
+  }
+  return Math.max(0, Math.round(raw));
+}
+
+function isBiologySubjectName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.trim().toLowerCase();
+  return n === 'biology' || n.includes('biology');
+}
+
+/** KB-wide key: same subject name across all classes shares one row; biology splits only by botany/zoology/unset. */
+function globalSubjectMixKeyForChapter(c: ChapterRow): string {
+  if (isBiologySubjectName(c.subject_name)) {
+    const br =
+      c.biology_branch === 'botany' || c.biology_branch === 'zoology' ? c.biology_branch : 'unset';
+    return globalSubjectMixBioKey(br);
+  }
+  return globalSubjectMixSubKey(c.subject_name);
+}
+
+/** Legacy per–subject_id keys (before global rows). Used to migrate saved profiles. */
+function legacySubjectMixKeyForChapter(c: ChapterRow): string {
+  const sid = c.subject_id?.trim();
+  if (!sid) return `__non_uuid:${(c.subject_name || 'subject').slice(0, 40)}`;
+  if (isBiologySubjectName(c.subject_name)) {
+    const br =
+      c.biology_branch === 'botany' || c.biology_branch === 'zoology' ? c.biology_branch : 'unset';
+    return `${sid}${BIO_BRANCH_SUFFIX}${br}`;
+  }
+  return sid;
+}
+
+function labelForGlobalSubjectMixKey(key: string): string {
+  if (key.startsWith(GLOBAL_BIO_PREFIX)) {
+    const rest = key.slice(GLOBAL_BIO_PREFIX.length);
+    if (rest === 'botany') return 'Biology · Botany (all classes)';
+    if (rest === 'zoology') return 'Biology · Zoology (all classes)';
+    if (rest === 'unset') return 'Biology · Branch not set (all classes)';
+  }
+  if (key.startsWith(GLOBAL_SUB_PREFIX)) {
+    const slug = key.slice(GLOBAL_SUB_PREFIX.length);
+    if (slug.startsWith('legacy_')) return `Subject (legacy) · ${slug.replace(/^legacy_/, '')}`;
+    if (slug.startsWith('orphan_')) return `Unmapped saved key · ${slug.replace(/^orphan_/, '')}`;
+    return `${humanizeGlobalSubSlug(slug)} (all classes)`;
+  }
+  return key;
+}
+
+function migrateSubjectMixToGlobal(legacy: Record<string, number>, chapters: ChapterRow[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  const add = (gk: string, val: number) => {
+    if (!Number.isFinite(val) || val <= 0) return;
+    out[gk] = (out[gk] || 0) + val;
+  };
+
+  for (const [k, rawV] of Object.entries(legacy)) {
+    const num = Number(rawV);
+    if (!Number.isFinite(num) || num <= 0) continue;
+
+    if (k.startsWith(GLOBAL_BIO_PREFIX) || k.startsWith(GLOBAL_SUB_PREFIX)) {
+      add(k, num);
+      continue;
+    }
+
+    const match = chapters.find((c) => legacySubjectMixKeyForChapter(c) === k);
+    if (match) {
+      add(globalSubjectMixKeyForChapter(match), num);
+      continue;
+    }
+
+    const parsed = parseSubjectMixKey(k);
+    if (parsed.bioBranch) {
+      add(globalSubjectMixBioKey(parsed.bioBranch), num);
+      continue;
+    }
+    if (parsed.subjectId && !parsed.subjectId.startsWith('__')) {
+      const byId = chapters.find((c) => (c.subject_id || '').trim() === parsed.subjectId);
+      if (byId) {
+        add(globalSubjectMixKeyForChapter(byId), num);
+        continue;
+      }
+    }
+    add(`${GLOBAL_SUB_PREFIX}orphan_${subjectNameToGlobalMixSlug(k).slice(0, 48)}`, num);
+  }
+
+  return out;
+}
+
 interface ChapterRow {
   id: string;
   name: string;
   subject_name: string | null;
+  subject_id: string | null;
   chapter_number: number | null;
+  class_name: string | null;
+  biology_branch: 'botany' | 'zoology' | null;
+}
+
+interface SubjectOption {
+  key: string;
+  label: string;
 }
 
 interface ExamPaperFormModalProps {
@@ -49,43 +194,68 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
   const [subjectMix, setSubjectMix] = useState<Record<string, number>>({});
   const [chapterMode, setChapterMode] = useState<MixMode>('percent');
   const [chapterMix, setChapterMix] = useState<Record<string, number>>({});
-  const [subjects, setSubjects] = useState<{ key: string; label: string }[]>([]);
+  const [subjects, setSubjects] = useState<SubjectOption[]>([]);
   const [chapters, setChapters] = useState<ChapterRow[]>([]);
   const [chapterPicker, setChapterPicker] = useState('');
+  const [uniformSubjectScratch, setUniformSubjectScratch] = useState('');
+  const [perSubjectStyles, setPerSubjectStyles] = useState(false);
+  const [styleMixBySubject, setStyleMixBySubject] = useState<Record<string, Record<StyleKey, number>>>({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open || !knowledgeBaseId) return;
     const loadMeta = async () => {
+      const legacyMix = (initial?.subject_mix || {}) as Record<string, number>;
       const { data: chapRows } = await supabase
         .from('chapters')
-        .select('id, name, subject_name, subject_id, chapter_number')
+        .select('id, name, subject_name, subject_id, chapter_number, class_name, biology_branch')
         .eq('kb_id', knowledgeBaseId);
-      const list = (chapRows || []) as {
-        id: string;
-        name: string;
-        subject_name: string | null;
-        subject_id: string | null;
-        chapter_number: number | null;
-      }[];
-      setChapters(
-        list.map((c) => ({
-          id: c.id,
-          name: c.name,
-          subject_name: c.subject_name,
-          chapter_number: c.chapter_number,
-        }))
-      );
-      const subMap = new Map<string, string>();
-      list.forEach((c) => {
-        const label = c.subject_name?.trim() || 'Subject';
-        const key = c.subject_id || label;
-        if (!subMap.has(key)) subMap.set(key, label);
-      });
-      setSubjects(Array.from(subMap.entries()).map(([key, label]) => ({ key, label })));
+      const list = (chapRows || []) as ChapterRow[];
+      setChapters(list);
+
+      const labelByKey = new Map<string, string>();
+      for (const c of list) {
+        const key = globalSubjectMixKeyForChapter(c);
+        if (!labelByKey.has(key)) {
+          labelByKey.set(key, labelForGlobalSubjectMixKey(key));
+        }
+      }
+
+      const migrated = migrateSubjectMixToGlobal(legacyMix, list);
+
+      const opts: SubjectOption[] = [];
+      const seen = new Set<string>();
+      for (const [key, label] of labelByKey.entries()) {
+        opts.push({ key, label });
+        seen.add(key);
+      }
+      for (const k of Object.keys(migrated)) {
+        if (seen.has(k)) continue;
+        opts.push({ key: k, label: labelForGlobalSubjectMixKey(k) });
+        seen.add(k);
+      }
+      opts.sort((a, b) => a.label.localeCompare(b.label));
+      setSubjects(opts);
+      setSubjectMix(migrated);
+
+      const tmpl = defaultTemplateStyleMixFromInitial(initial);
+      const metaObj =
+        initial?.metadata && typeof initial.metadata === 'object' && !Array.isArray(initial.metadata)
+          ? (initial.metadata as Record<string, unknown>)
+          : null;
+      const savedRaw = metaObj?.style_mix_by_subject;
+      const saved =
+        savedRaw && typeof savedRaw === 'object' && !Array.isArray(savedRaw)
+          ? (savedRaw as Record<string, Record<string, number>>)
+          : {};
+      const smbs: Record<string, Record<StyleKey, number>> = {};
+      for (const o of opts) {
+        smbs[o.key] = saved[o.key] ? cloneStyleMixFromUnknown(saved[o.key]) : { ...tmpl };
+      }
+      setStyleMixBySubject(smbs);
     };
     void loadMeta();
-  }, [open, knowledgeBaseId]);
+  }, [open, knowledgeBaseId, initial]);
 
   useEffect(() => {
     if (!open) return;
@@ -98,13 +268,17 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
       setStyleMode(initial.style_mode);
       setSubjectMode(initial.subject_mode);
       setChapterMode(initial.chapter_mode);
+      const meta =
+        initial.metadata && typeof initial.metadata === 'object' && !Array.isArray(initial.metadata)
+          ? (initial.metadata as Record<string, unknown>)
+          : null;
+      setPerSubjectStyles(meta?.use_per_subject_style_mix === true);
       const sm = { ...emptyStyleMix() };
       STYLE_KEYS.forEach((k) => {
         const v = initial.style_mix?.[k];
         sm[k] = typeof v === 'number' ? v : 0;
       });
       setStyleMix(sm);
-      setSubjectMix({ ...(initial.subject_mix || {}) });
       setChapterMix({ ...(initial.chapter_mix || {}) });
     } else {
       setName('');
@@ -115,9 +289,9 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
       setStyleMode('percent');
       setStyleMix({ mcq: 70, reasoning: 10, matching: 10, statements: 10 });
       setSubjectMode('percent');
-      setSubjectMix({});
       setChapterMode('percent');
       setChapterMix({});
+      setPerSubjectStyles(false);
     }
     setChapterPicker('');
   }, [open, initial]);
@@ -151,6 +325,60 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
     }
   };
 
+  /** Split total questions evenly across the four style buckets (count mode) or 25% each (percent). */
+  const equalizeStylesFromTotal = () => {
+    if (styleMode === 'percent') {
+      const each = Math.floor(100 / STYLE_KEYS.length);
+      const rest = 100 - each * STYLE_KEYS.length;
+      const next = { ...emptyStyleMix() };
+      STYLE_KEYS.forEach((k, i) => {
+        next[k] = each + (i < rest ? 1 : 0);
+      });
+      setStyleMix(next);
+    } else {
+      const n = STYLE_KEYS.length;
+      const base = Math.floor(totalQuestions / n);
+      const rest = totalQuestions - base * n;
+      const next = { ...emptyStyleMix() };
+      STYLE_KEYS.forEach((k, i) => {
+        next[k] = base + (i < rest ? 1 : 0);
+      });
+      setStyleMix(next);
+    }
+  };
+
+  /** Set every subject row to the same count (count mode) or same % slice (percent). */
+  const applyUniformSubjectValue = (value: number) => {
+    if (subjects.length === 0 || value < 0) return;
+    const v = Math.max(0, value);
+    const next: Record<string, number> = {};
+    subjects.forEach((s) => {
+      next[s.key] = v;
+    });
+    setSubjectMix(next);
+  };
+
+  const setStyleMixForSubject = (subjectKey: string, sk: StyleKey, val: number) => {
+    setStyleMixBySubject((prev) => ({
+      ...prev,
+      [subjectKey]: {
+        ...emptyStyleMix(),
+        ...prev[subjectKey],
+        [sk]: Math.max(0, val),
+      },
+    }));
+  };
+
+  const copyGlobalStyleMixToAllSubjects = () => {
+    setStyleMixBySubject((prev) => {
+      const next = { ...prev };
+      subjects.forEach((s) => {
+        next[s.key] = { ...styleMix };
+      });
+      return next;
+    });
+  };
+
   const addChapterAllocation = () => {
     if (!chapterPicker) return;
     setChapterMix((prev) => ({ ...prev, [chapterPicker]: prev[chapterPicker] ?? 0 }));
@@ -173,7 +401,13 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
     const c = chapters.find((x) => x.id === id);
     if (!c) return id.slice(0, 8);
     const num = c.chapter_number != null ? `Ch ${c.chapter_number}` : '';
-    return [c.subject_name, num, c.name].filter(Boolean).join(' · ');
+    const bio =
+      isBiologySubjectName(c.subject_name) && (c.biology_branch === 'botany' || c.biology_branch === 'zoology')
+        ? c.biology_branch === 'botany'
+          ? 'Botany'
+          : 'Zoology'
+        : null;
+    return [c.class_name, c.subject_name, bio, num, c.name].filter(Boolean).join(' · ');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -199,6 +433,46 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
       if (!confirm(`Subject counts sum to ${subjectSum} but total is ${totalQuestions}. Save anyway?`)) return;
     }
 
+    if (perSubjectStyles) {
+      for (const s of subjects) {
+        const alloc = subjectQuestionAllocation(s.key, subjectMix, subjectMode, totalQuestions);
+        if (alloc <= 0) continue;
+        const row = styleMixBySubject[s.key] || emptyStyleMix();
+        const rowSum = sumValues(row);
+        if (styleMode === 'percent') {
+          if (rowSum > 0 && Math.abs(rowSum - 100) > 2) {
+            if (
+              !confirm(
+                `Style mix for "${s.label}" sums to ${rowSum}% (expected ~100% within that subject). Save anyway?`
+              )
+            ) {
+              return;
+            }
+          }
+        } else if (rowSum > alloc) {
+          if (
+            !confirm(
+              `Style counts for "${s.label}" sum to ${rowSum} but ~${alloc} questions are allocated to that subject. Save anyway?`
+            )
+          ) {
+            return;
+          }
+        }
+      }
+    }
+
+    const baseMetadata =
+      initial?.metadata && typeof initial.metadata === 'object' && !Array.isArray(initial.metadata)
+        ? { ...(initial.metadata as Record<string, unknown>) }
+        : {};
+    if (perSubjectStyles) {
+      baseMetadata.use_per_subject_style_mix = true;
+      baseMetadata.style_mix_by_subject = { ...styleMixBySubject };
+    } else {
+      baseMetadata.use_per_subject_style_mix = false;
+      delete baseMetadata.style_mix_by_subject;
+    }
+
     const payload = {
       knowledge_base_id: knowledgeBaseId,
       name: name.trim(),
@@ -212,7 +486,13 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
       subject_mix: { ...subjectMix },
       chapter_mode: chapterMode,
       chapter_mix: { ...chapterMix },
-      metadata: {},
+      metadata: {
+        ...baseMetadata,
+        subject_keys_include_bio_split: subjects.some(
+          (s) => s.key.startsWith(GLOBAL_BIO_PREFIX) || s.key.includes(BIO_BRANCH_SUFFIX)
+        ),
+        subject_mix_global_kb_wide: true,
+      },
       updated_at: new Date().toISOString(),
       updated_by: userId,
     };
@@ -319,6 +599,63 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
             </div>
           </div>
 
+          <section className="rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-4">
+            <h4 className="text-sm font-semibold text-emerald-950">Uniform global (KB-wide subjects)</h4>
+            <p className="mt-1 text-[11px] leading-relaxed text-emerald-900/80">
+              Subject rows below are <span className="font-semibold">one per subject across every class</span> (e.g. one Botany row = Plus One + Plus Two botany chapters combined). Style tools use{' '}
+              <span className="font-semibold">Total questions</span> when in count mode, or 100% when in percent mode.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={equalizeStylesFromTotal}
+                className="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-[12px] font-semibold text-emerald-900 hover:bg-emerald-50"
+              >
+                Equal all style types
+                {styleMode === 'count' ? ` (from total ${totalQuestions})` : ' (25% each)'}
+              </button>
+              <button
+                type="button"
+                onClick={distributeSubjectsEvenly}
+                disabled={subjects.length === 0}
+                className="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-[12px] font-semibold text-emerald-900 hover:bg-emerald-50 disabled:opacity-40"
+              >
+                Equal per subject row
+                {subjectMode === 'count' ? ` (split ${totalQuestions})` : ' (split 100%)'}
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-emerald-200/60 pt-3">
+              <div className="min-w-[140px] flex-1">
+                <label className="text-[10px] font-semibold uppercase text-emerald-800/90">
+                  Same {subjectMode === 'percent' ? '%' : 'count'} for every subject
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={uniformSubjectScratch}
+                  onChange={(e) => setUniformSubjectScratch(e.target.value)}
+                  placeholder={subjectMode === 'percent' ? 'e.g. 33' : 'e.g. 30'}
+                  className="mt-1 w-full rounded-lg border border-emerald-200 bg-white px-2 py-1.5 text-sm"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const n = parseFloat(uniformSubjectScratch);
+                  if (!Number.isFinite(n) || n < 0) {
+                    alert('Enter a non-negative number.');
+                    return;
+                  }
+                  applyUniformSubjectValue(n);
+                }}
+                disabled={subjects.length === 0}
+                className="rounded-lg bg-emerald-800 px-3 py-2 text-[12px] font-semibold text-white hover:bg-emerald-900 disabled:opacity-40"
+              >
+                Apply to all subjects
+              </button>
+            </div>
+          </section>
+
           <section className="rounded-xl border border-zinc-100 bg-zinc-50/80 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h4 className="text-sm font-semibold text-zinc-800">Question styles</h4>
@@ -332,8 +669,18 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
               </select>
             </div>
             <p className="mt-1 text-[11px] text-zinc-500">
-              Sum: <span className="font-mono font-semibold text-zinc-800">{styleSum}</span>
-              {styleMode === 'percent' ? '%' : ' questions'}
+              {perSubjectStyles ? (
+                <>
+                  <span className="font-semibold">Global default</span> (used when “per subject” is off, or as the starting template). Sum:{' '}
+                  <span className="font-mono font-semibold text-zinc-800">{styleSum}</span>
+                  {styleMode === 'percent' ? '%' : ' questions'}
+                </>
+              ) : (
+                <>
+                  Applies to the whole paper. Sum: <span className="font-mono font-semibold text-zinc-800">{styleSum}</span>
+                  {styleMode === 'percent' ? '%' : ' questions'}
+                </>
+              )}
             </p>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {STYLE_KEYS.map((k) => (
@@ -351,6 +698,73 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
                 </div>
               ))}
             </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200/80 pt-4">
+              <label className="flex cursor-pointer items-center gap-2 text-[12px] font-medium text-zinc-800">
+                <input
+                  type="checkbox"
+                  checked={perSubjectStyles}
+                  onChange={(e) => setPerSubjectStyles(e.target.checked)}
+                  className="h-4 w-4 rounded border-zinc-300"
+                />
+                Set question styles per subject
+              </label>
+              {perSubjectStyles && subjects.length > 0 && (
+                <button
+                  type="button"
+                  onClick={copyGlobalStyleMixToAllSubjects}
+                  className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-800 hover:bg-zinc-50"
+                >
+                  Copy global mix → all subjects
+                </button>
+              )}
+            </div>
+            {perSubjectStyles && (
+              <p className="mt-2 text-[11px] text-zinc-500">
+                Uses the same mode as above ({styleMode === 'percent' ? 'percentages within each subject’s share of the paper' : 'counts within that subject’s question total'}). Turn off to use only the global row.
+              </p>
+            )}
+            {perSubjectStyles && subjects.length === 0 && (
+              <p className="mt-2 text-[12px] text-amber-700">
+                No subject rows yet — wait for chapters to load, or pick a knowledge base with chapters.
+              </p>
+            )}
+            {perSubjectStyles && subjects.length > 0 && (
+              <div className="mt-4 max-h-[min(360px,50vh)] space-y-3 overflow-y-auto pr-1">
+                {subjects.map((s) => {
+                  const row = styleMixBySubject[s.key] || emptyStyleMix();
+                  const alloc = subjectQuestionAllocation(s.key, subjectMix, subjectMode, totalQuestions);
+                  const rowSum = sumValues(row);
+                  return (
+                    <div key={s.key} className="rounded-lg border border-zinc-200 bg-white p-3 shadow-sm">
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-zinc-900">{s.label}</span>
+                        <span className="shrink-0 text-[10px] text-zinc-500">
+                          ~{alloc} Q from subject mix · styles sum {rowSum}
+                          {styleMode === 'percent' ? '%' : ''}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {STYLE_KEYS.map((k) => (
+                          <div key={k}>
+                            <label className="text-[9px] font-semibold uppercase text-zinc-500">{STYLE_LABELS[k]}</label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={row[k]}
+                              onChange={(e) =>
+                                setStyleMixForSubject(s.key, k, parseFloat(e.target.value) || 0)
+                              }
+                              className="mt-0.5 w-full rounded border border-zinc-200 px-2 py-1 text-sm"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
           <section className="rounded-xl border border-zinc-100 bg-zinc-50/80 p-4">
@@ -371,12 +785,13 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
                   disabled={subjects.length === 0}
                   className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-[12px] font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
                 >
-                  Distribute evenly
+                  Equal split (all rows)
                 </button>
               </div>
             </div>
             <p className="mt-1 text-[11px] text-zinc-500">
-              From chapters in this KB. Sum:{' '}
+              <span className="font-semibold">Global distribution only</span> — each row pools all classes (e.g. 45 for Botany draws from Plus One and Plus Two botany chapters together). Biology uses{' '}
+              <span className="font-semibold">Botany</span>, <span className="font-semibold">Zoology</span>, and “Branch not set” when <code className="text-[10px]">biology_branch</code> is missing. Sum:{' '}
               <span className="font-mono font-semibold text-zinc-800">{subjectSum}</span>
               {subjectMode === 'percent' ? '%' : ' questions'}
             </p>
@@ -427,13 +842,22 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
                 className="min-w-[200px] flex-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[12px]"
               >
                 <option value="">Select chapter to add…</option>
-                {chapters.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {[c.subject_name, c.chapter_number != null ? `Ch ${c.chapter_number}` : null, c.name]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </option>
-                ))}
+                {chapters.map((c) => {
+                  const bio =
+                    isBiologySubjectName(c.subject_name) &&
+                    (c.biology_branch === 'botany' || c.biology_branch === 'zoology')
+                      ? c.biology_branch === 'botany'
+                        ? 'Botany'
+                        : 'Zoology'
+                      : null;
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {[c.class_name, c.subject_name, bio, c.chapter_number != null ? `Ch ${c.chapter_number}` : null, c.name]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </option>
+                  );
+                })}
               </select>
               <button
                 type="button"

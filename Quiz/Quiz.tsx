@@ -12,7 +12,7 @@ import SettingsView from '../Settings/SettingsView';
 import AdminView from '../Admin/AdminView';
 import OMRAccuracyTester from './components/OMR/OMRAccuracyTester';
 import TestCreatorView from './components/TestCreatorView';
-import NewTestChapterPickerModal from './components/NewTestChapterPickerModal';
+import NewTestChapterPickerModal, { type NewTestPickerConfirmPayload } from './components/NewTestChapterPickerModal';
 import QuestionListScreen from './components/ResultScreen';
 import InteractiveQuizSession from './components/InteractiveQuizSession';
 import StudentOnlineTestDashboard from '../Student/OnlineTest/StudentOnlineTestDashboard';
@@ -27,7 +27,15 @@ import {
   type AppRole,
   type DashboardView,
 } from '../auth/roles';
-import { BrandingConfig, Question, QuestionType, SelectedChapter, LayoutConfig, TypeDistribution, CreateTestOptions } from './types';
+import {
+  BrandingConfig,
+  Question,
+  QuestionType,
+  SelectedChapter,
+  LayoutConfig,
+  TypeDistribution,
+  CreateTestOptions,
+} from './types';
 import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractImagesFromDoc } from '../services/geminiService';
 import {
   fetchEligibleQuestions,
@@ -263,6 +271,12 @@ const Quiz: React.FC = () => {
   const [editInitialSettings, setEditInitialSettings] = useState<any>(undefined);
   const [editInitialManualQuestions, setEditInitialManualQuestions] = useState<Question[] | undefined>(undefined);
   const [editInitialKnowledgeBaseId, setEditInitialKnowledgeBaseId] = useState<string | null | undefined>(undefined);
+  const [editInitialTotalTarget, setEditInitialTotalTarget] = useState<number | undefined>(undefined);
+  const [editInitialDistributionMode, setEditInitialDistributionMode] = useState<'count' | 'percent' | undefined>(
+    undefined
+  );
+  const [editInitialGlobalTypes, setEditInitialGlobalTypes] = useState<TypeDistribution | undefined>(undefined);
+  const [editInitialGlobalFigureCount, setEditInitialGlobalFigureCount] = useState<number | undefined>(undefined);
   const [newTestChapterPickerOpen, setNewTestChapterPickerOpen] = useState(false);
   const [pendingNewTestKind, setPendingNewTestKind] = useState<'paper' | 'online' | null>(null);
 
@@ -612,6 +626,25 @@ const Quiz: React.FC = () => {
 
   const handleRenameTest = async (testId: string, newName: string) => { try { await supabase.from('tests').update({ name: newName }).eq('id', testId); await fetchWorkspace(); } catch (err: any) { alert("Rename failed: " + err.message); } };
   const handleScheduleTest = async (testId: string, dateStr: string | null) => { try { const updates = dateStr ? { scheduled_at: new Date(dateStr).toISOString(), status: 'scheduled' } : { scheduled_at: null, status: 'generated' }; await supabase.from('tests').update(updates).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Scheduling Error:", e); } };
+
+  const handleRevertTestToDraft = async (testId: string) => {
+    try {
+      let error;
+      ({ error } = await supabase
+        .from('tests')
+        .update({ scheduled_at: null, status: 'draft', evaluation_pending: false })
+        .eq('id', testId));
+      if (error && isMissingDbColumnError(error)) {
+        ({ error } = await supabase.from('tests').update({ scheduled_at: null, status: 'draft' }).eq('id', testId));
+      }
+      if (error) throw error;
+      lastFetchTime.current = 0;
+      await fetchWorkspace(session?.user ?? undefined);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not move test to draft';
+      alert(msg);
+    }
+  };
   const handleAssignClasses = async (testId: string, classIds: string[]) => { try { await supabase.from('tests').update({ class_ids: classIds }).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Assign Error:", e); } };
 
   const handleMoveTestToFolder = async (testId: string, folderId: string | null) => {
@@ -647,8 +680,13 @@ const Quiz: React.FC = () => {
   };
 
   const handleStartTestCreator = (folderId: string | null) => {
-      setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
+      setEditInitialChapters(undefined);
+      setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
       setEditInitialKnowledgeBaseId(undefined);
+      setEditInitialTotalTarget(undefined);
+      setEditInitialDistributionMode(undefined);
+      setEditInitialGlobalTypes(undefined);
+      setEditInitialGlobalFigureCount(undefined);
       setEditingTestId(null); setCreatorFolderId(folderId);
       setIsForging(false); setForgeStep(''); setForgeError(null);
       setForgedResult(null); setOnlineExamResult(null);
@@ -656,8 +694,13 @@ const Quiz: React.FC = () => {
       setNewTestChapterPickerOpen(true);
   };
   const handleStartOnlineExamCreator = (folderId: string | null) => {
-      setEditInitialChapters(undefined); setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
+      setEditInitialChapters(undefined);
+      setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
       setEditInitialKnowledgeBaseId(undefined);
+      setEditInitialTotalTarget(undefined);
+      setEditInitialDistributionMode(undefined);
+      setEditInitialGlobalTypes(undefined);
+      setEditInitialGlobalFigureCount(undefined);
       setEditingTestId(null); setCreatorFolderId(folderId);
       setIsForging(false); setForgeStep(''); setForgeError(null);
       setForgedResult(null); setOnlineExamResult(null);
@@ -665,12 +708,17 @@ const Quiz: React.FC = () => {
       setNewTestChapterPickerOpen(true);
   };
 
-  const handleNewTestChaptersConfirm = (chapters: SelectedChapter[], knowledgeBaseId: string) => {
+  const handleNewTestChaptersConfirm = (payload: NewTestPickerConfirmPayload) => {
       setNewTestChapterPickerOpen(false);
       const kind = pendingNewTestKind;
       setPendingNewTestKind(null);
-      setEditInitialChapters(chapters);
-      setEditInitialKnowledgeBaseId(knowledgeBaseId);
+      setEditInitialChapters(payload.chapters);
+      setEditInitialKnowledgeBaseId(payload.knowledgeBaseId);
+      setEditInitialTopic(payload.initialTopic);
+      setEditInitialTotalTarget(payload.initialTotalTarget);
+      setEditInitialDistributionMode(payload.initialDistributionMode);
+      setEditInitialGlobalTypes(payload.initialGlobalTypes);
+      setEditInitialGlobalFigureCount(payload.initialGlobalFigureCount);
       if (kind === 'paper') setIsCreatorOpen(true);
       else if (kind === 'online') setIsOnlineExamCreatorOpen(true);
   };
@@ -814,21 +862,100 @@ const Quiz: React.FC = () => {
               const currentIds = finalQuestions
                 .map((q) => q.originalId || q.id)
                 .filter((id): id is string => isUuid(id));
-              const eligible = await fetchEligibleQuestions({
-                classId: options.targetClassId || null,
-                chapterId: chap.id,
-                difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
-                excludeIds: currentIds,
-                limit: neededFromAi,
-                allowRepeats: !!options.allowPastQuestions,
-                includeUsedQuestionIds: options.includeUsedQuestionIds || [],
-                excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
-              });
-              if (eligible.length > 0) {
+
+              const styleKeys = ['mcq', 'reasoning', 'matching', 'statements'] as const;
+              const normalizeStylePlan = (counts: Record<string, number> | undefined, total: number): Record<(typeof styleKeys)[number], number> => {
+                if (!counts || total <= 0) return { mcq: total, reasoning: 0, matching: 0, statements: 0 };
+                const raw = styleKeys.map((k) => Math.max(0, Math.round(Number(counts[k]) || 0)));
+                let sum = raw.reduce((a, b) => a + b, 0);
+                if (sum <= 0) return { mcq: total, reasoning: 0, matching: 0, statements: 0 };
+                const scaled = raw.map((v) => Math.round((v / sum) * total));
+                let s = scaled.reduce((a, b) => a + b, 0);
+                let diff = total - s;
+                let i = 0;
+                while (diff !== 0 && i < 200) {
+                  const j = i % styleKeys.length;
+                  if (diff > 0) {
+                    scaled[j] += 1;
+                    diff -= 1;
+                  } else if (scaled[j] > 0) {
+                    scaled[j] -= 1;
+                    diff += 1;
+                  }
+                  i += 1;
+                }
+                return Object.fromEntries(styleKeys.map((k, idx) => [k, scaled[idx]])) as Record<
+                  (typeof styleKeys)[number],
+                  number
+                >;
+              };
+
+              const usePerStyle = !!(chap.useStyleMix && chap.styleCounts);
+              if (usePerStyle) {
+                const plan = normalizeStylePlan(chap.styleCounts, neededFromAi);
+                const collected: Question[] = [];
+                for (const qt of styleKeys) {
+                  const want = plan[qt];
+                  if (want <= 0) continue;
+                  const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const part = await fetchEligibleQuestions({
+                    classId: options.targetClassId || null,
+                    chapterId: chap.id,
+                    difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                    questionType: qt,
+                    excludeIds: exclude,
+                    limit: want,
+                    allowRepeats: !!options.allowPastQuestions,
+                    includeUsedQuestionIds: options.includeUsedQuestionIds || [],
+                    excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+                  });
+                  collected.push(
+                    ...part.map((bq) => ({
+                      ...bq,
+                      sourceChapterName: bq.sourceChapterName || chap.name,
+                    }))
+                  );
+                }
+                let still = neededFromAi - collected.length;
+                if (still > 0) {
+                  const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const filler = await fetchEligibleQuestions({
+                    classId: options.targetClassId || null,
+                    chapterId: chap.id,
+                    difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                    excludeIds: exclude,
+                    limit: still,
+                    allowRepeats: !!options.allowPastQuestions,
+                    includeUsedQuestionIds: options.includeUsedQuestionIds || [],
+                    excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+                  });
+                  collected.push(
+                    ...filler.map((bq) => ({
+                      ...bq,
+                      sourceChapterName: bq.sourceChapterName || chap.name,
+                    }))
+                  );
+                }
+                newBatch = collected.slice(0, neededFromAi);
+              } else {
+                const eligible = await fetchEligibleQuestions({
+                  classId: options.targetClassId || null,
+                  chapterId: chap.id,
+                  difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                  excludeIds: currentIds,
+                  limit: neededFromAi,
+                  allowRepeats: !!options.allowPastQuestions,
+                  includeUsedQuestionIds: options.includeUsedQuestionIds || [],
+                  excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+                });
                 newBatch = eligible.map((bq) => ({
                   ...bq,
                   sourceChapterName: bq.sourceChapterName || chap.name,
                 }));
+              }
+
+              if (newBatch.length > 0) {
+                /* keep db */
               } else {
                 effectiveSource = 'ai';
               }
@@ -1003,7 +1130,8 @@ const Quiz: React.FC = () => {
               const options = test.config?.sourceOptions || test.config;
               if (options) {
                   setEditInitialKnowledgeBaseId(options.knowledgeBaseId ?? undefined);
-                  setEditInitialChapters(options.chapters); setEditInitialManualQuestions(test.questions || options.manualQuestions);
+                  setEditInitialChapters(options.chapters);
+                  setEditInitialManualQuestions(test.questions || options.manualQuestions);
                   setEditInitialSettings({ totalQuestions: options.totalQuestions, globalDiff: options.globalDifficultyMix || options.globalDiff, globalTypes: options.globalTypeMix || options.globalTypes, useGlobalDifficulty: options.useGlobalDifficulty, globalFigureCount: options.globalFigureCount, selectionMode: options.selectionMode || (options.manualQuestions ? 'manual' : 'auto') });
                   if (options.mode === 'online-exam' || test.config.mode === 'online-exam') setIsOnlineExamCreatorOpen(true); else setIsCreatorOpen(true);
               }
@@ -1199,13 +1327,14 @@ const Quiz: React.FC = () => {
             onAssignClasses={handleAssignClasses}
             onMoveTestToFolder={handleMoveTestToFolder}
             onSetEvaluationPending={handleSetEvaluationPending}
+            onRevertTestToDraft={handleRevertTestToDraft}
             viewMode={viewMode}
             setViewMode={setViewMode}
             calendarType={calendarType}
             setCalendarType={setCalendarType}
           />
         )}
-        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} onMoveTestToFolder={handleMoveTestToFolder} onSetEvaluationPending={handleSetEvaluationPending} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
+        {activeView === 'online-exam' && <OnlineExamDashboard username={session.user.email} institutesList={institutes} classesList={orgClasses} folders={folders} allTests={allTests} onAddFolder={handleAddFolder} onStartNewExam={handleStartOnlineExamCreator} onTestClick={handleTestClick} onDeleteItem={handleDeleteItem} onDuplicateTest={handleDuplicateTest} onRenameTest={handleRenameTest} onScheduleTest={handleScheduleTest} onAssignClasses={handleAssignClasses} onMoveTestToFolder={handleMoveTestToFolder} onSetEvaluationPending={handleSetEvaluationPending} onRevertTestToDraft={handleRevertTestToDraft} viewMode={viewMode} setViewMode={setViewMode} calendarType={calendarType} setCalendarType={setCalendarType} />}
         {activeView === 'students' && <StudentDirectory institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'reports' && <ReportsDashboard institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} userId={session.user.id} onRefresh={refreshOrgData} />}
@@ -1258,7 +1387,31 @@ const Quiz: React.FC = () => {
                   </div>
               )}
               <div className="min-h-0 flex-1">
-                  <TestCreatorView onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsCreatorOpen(false); setEditInitialKnowledgeBaseId(undefined); }} onStart={handleCreateTest} onSaveDraft={handleSaveDraft} isLoading={isForging} loadingStep={forgeStep} initialChapters={editInitialChapters} initialKnowledgeBaseId={editInitialKnowledgeBaseId ?? null} initialTopic={editInitialTopic} initialManualQuestions={editInitialManualQuestions} />
+                  <TestCreatorView
+                      onClose={() => {
+                          setIsForging(false);
+                          setForgeStep('');
+                          setForgeError(null);
+                          setIsCreatorOpen(false);
+                          setEditInitialKnowledgeBaseId(undefined);
+                          setEditInitialTotalTarget(undefined);
+                          setEditInitialDistributionMode(undefined);
+                          setEditInitialGlobalTypes(undefined);
+                          setEditInitialGlobalFigureCount(undefined);
+                      }}
+                      onStart={handleCreateTest}
+                      onSaveDraft={handleSaveDraft}
+                      isLoading={isForging}
+                      loadingStep={forgeStep}
+                      initialChapters={editInitialChapters}
+                      initialKnowledgeBaseId={editInitialKnowledgeBaseId ?? null}
+                      initialTopic={editInitialTopic}
+                      initialManualQuestions={editInitialManualQuestions}
+                      initialTotalTarget={editInitialTotalTarget}
+                      initialDistributionMode={editInitialDistributionMode}
+                      initialGlobalTypes={editInitialGlobalTypes}
+                      initialGlobalFigureCount={editInitialGlobalFigureCount}
+                  />
               </div>
           </div>
       )}
@@ -1272,8 +1425,18 @@ const Quiz: React.FC = () => {
                   </div>
               )}
               <div className="min-h-0 flex-1">
-                  <TestCreatorView 
-                      onClose={() => { setIsForging(false); setForgeStep(''); setForgeError(null); setIsOnlineExamCreatorOpen(false); setEditInitialKnowledgeBaseId(undefined); }} 
+                  <TestCreatorView
+                      onClose={() => {
+                          setIsForging(false);
+                          setForgeStep('');
+                          setForgeError(null);
+                          setIsOnlineExamCreatorOpen(false);
+                          setEditInitialKnowledgeBaseId(undefined);
+                          setEditInitialTotalTarget(undefined);
+                          setEditInitialDistributionMode(undefined);
+                          setEditInitialGlobalTypes(undefined);
+                          setEditInitialGlobalFigureCount(undefined);
+                      }}
                       onSaveDraft={handleSaveDraft}
                       onStart={async (opts) => {
                           setForgeError(null);
@@ -1287,12 +1450,16 @@ const Quiz: React.FC = () => {
                               setForgeError(`Forge failed: ${msg}`);
                           } finally { setIsForging(false); setForgeStep(''); }
                       }}
-                      isLoading={isForging} 
-                      loadingStep={forgeStep} 
-                      initialChapters={editInitialChapters} 
+                      isLoading={isForging}
+                      loadingStep={forgeStep}
+                      initialChapters={editInitialChapters}
                       initialKnowledgeBaseId={editInitialKnowledgeBaseId ?? null}
-                      initialTopic={editInitialTopic} 
+                      initialTopic={editInitialTopic}
                       initialManualQuestions={editInitialManualQuestions}
+                      initialTotalTarget={editInitialTotalTarget}
+                      initialDistributionMode={editInitialDistributionMode}
+                      initialGlobalTypes={editInitialGlobalTypes}
+                      initialGlobalFigureCount={editInitialGlobalFigureCount}
                   />
               </div>
           </div>

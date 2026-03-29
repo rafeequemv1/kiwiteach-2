@@ -33,6 +33,8 @@ interface EligibleInput {
   classId?: string | null;
   chapterId: string;
   difficulty?: string | null;
+  /** When set, only this question_type is returned (direct table query; bypasses RPC for precise typing). */
+  questionType?: string | null;
   excludeIds?: string[];
   limit?: number;
   allowRepeats?: boolean;
@@ -45,6 +47,21 @@ export async function fetchEligibleQuestions(input: EligibleInput): Promise<Ques
   const limit = Math.max(1, input.limit ?? 20);
   const excludeIds = (input.excludeIds || []).filter(isUuid);
   const includeUsedQuestionIds = (input.includeUsedQuestionIds || []).filter(isUuid);
+
+  if (input.questionType) {
+    let query = supabase
+      .from('question_bank_neet')
+      .select('*')
+      .eq('chapter_id', input.chapterId)
+      .eq('question_type', input.questionType);
+    if (input.difficulty) query = query.eq('difficulty', input.difficulty);
+    if (excludeIds.length > 0) query = query.not('id', 'in', `(${excludeIds.join(',')})`);
+    const { data, error } = await query.limit(limit);
+    if (error) throw error;
+    const mapped = (data || []).map(mapBankRowToQuestion);
+    const ex = input.excludedTopicLabelsNormalized || [];
+    return ex.length ? mapped.filter((q) => !topicTagIsExcluded(q.topic_tag, ex)) : mapped;
+  }
 
   if (input.classId && isUuid(input.classId)) {
     const { data, error } = await supabase.rpc('get_eligible_questions_for_class', {

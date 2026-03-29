@@ -18,6 +18,7 @@ interface OnlineExamDashboardProps {
   onAssignClasses: (testId: string, classIds: string[]) => Promise<void>;
   onMoveTestToFolder?: (testId: string, folderId: string | null) => Promise<void>;
   onSetEvaluationPending?: (testId: string, pending: boolean) => Promise<void>;
+  onRevertTestToDraft?: (testId: string) => Promise<void>;
   viewMode: 'icons' | 'list' | 'calendar' | 'kanban';
   setViewMode: (mode: 'icons' | 'list' | 'calendar' | 'kanban') => void;
   calendarType: 'month' | 'week' | 'year';
