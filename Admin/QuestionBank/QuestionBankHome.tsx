@@ -5,7 +5,7 @@ import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractImagesFromDoc, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
 import { QuestionType, Question } from '../../Quiz/types';
-import QuestionPaperItem from '../../Quiz/components/QuestionPaperItem';
+import QuestionPaperItem, { QuestionFlagReason } from '../../Quiz/components/QuestionPaperItem';
 import { ChapterStatChips } from '../../Quiz/components/ChapterStatChips';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
@@ -111,6 +111,7 @@ const QuestionBankHome: React.FC = () => {
   const [reviewShowChoices, setReviewShowChoices] = useState(true);
   const [reviewShowExplanations, setReviewShowExplanations] = useState(true);
   const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
+  const [flagReasonsByQuestionId, setFlagReasonsByQuestionId] = useState<Record<string, string>>({});
 
   const [chapterConfigs, setChapterConfigs] = useState<Record<string, ChapterConfig>>({});
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
@@ -577,6 +578,7 @@ const QuestionBankHome: React.FC = () => {
     const loadFlagsForVisibleQuestions = async () => {
       if (!bankUserId) {
         setFlaggedQuestionIds(new Set());
+        setFlagReasonsByQuestionId({});
         return;
       }
 
@@ -586,12 +588,13 @@ const QuestionBankHome: React.FC = () => {
 
       if (visibleIds.length === 0) {
         setFlaggedQuestionIds(new Set());
+        setFlagReasonsByQuestionId({});
         return;
       }
 
       const { data, error } = await supabase
         .from('out_of_syllabus_question_flags')
-        .select('question_id')
+        .select('question_id, reason')
         .in('question_id', visibleIds)
         .eq('flagged_by', bankUserId)
         .eq('exam_tag', 'neet');
@@ -601,13 +604,19 @@ const QuestionBankHome: React.FC = () => {
         return;
       }
 
-      setFlaggedQuestionIds(new Set(((data as { question_id: string }[]) || []).map((row) => row.question_id)));
+      const rows = (data as { question_id: string; reason: string | null }[]) || [];
+      const reasons: Record<string, string> = {};
+      for (const row of rows) {
+        reasons[row.question_id] = (row.reason && row.reason.trim()) || 'out_of_syllabus';
+      }
+      setFlaggedQuestionIds(new Set(rows.map((r) => r.question_id)));
+      setFlagReasonsByQuestionId(reasons);
     };
 
     void loadFlagsForVisibleQuestions();
   }, [bankUserId, displayQuestions]);
 
-  const handleFlagOutOfSyllabus = async (questionId: string) => {
+  const handleFlagOutOfSyllabus = async (questionId: string, reason: QuestionFlagReason = 'out_of_syllabus') => {
     if (!isUuidLike(questionId)) {
       alert('Only saved repository questions can be flagged.');
       return;
@@ -616,7 +625,7 @@ const QuestionBankHome: React.FC = () => {
     const { error } = await supabase.rpc('flag_question_out_of_syllabus', {
       p_question_id: questionId,
       p_knowledge_base_id: selectedKbId,
-      p_reason: null,
+      p_reason: reason,
       p_exam_tag: 'neet',
     });
 
@@ -626,6 +635,7 @@ const QuestionBankHome: React.FC = () => {
     }
 
     setFlaggedQuestionIds((prev) => new Set(prev).add(questionId));
+    setFlagReasonsByQuestionId((prev) => ({ ...prev, [questionId]: reason }));
   };
 
   return (
@@ -1090,6 +1100,7 @@ const QuestionBankHome: React.FC = () => {
                                     onToggleSelect={(id) => handleToggleSelect(String(id))}
                                     onFlagOutOfSyllabus={mode === 'browse' ? handleFlagOutOfSyllabus : undefined}
                                     isFlaggedOutOfSyllabus={flaggedQuestionIds.has(String(q.id))}
+                                    flagReason={flagReasonsByQuestionId[String(q.id)] ?? null}
                                 />
                             ))
                          )}

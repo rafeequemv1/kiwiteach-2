@@ -171,6 +171,87 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     return text.toString().replace(/[^a-z0-9]/gi, '_').toLowerCase();
   };
 
+  const escapeCsvCell = (value: string | number | null | undefined) => {
+    const s = value === null || value === undefined ? '' : String(value);
+    if (/[",\r\n]/.test(s)) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+
+  const handleExportCatalogCsv = () => {
+    const headers = [
+      'knowledge_base',
+      'class',
+      'subject',
+      'chapter_number',
+      'chapter_name',
+      'biology_branch',
+      'chapter_status',
+      'entry_type',
+    ] as const;
+
+    const lines: string[] = [];
+    lines.push(headers.map((h) => escapeCsvCell(h)).join(','));
+
+    const sortedChapters = [...chapters].sort((a, b) => {
+      const byClass = (a.class_name || '').localeCompare(b.class_name || '');
+      if (byClass !== 0) return byClass;
+      const bySub = (a.subject_name || '').localeCompare(b.subject_name || '');
+      if (bySub !== 0) return bySub;
+      const an = a.chapter_number ?? 9999;
+      const bn = b.chapter_number ?? 9999;
+      if (an !== bn) return an - bn;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    for (const c of sortedChapters) {
+      lines.push(
+        [
+          escapeCsvCell(kbName),
+          escapeCsvCell(c.class_name),
+          escapeCsvCell(c.subject_name),
+          escapeCsvCell(c.chapter_number ?? ''),
+          escapeCsvCell(c.name),
+          escapeCsvCell(c.biology_branch ?? ''),
+          escapeCsvCell(c.status),
+          escapeCsvCell('chapter'),
+        ].join(',')
+      );
+    }
+
+    const subjectIdsWithChapter = new Set(chapters.map((ch) => ch.subject_id));
+    const subjectsWithoutChapters = subjects.filter((s) => !subjectIdsWithChapter.has(s.id));
+    const sortedOrphans = [...subjectsWithoutChapters].sort((a, b) => {
+      const byClass = (a.class_name || '').localeCompare(b.class_name || '');
+      if (byClass !== 0) return byClass;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+    for (const s of sortedOrphans) {
+      lines.push(
+        [
+          escapeCsvCell(kbName),
+          escapeCsvCell(s.class_name),
+          escapeCsvCell(s.name),
+          escapeCsvCell(''),
+          escapeCsvCell(''),
+          escapeCsvCell(''),
+          escapeCsvCell(''),
+          escapeCsvCell('subject_only'),
+        ].join(',')
+      );
+    }
+
+    const bom = '\uFEFF';
+    const blob = new Blob([bom + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${slugify(kbName)}_chapters_subjects_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const extractTextFromPdf = async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
@@ -498,7 +579,18 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
             ))}
           </div>
 
-          <div className="relative group min-w-[200px] lg:min-w-[300px]">
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={handleExportCatalogCsv}
+              disabled={subjects.length === 0 && chapters.length === 0}
+              title="Download all classes, subjects, and chapters as CSV"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-600 shadow-sm transition-all hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <iconify-icon icon="mdi:tray-arrow-down" width="16" />
+              <span className="hidden sm:inline">Export CSV</span>
+            </button>
+            <div className="relative group min-w-[160px] flex-1 lg:min-w-[280px] lg:max-w-[360px]">
               <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input 
                 type="text" 
@@ -512,6 +604,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                   <iconify-icon icon="mdi:close-circle" />
                 </button>
               )}
+            </div>
           </div>
         </div>
 

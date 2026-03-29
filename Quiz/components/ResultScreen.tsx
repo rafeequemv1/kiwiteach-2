@@ -9,6 +9,7 @@ import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
 import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
+import { flagReasonTooltip, QuestionFlagReason } from './QuestionPaperItem';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -201,6 +202,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [showAnswerKey, setShowAnswerKey] = useState(false);
   const [allowPastReplacements, setAllowPastReplacements] = useState(sourceOptions?.allowPastQuestions ?? false);
   const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
+  const [flagReasonsByQuestionId, setFlagReasonsByQuestionId] = useState<Record<string, string>>({});
   const [flaggingQuestionId, setFlaggingQuestionId] = useState<string | null>(null);
   const [viewerUserId, setViewerUserId] = useState<string | null>(null);
 
@@ -567,6 +569,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     const loadFlagsForCurrentPaper = async () => {
       if (!viewerUserId) {
         setFlaggedQuestionIds(new Set());
+        setFlagReasonsByQuestionId({});
         return;
       }
       const ids = currentQuestions
@@ -574,11 +577,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         .filter((id): id is string => isUuid(id));
       if (!ids.length) {
         setFlaggedQuestionIds(new Set());
+        setFlagReasonsByQuestionId({});
         return;
       }
       const { data, error } = await supabase
         .from('out_of_syllabus_question_flags')
-        .select('question_id')
+        .select('question_id, reason')
         .in('question_id', ids)
         .eq('flagged_by', viewerUserId)
         .eq('exam_tag', 'neet');
@@ -586,12 +590,18 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         console.warn('Could not load test-paper flags:', error.message);
         return;
       }
-      setFlaggedQuestionIds(new Set(((data as { question_id: string }[]) || []).map((row) => row.question_id)));
+      const rows = (data as { question_id: string; reason: string | null }[]) || [];
+      const reasons: Record<string, string> = {};
+      for (const row of rows) {
+        reasons[row.question_id] = (row.reason && row.reason.trim()) || 'out_of_syllabus';
+      }
+      setFlaggedQuestionIds(new Set(rows.map((r) => r.question_id)));
+      setFlagReasonsByQuestionId(reasons);
     };
     void loadFlagsForCurrentPaper();
   }, [currentQuestions, viewerUserId]);
 
-  const handleFlagQuestion = async (q: Question) => {
+  const handleFlagQuestion = async (q: Question, reason: QuestionFlagReason = 'out_of_syllabus') => {
     const questionId = q.originalId || q.id;
     if (!isUuid(questionId)) {
       alert('Only saved repository questions can be flagged.');
@@ -602,7 +612,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       const { error } = await supabase.rpc('flag_question_out_of_syllabus', {
         p_question_id: questionId,
         p_knowledge_base_id: null,
-        p_reason: null,
+        p_reason: reason,
         p_exam_tag: 'neet',
       });
       if (error) {
@@ -610,6 +620,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         return;
       }
       setFlaggedQuestionIds((prev) => new Set(prev).add(questionId));
+      setFlagReasonsByQuestionId((prev) => ({ ...prev, [questionId]: reason }));
 
       const currentIds = currentQuestions
         .map((item) => item.originalId || item.id)
@@ -1026,7 +1037,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   );
 
   const BlockRenderer: React.FC<{
-      block: QuizBlock; showChoices: boolean; showSourceFigure: boolean; showDifficulty: boolean; onDelete?: (id: string) => void; onReplace?: (q: Question) => void; onFlag?: (q: Question) => void;
+      block: QuizBlock; showChoices: boolean; showSourceFigure: boolean; showDifficulty: boolean; onDelete?: (id: string) => void; onReplace?: (q: Question) => void; onFlag?: (q: Question, reason?: QuestionFlagReason) => void;
   }> = ({ block, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
       if (block.type === 'subject-header') return <div className="border-y border-black py-0.25 text-center font-black text-[0.9em] uppercase tracking-widest bg-white mb-3 mt-1 text-black">PART: {block.content}</div>;
       const q = block.question;
@@ -1044,6 +1055,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
       const colA = q.columnA || q.column_a;
       const colB = q.columnB || q.column_b;
+      const stableQid = String(q.originalId || q.id);
+      const isFlagged = flaggedQuestionIds.has(stableQid);
+      const flagReasonStored = flagReasonsByQuestionId[stableQid];
+      const flagTip = isFlagged ? flagReasonTooltip(flagReasonStored) : undefined;
+      const hasFigure = !!(q.figureDataUrl || q.figure_url);
       
       const sizeMap: Record<FigureSize, string> = { small: 'S', medium: 'M', large: 'L' };
       const heightMap: Record<FigureSize, string> = { small: '80px', medium: '120px', large: '180px' };
@@ -1074,24 +1090,59 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                         <iconify-icon icon="mdi:refresh" width="16" />
                     )}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => onFlag && onFlag(q)}
-                    disabled={flaggingQuestionId === q.id}
-                    className={`flex h-7 items-center justify-center gap-1 rounded-md border px-2 text-[8px] font-semibold uppercase tracking-wide transition-all active:scale-95 disabled:opacity-50 ${
-                      flaggedQuestionIds.has((q.originalId || q.id) as string)
-                        ? 'border-rose-300 bg-rose-50 text-rose-700'
-                        : 'border-zinc-200 bg-white text-zinc-600 hover:text-rose-600'
-                    }`}
-                    title="Flag out of syllabus"
-                  >
-                    {flaggingQuestionId === q.id ? (
-                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900"></div>
-                    ) : (
-                      <iconify-icon icon={flaggedQuestionIds.has((q.originalId || q.id) as string) ? 'mdi:flag' : 'mdi:flag-outline'} width="13" />
-                    )}
-                    {flaggedQuestionIds.has((q.originalId || q.id) as string) ? 'Flagged' : 'Flag'}
-                  </button>
+                  {onFlag && !isFlagged && hasFigure ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onFlag(q, 'out_of_syllabus')}
+                        disabled={flaggingQuestionId === q.id}
+                        className="flex h-7 items-center justify-center gap-0.5 rounded-md border border-zinc-200 bg-white px-1.5 text-[7px] font-semibold uppercase tracking-wide text-zinc-600 transition-all hover:text-rose-600 active:scale-95 disabled:opacity-50"
+                        title="Flag as out of syllabus"
+                      >
+                        {flaggingQuestionId === q.id ? (
+                          <div className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900"></div>
+                        ) : (
+                          <>
+                            <iconify-icon icon="mdi:book-remove-outline" width="12" />
+                            <span className="hidden min-[480px]:inline">Syllabus</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onFlag(q, 'incorrect_figure')}
+                        disabled={flaggingQuestionId === q.id}
+                        className="flex h-7 items-center justify-center gap-0.5 rounded-md border border-zinc-200 bg-white px-1.5 text-[7px] font-semibold uppercase tracking-wide text-zinc-600 transition-all hover:text-rose-600 active:scale-95 disabled:opacity-50"
+                        title="Flag as incorrect figure"
+                      >
+                        {flaggingQuestionId === q.id ? (
+                          <div className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900"></div>
+                        ) : (
+                          <>
+                            <iconify-icon icon="mdi:image-broken-variant" width="12" />
+                            <span className="hidden min-[480px]:inline">Figure</span>
+                          </>
+                        )}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onFlag && onFlag(q, 'out_of_syllabus')}
+                      disabled={flaggingQuestionId === q.id}
+                      className={`flex h-7 items-center justify-center gap-1 rounded-md border px-2 text-[8px] font-semibold uppercase tracking-wide transition-all active:scale-95 disabled:opacity-50 ${
+                        isFlagged ? 'border-rose-300 bg-rose-50 text-rose-700' : 'border-zinc-200 bg-white text-zinc-600 hover:text-rose-600'
+                      }`}
+                      title={isFlagged ? flagTip : 'Flag as out of syllabus'}
+                    >
+                      {flaggingQuestionId === q.id ? (
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900"></div>
+                      ) : (
+                        <iconify-icon icon={isFlagged ? 'mdi:flag' : 'mdi:flag-outline'} width="13" />
+                      )}
+                      {isFlagged ? 'Flagged' : 'Flag'}
+                    </button>
+                  )}
               </div>
   
               <div className="flex gap-1.5 items-start">
@@ -1102,7 +1153,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                   </div>
               </div>
               {q.figureDataUrl && (
-                  <div className="ml-5 my-1.5 p-1 border border-black/20 rounded inline-block bg-white shadow-sm relative group/figure">
+                  <div
+                    className="ml-5 my-1.5 p-1 border border-black/20 rounded inline-block bg-white shadow-sm relative group/figure"
+                    title={isFlagged ? flagTip : undefined}
+                  >
                       <img src={q.figureDataUrl} className="object-contain mix-blend-multiply" style={{ maxHeight: heightMap[currentSize] }} alt="Figure Asset" />
                       <div className="no-print absolute -top-3 right-0 bg-black/60 text-white rounded-full px-1 py-0.5 opacity-0 group-hover/figure:opacity-100 transition-opacity flex items-center gap-0.5 shadow-lg">
                           <button onClick={() => adjustFigureSize(q.id, 'decrease')} className="w-5 h-5 flex items-center justify-center hover:bg-white/20 rounded-full font-bold text-lg leading-none pb-1 disabled:opacity-30" disabled={currentSize === 'small'}>-</button>

@@ -3,6 +3,18 @@ import React from 'react';
 import { Question } from '../types';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 
+export type QuestionFlagReason = 'out_of_syllabus' | 'incorrect_figure';
+
+function normalizeFlagReason(raw: string | null | undefined): QuestionFlagReason {
+  const s = (raw || '').trim().toLowerCase();
+  if (s === 'incorrect_figure' || (s.includes('incorrect') && s.includes('figure'))) return 'incorrect_figure';
+  return 'out_of_syllabus';
+}
+
+export function flagReasonTooltip(raw: string | null | undefined): string {
+  return normalizeFlagReason(raw) === 'incorrect_figure' ? 'Incorrect figure' : 'Out of syllabus';
+}
+
 interface QuestionPaperItemProps {
   question: Question;
   index: number;
@@ -10,8 +22,10 @@ interface QuestionPaperItemProps {
   showSource?: boolean;
   onToggleSelect?: (id: string) => void;
   isSelected?: boolean;
-  onFlagOutOfSyllabus?: (id: string) => void;
+  onFlagOutOfSyllabus?: (id: string, reason?: QuestionFlagReason) => void;
   isFlaggedOutOfSyllabus?: boolean;
+  /** Stored `reason` from `out_of_syllabus_question_flags` (drives tooltip when flagged). */
+  flagReason?: string | null;
 }
 
 const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({ 
@@ -22,11 +36,14 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   onToggleSelect,
   isSelected,
   onFlagOutOfSyllabus,
-  isFlaggedOutOfSyllabus = false
+  isFlaggedOutOfSyllabus = false,
+  flagReason = null,
 }) => {
   const isMatching = (question.type as any) === 'matching';
   const columnA = question.columnA || question.column_a;
   const columnB = question.columnB || question.column_b;
+  const hasFigure = !!(question.figureDataUrl || question.figure_url);
+  const flagTooltip = isFlaggedOutOfSyllabus ? flagReasonTooltip(flagReason) : undefined;
 
   return (
     <div 
@@ -48,23 +65,58 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
           {isSelected && <div className="flex h-5 w-5 animate-fade-in items-center justify-center rounded-full bg-zinc-900 text-white shadow-sm"><iconify-icon icon="mdi:check-bold" width="12" /></div>}
       </div>
       {onFlagOutOfSyllabus && (
-        <div className="mb-2 flex justify-end">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onFlagOutOfSyllabus(question.id);
-            }}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide transition-colors ${
-              isFlaggedOutOfSyllabus
-                ? 'border-rose-300 bg-rose-50 text-rose-700'
-                : 'border-zinc-200 bg-white text-zinc-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700'
-            }`}
-            title="Flag this as out-of-syllabus"
-          >
-            <iconify-icon icon={isFlaggedOutOfSyllabus ? 'mdi:flag' : 'mdi:flag-outline'} width="12" />
-            {isFlaggedOutOfSyllabus ? 'Flagged' : 'Out of syllabus'}
-          </button>
+        <div className="mb-2 flex justify-end gap-1.5">
+          {isFlaggedOutOfSyllabus ? (
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-rose-300 bg-rose-50 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-rose-700"
+              title={flagTooltip}
+            >
+              <iconify-icon icon="mdi:flag" width="12" />
+              Flagged
+            </button>
+          ) : hasFigure ? (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFlagOutOfSyllabus(question.id, 'out_of_syllabus');
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-600 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                title="Flag as out of syllabus"
+              >
+                <iconify-icon icon="mdi:book-remove-outline" width="12" />
+                Syllabus
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFlagOutOfSyllabus(question.id, 'incorrect_figure');
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-600 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                title="Flag as incorrect figure"
+              >
+                <iconify-icon icon="mdi:image-broken-variant" width="12" />
+                Figure
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onFlagOutOfSyllabus(question.id, 'out_of_syllabus');
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-600 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+              title="Flag as out of syllabus"
+            >
+              <iconify-icon icon="mdi:flag-outline" width="12" />
+              Out of syllabus
+            </button>
+          )}
         </div>
       )}
 
@@ -75,7 +127,10 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
 
       {/* Figures */}
       {(question.figureDataUrl || question.figure_url) && (
-          <div className="my-3 flex justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2">
+          <div
+            className="my-3 flex justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2"
+            title={isFlaggedOutOfSyllabus && onFlagOutOfSyllabus ? flagTooltip : undefined}
+          >
               <img src={question.figureDataUrl || question.figure_url} className="max-h-40 object-contain mix-blend-multiply" alt="Diagram" />
           </div>
       )}
