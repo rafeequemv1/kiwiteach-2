@@ -1,7 +1,8 @@
 import '../../types';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../supabase/client';
-import { GoogleGenAI, Type } from '@google/genai';
+import { FinishReason, GoogleGenAI, Type } from '@google/genai';
+import { motion } from 'motion/react';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
 import { parsePseudoLatexAndMathAllowTables } from '../../utils/latexParser';
@@ -10,6 +11,7 @@ import {
   stripDocxImageTokens,
   type DocxEmbeddedImage,
 } from '../../utils/docxFigureExtract';
+import { buildParseSanityWarning, type ParseSanityWarning } from '../../utils/examQuestionCountHeuristic';
 
 interface PYQRow {
   id: string;
@@ -410,10 +412,26 @@ const parseGeminiJson = (txt: string): GeminiDocRow[] => {
     .replace(/^```\s*/i, '')
     .replace(/\s*```$/, '')
     .trim();
-  const parsed = JSON.parse(cleaned);
-  if (!Array.isArray(parsed)) return [];
-  return parsed as GeminiDocRow[];
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as GeminiDocRow[];
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const hint =
+      /Unterminated string|Unexpected end|JSON/i.test(msg)
+        ? " This usually means Gemini's reply was cut off or had invalid JSON. Try Gemini 3 Pro, a shorter file, or split the paper into smaller documents."
+        : '';
+    throw new Error(`${msg}.${hint}`);
+  }
 };
+
+function draftsFromGeminiResponseText(outText: string): Draft[] {
+  return parseGeminiJson(outText)
+    .map(normalizeGeminiRow)
+    .map(ensureSourceQuestionNumberFromStem)
+    .filter((r) => stripDocxImageTokens(r.question_text).replace(/\s/g, '').length > 0);
+}
 
 /** USD → INR for UI estimates only (adjust if your billing uses a different FX). */
 const PYQ_USD_INR = 87;
@@ -458,10 +476,19 @@ const PYQ_GEMINI_MODEL_OPTIONS: PyqGeminiModelOption[] = [
   },
 ];
 
-const PYQ_SOURCE_CHUNK_CHARS = 20_000;
-const PYQ_SOURCE_CHUNK_OVERLAP = 3_500;
+/** Smaller segments → smaller JSON per Gemini call → fewer truncated / invalid JSON payloads. */
+const PYQ_SOURCE_CHUNK_CHARS = 7_000;
+const PYQ_SOURCE_CHUNK_OVERLAP = 3_800;
 /** Large JSON arrays need a high ceiling or the response truncates mid-array. */
 const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
+
+type PyqParseProgressPayload = {
+  fileIndex: number;
+  fileTotal: number;
+  fileName: string;
+  chunkIndex: number;
+  chunkTotal: number;
+};
 
 function splitPyqSourceIntoChunks(full: string): string[] {
   const target = PYQ_SOURCE_CHUNK_CHARS;
@@ -528,6 +555,8 @@ function buildPyqGeminiUserPrompt(
     'If the source has 50 items, the array must have 50 objects (unless this is a segment: only items starting here).\n\n' +
     'CRITICAL — verbatim text: copy question_text and every option field character-for-character from the source (same spelling, punctuation, LaTeX/MathJax, units). ' +
     'Do not rephrase, simplify, fix typos, or change notation. The only allowed edit is removing IMAGE_N lines from text fields (figures use doc_image_index).\n\n' +
+    'CRITICAL — JSON string rules: escape double-quotes inside any string as backslash-quote; use backslash-n for newlines inside strings (no raw line breaks inside JSON string values). ' +
+    'Output must be one valid JSON array only.\n\n' +
     'IGNORE (do not output as questions): cover pages; logos and branding; watermarks; coaching or publisher headers/footers; decorative or banner images; hall-ticket / OMR instructions; ' +
     'generic "Read carefully", duration, maximum marks, or syllabus tables unless they are the sole content of a scored item. ' +
     'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
@@ -653,38 +682,60 @@ async function runPyqGeminiExtractOneChunk(
   chunkText: string,
   segment: { index: number; total: number } | undefined
 ): Promise<Draft[]> {
-  const response = await ai.models.generateContent({
-    model: modelId,
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: buildPyqGeminiUserPrompt(fileName, chunkText, segment) }],
+  const callModel = async () => {
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: buildPyqGeminiUserPrompt(fileName, chunkText, segment) }],
+        },
+      ],
+      config: {
+        temperature: 0,
+        maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+        responseMimeType: 'application/json',
+        responseSchema: getPyqGeminiResponseSchema(),
       },
-    ],
-    config: {
-      temperature: 0,
-      maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
-      responseMimeType: 'application/json',
-      responseSchema: getPyqGeminiResponseSchema(),
-    },
-  });
-  const outText = response.text || '[]';
-  return parseGeminiJson(outText)
-    .map(normalizeGeminiRow)
-    .map(ensureSourceQuestionNumberFromStem)
-    .filter((r) => stripDocxImageTokens(r.question_text).replace(/\s/g, '').length > 0);
+    });
+    const finishReason = response.candidates?.[0]?.finishReason;
+    if (finishReason === FinishReason.MAX_TOKENS) {
+      throw new Error(
+        'Gemini stopped at MAX_TOKENS (output truncated, JSON incomplete). Try Gemini 3 Pro or a shorter document. This app splits long papers into smaller segments to reduce this.'
+      );
+    }
+    const outText = response.text || '[]';
+    return draftsFromGeminiResponseText(outText);
+  };
+
+  try {
+    return await callModel();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/JSON|parse|Unterminated|Unexpected end|position /i.test(msg)) {
+      await new Promise((r) => setTimeout(r, 900));
+      return await callModel();
+    }
+    throw e;
+  }
 }
 
-async function runPyqGeminiExtract(file: File, modelId: string): Promise<Draft[]> {
+async function runPyqGeminiExtract(
+  file: File,
+  modelId: string,
+  onProgress?: (p: { chunkIndex: number; chunkTotal: number }) => void
+): Promise<{ drafts: Draft[]; parseSanity: ParseSanityWarning | null }> {
   const { rawText, docxImages } = await extractLocalPyqSource(file);
   const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
   const chunks = splitPyqSourceIntoChunks(rawText);
   let base: Draft[] = [];
   if (chunks.length === 1) {
+    onProgress?.({ chunkIndex: 1, chunkTotal: 1 });
     base = await runPyqGeminiExtractOneChunk(ai, file.name, modelId, chunks[0], undefined);
   } else {
     const parts: Draft[][] = [];
     for (let i = 0; i < chunks.length; i++) {
+      onProgress?.({ chunkIndex: i + 1, chunkTotal: chunks.length });
       const piece = await runPyqGeminiExtractOneChunk(ai, file.name, modelId, chunks[i], {
         index: i + 1,
         total: chunks.length,
@@ -698,7 +749,8 @@ async function runPyqGeminiExtract(file: File, modelId: string): Promise<Draft[]
   if (docxImages.length > 0) {
     withFigures = attachSingleOrphanDocxImage(withFigures, docxImages);
   }
-  return withFigures;
+  const parseSanity = buildParseSanityWarning(rawText, withFigures.length, file.name);
+  return { drafts: withFigures, parseSanity };
 }
 
 function formatPendingCommitLabel(files: File[]): string {
@@ -934,6 +986,8 @@ const PYQManager: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [parsingDoc, setParsingDoc] = useState(false);
+  const [pyqParseProgress, setPyqParseProgress] = useState<PyqParseProgressPayload | null>(null);
+  const [pyqParseSanityWarnings, setPyqParseSanityWarnings] = useState<ParseSanityWarning[]>([]);
   const [previewRows, setPreviewRows] = useState<Draft[]>([]);
   const [activeUploadSetId, setActiveUploadSetId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -1118,12 +1172,33 @@ const PYQManager: React.FC = () => {
       alert('Add at least one document.');
       return;
     }
+    const fileTotal = docImportQueue.length;
     setParsingDoc(true);
+    setPyqParseProgress(null);
+    setPyqParseSanityWarnings([]);
     const combined: Draft[] = [];
+    const sanityCollected: ParseSanityWarning[] = [];
     try {
       let fileOrd = 0;
-      for (const file of docImportQueue) {
-        const drafts = await runPyqGeminiExtract(file, pyqGeminiModel);
+      for (let fi = 0; fi < docImportQueue.length; fi++) {
+        const file = docImportQueue[fi];
+        setPyqParseProgress({
+          fileIndex: fi + 1,
+          fileTotal,
+          fileName: file.name,
+          chunkIndex: 0,
+          chunkTotal: 1,
+        });
+        const { drafts, parseSanity } = await runPyqGeminiExtract(file, pyqGeminiModel, ({ chunkIndex, chunkTotal }) => {
+          setPyqParseProgress({
+            fileIndex: fi + 1,
+            fileTotal,
+            fileName: file.name,
+            chunkIndex,
+            chunkTotal,
+          });
+        });
+        if (parseSanity) sanityCollected.push(parseSanity);
         if (drafts.length === 0) {
           alert(`No questions extracted from ${file.name}.`);
           return;
@@ -1136,10 +1211,12 @@ const PYQManager: React.FC = () => {
       setDocImportQueue([]);
       setDocQueueStats([]);
       setPreviewRows(sortDraftsExamOrder(combined));
+      setPyqParseSanityWarnings(sanityCollected);
     } catch (e: any) {
       alert(e?.message || 'Failed to parse documents with Gemini');
     } finally {
       setParsingDoc(false);
+      setPyqParseProgress(null);
     }
   }, [docImportQueue, pyqGeminiModel]);
 
@@ -1185,6 +1262,7 @@ const PYQManager: React.FC = () => {
       if (activeUploadSetId === setId) {
         setActiveUploadSetId(null);
         setPreviewRows([]);
+        setPyqParseSanityWarnings([]);
         setPendingCommit(null);
         setPreviewModalOpen(false);
       }
@@ -1221,6 +1299,7 @@ const PYQManager: React.FC = () => {
     }
     setActiveUploadSetId(null);
     setPendingCommit({ files: [file], kind: 'csv' });
+    setPyqParseSanityWarnings([]);
     setPreviewRows(sortDraftsExamOrder(parsed));
   };
 
@@ -1268,6 +1347,7 @@ const PYQManager: React.FC = () => {
       const { error } = await supabase.from('pyq_questions_neet').insert(payload);
       if (error) throw error;
       setPreviewRows([]);
+      setPyqParseSanityWarnings([]);
       setActiveUploadSetId(null);
       setPreviewModalOpen(false);
       await load();
@@ -1281,6 +1361,7 @@ const PYQManager: React.FC = () => {
 
   const cancelPreview = () => {
     setPreviewRows([]);
+    setPyqParseSanityWarnings([]);
     setActiveUploadSetId(null);
     setPendingCommit(null);
     setDocImportQueue([]);
@@ -1570,7 +1651,8 @@ const PYQManager: React.FC = () => {
                 <iconify-icon icon="mdi:file-document-multiple-outline" width="28" className="text-violet-600" />
                 <p className="mt-2 text-sm font-semibold text-zinc-900">DOC · DOCX · TXT (multi)</p>
                 <p className="mt-1 text-[11px] leading-snug text-zinc-500">
-                  Add files, pick a model, estimate cost in ₹, then parse. One Gemini request per file (figures stay aligned per document).
+                  Add files, pick a model, estimate cost in ₹, then parse. Long papers are split into overlapping segments (several API calls per
+                  file); figures stay aligned per document.
                 </p>
                 <input
                   ref={docFileInputRef}
@@ -1713,6 +1795,35 @@ const PYQManager: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {pyqParseSanityWarnings.length > 0 ? (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2.5 text-[12px] leading-snug text-amber-950">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-amber-900">Count sanity check</p>
+                    <p className="mt-1 text-amber-900/90">
+                      Plain-text scan suggests more numbered stems than Gemini returned. Some questions may be missing — try Pro, shorter
+                      chunks, or verify the paper layout.
+                    </p>
+                    <ul className="mt-2 list-inside list-disc space-y-0.5 text-[11px] text-amber-900/85">
+                      {pyqParseSanityWarnings.map((w, i) => (
+                        <li key={`${w.fileLabel}-${i}`}>
+                          <span className="font-medium">{w.fileLabel}</span>: ~{w.heuristicCount} lines look like question starts, extracted{' '}
+                          {w.extractedCount}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPyqParseSanityWarnings([])}
+                    className="shrink-0 text-[11px] font-semibold text-amber-800 underline decoration-amber-300 hover:text-amber-950"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-5 overflow-hidden rounded-xl border border-zinc-200 bg-white">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2.5">
@@ -2101,6 +2212,57 @@ const PYQManager: React.FC = () => {
           </div>
         )}
       </div>
+
+      {parsingDoc ? (
+        <div
+          className="fixed inset-0 z-[600] flex items-center justify-center bg-zinc-950/80 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-busy="true"
+          aria-label="Parsing documents with Gemini"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+            <div className="flex items-start gap-4">
+              <span
+                className="mt-0.5 h-11 w-11 shrink-0 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600"
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-zinc-900">Parsing with Gemini</p>
+                <p className="mt-1 break-words text-[13px] leading-snug text-zinc-600">
+                  {pyqParseProgress ? (
+                    <>
+                      File <span className="font-mono font-semibold text-indigo-700">{pyqParseProgress.fileIndex}</span> of{' '}
+                      <span className="font-mono">{pyqParseProgress.fileTotal}</span>
+                      <span className="mt-0.5 block truncate text-zinc-500" title={pyqParseProgress.fileName}>
+                        {pyqParseProgress.fileName}
+                      </span>
+                      <span className="mt-1 block text-[12px] text-zinc-500">
+                        Segment{' '}
+                        <span className="font-mono font-medium text-zinc-800">
+                          {pyqParseProgress.chunkIndex}/{pyqParseProgress.chunkTotal}
+                        </span>{' '}
+                        {pyqParseProgress.chunkTotal > 1 ? '(this file is split for reliability)' : ''}
+                      </span>
+                    </>
+                  ) : (
+                    'Preparing documents…'
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="relative mt-5 h-2 w-full overflow-hidden rounded-full bg-zinc-200">
+              <motion.div
+                className="absolute top-0 h-full w-[36%] rounded-full bg-gradient-to-r from-violet-500 to-indigo-500"
+                initial={{ left: '-36%' }}
+                animate={{ left: ['-36%', '100%'] }}
+                transition={{ duration: 2.1, repeat: Infinity, ease: 'linear' }}
+              />
+            </div>
+            <p className="mt-4 text-center text-[11px] text-zinc-500">Keep this tab open. Large papers can take several minutes.</p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

@@ -9,6 +9,7 @@ import {
   stripDocxImageTokens,
   type DocxEmbeddedImage,
 } from '../../utils/docxFigureExtract';
+import { buildParseSanityWarning, type ParseSanityWarning } from '../../utils/examQuestionCountHeuristic';
 
 declare const mammoth: any;
 
@@ -59,6 +60,8 @@ type Draft = {
   topic_tag: string;
   image_index?: number | null;
   import_file_ordinal?: number;
+  /** Printed question number from the source (e.g. 1, 09, 101, 4a). Used for ordering and preview. */
+  source_question_number?: string;
 };
 
 type GeminiDocRow = Partial<Draft>;
@@ -104,8 +107,9 @@ function attachSingleOrphanRefImage(rows: Draft[], images: DocxEmbeddedImage[]):
   return rows.map((r, j) => (j === i ? { ...r, image_index: 0 } : r));
 }
 
-const REF_SOURCE_CHUNK_CHARS = 20_000;
-const REF_SOURCE_CHUNK_OVERLAP = 3_500;
+/** Smaller chunks → smaller JSON per response → fewer truncated / dropped rows on 100–200 Q papers. */
+const REF_SOURCE_CHUNK_CHARS = 10_000;
+const REF_SOURCE_CHUNK_OVERLAP = 5_000;
 const REF_GEMINI_MAX_OUTPUT_TOKENS = 65_536;
 
 function splitRefSourceIntoChunks(full: string): string[] {
@@ -136,6 +140,7 @@ function mergeRefChunkDrafts(parts: Draft[][]): Draft[] {
   const out: Draft[] = [];
   for (const part of parts) {
     for (const d of part) {
+      const sq = (d.source_question_number || '').trim().toLowerCase();
       const stem = stripDocxImageTokens(d.question_text || '')
         .replace(/\s+/g, ' ')
         .trim()
@@ -144,7 +149,7 @@ function mergeRefChunkDrafts(parts: Draft[][]): Draft[] {
       const opts = (d.options || [])
         .map((o) => stripDocxImageTokens(o).replace(/\s+/g, ' ').trim().slice(0, 72))
         .join('|');
-      const key = `${stem}::${opts}`;
+      const key = `${sq}\t${stem}::${opts}`;
       if (!stem) continue;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -175,6 +180,7 @@ function buildRefGeminiUserPrompt(
     `(same spelling, punctuation, math/LaTeX, units). Do not rephrase, fix typos, simplify, or normalize whitespace. ` +
     `The only allowed edit is removing IMAGE_N tokens from text fields (figures use image_index).\n\n` +
     `Return ONLY valid JSON (no markdown) as an array of objects with:\n` +
+    `- source_question_number (string, REQUIRED): the printed question number exactly as in the source (e.g. 1, 09, 101, 4a, 12(i)). Never renumber by extraction order; papers may start at 101 or 180.\n` +
     `- question_text (string)\n` +
     `- options (array of 4 strings if MCQ; otherwise empty array)\n` +
     `- correct_index (0-3 for MCQ; 0 if unknown)\n` +
@@ -211,20 +217,28 @@ type RefGeminiModelOption = {
 
 const REF_GEMINI_MODEL_OPTIONS: RefGeminiModelOption[] = [
   {
-    id: 'gemini-flash-lite-latest',
-    label: 'Gemini Flash Lite',
-    blurb: 'Lowest cost — best for bulk parsing',
-    inputUsdPer1M: 0.05,
-    outputUsdPer1M: 0.2,
-    bestValue: true,
+    id: 'gemini-3-pro-preview',
+    label: 'Gemini 3 Pro (preview)',
+    blurb: 'Best for 100–200 questions — fewest skipped items (higher cost)',
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 10,
+    bestValue: false,
   },
   {
     id: 'gemini-3-flash-preview',
     label: 'Gemini 3 Flash (preview)',
-    blurb: 'Balanced quality and speed',
+    blurb: 'Faster; may miss a few items on very long papers vs Pro',
     inputUsdPer1M: 0.15,
     outputUsdPer1M: 0.6,
     bestValue: false,
+  },
+  {
+    id: 'gemini-flash-lite-latest',
+    label: 'Gemini Flash Lite',
+    blurb: 'Lowest cost — OK for short sets; not ideal for 150+ questions',
+    inputUsdPer1M: 0.05,
+    outputUsdPer1M: 0.2,
+    bestValue: true,
   },
 ];
 
@@ -261,7 +275,11 @@ async function downloadRefDocPath(path: string): Promise<ArrayBuffer> {
 
 function normalizeGeminiDraft(r: GeminiDocRow): Draft {
   const opts = Array.isArray(r.options) ? r.options.map((x) => stripDocxImageTokens(String(x))) : [];
+  const sqRaw = (r as GeminiDocRow & { source_question_number?: unknown }).source_question_number;
+  const source_question_number =
+    sqRaw == null || sqRaw === '' ? '' : String(sqRaw).trim();
   return {
+    source_question_number,
     question_text: stripDocxImageTokens(String(r.question_text ?? '')),
     options: opts,
     correct_index: Math.max(0, Math.min(3, safeInt((r as any).correct_index, 0))),
@@ -288,6 +306,7 @@ function getRefGeminiResponseSchema() {
     items: {
       type: Type.OBJECT,
       properties: {
+        source_question_number: { type: Type.STRING },
         question_text: { type: Type.STRING },
         options: { type: Type.ARRAY, items: { type: Type.STRING } },
         correct_index: { type: Type.NUMBER },
@@ -301,7 +320,15 @@ function getRefGeminiResponseSchema() {
         topic_tag: { type: Type.STRING },
         image_index: { type: Type.NUMBER },
       },
-      required: ['question_text', 'options', 'correct_index', 'explanation', 'question_type', 'difficulty'],
+      required: [
+        'source_question_number',
+        'question_text',
+        'options',
+        'correct_index',
+        'explanation',
+        'question_type',
+        'difficulty',
+      ],
     },
   };
 }
@@ -348,22 +375,62 @@ async function runGeminiExtract(docText: string, fileName: string, modelId: stri
   return mergeRefChunkDrafts(parts);
 }
 
-async function runRefGeminiOnBuffer(buf: ArrayBuffer, displayName: string, modelId: string): Promise<{ drafts: Draft[]; imageCount: number }> {
+function ensureRefSourceQuestionNumberFromStem(d: Draft): Draft {
+  if ((d.source_question_number || '').trim()) return d;
+  const plain = (d.question_text || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (plain.length < 2) return d;
+  const m = plain.match(/^(\d{1,4})\s*[.)]\s/);
+  if (m) return { ...d, source_question_number: m[1] };
+  return d;
+}
+
+function finalizeReferenceDrafts(rows: Draft[]): Draft[] {
+  const withNums = rows.map(ensureRefSourceQuestionNumberFromStem);
+  return [...withNums]
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const oa = a.r.import_file_ordinal;
+      const ob = b.r.import_file_ordinal;
+      if (oa != null && ob != null && oa !== ob) return oa - ob;
+      if (oa != null && ob == null) return -1;
+      if (oa == null && ob != null) return 1;
+      const sa = (a.r.source_question_number || '').trim();
+      const sb = (b.r.source_question_number || '').trim();
+      if (sa !== sb) return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
+      return a.i - b.i;
+    })
+    .map(({ r }) => r);
+}
+
+async function runRefGeminiOnBuffer(
+  buf: ArrayBuffer,
+  displayName: string,
+  modelId: string
+): Promise<{ drafts: Draft[]; imageCount: number; parseSanity: ParseSanityWarning | null }> {
   const { text, images } = await parseDocxBufferWithEmbeddedImages(buf, mammoth);
   if (!text.trim()) throw new Error(`No text extracted from ${displayName}`);
   let drafts = await runGeminiExtract(text, displayName, modelId);
   drafts = attachSingleOrphanRefImage(drafts, images);
-  return { drafts, imageCount: images.length };
+  const parseSanity = buildParseSanityWarning(text, drafts.length, displayName);
+  return { drafts, imageCount: images.length, parseSanity };
 }
 
-async function runRefGeminiOnDocPaths(paths: string[], modelId: string): Promise<Draft[]> {
+async function runRefGeminiOnDocPaths(
+  paths: string[],
+  modelId: string
+): Promise<{ drafts: Draft[]; parseSanityWarnings: ParseSanityWarning[] }> {
   let offset = 0;
   const combined: Draft[] = [];
+  const parseSanityWarnings: ParseSanityWarning[] = [];
   let fileOrd = 0;
   for (const pth of paths) {
     const displayName = pth.split('/').pop() || pth;
     const buf = await downloadRefDocPath(pth);
-    const { drafts, imageCount } = await runRefGeminiOnBuffer(buf, displayName, modelId);
+    const { drafts, imageCount, parseSanity } = await runRefGeminiOnBuffer(buf, displayName, modelId);
+    if (parseSanity) parseSanityWarnings.push(parseSanity);
     for (const d of drafts) {
       combined.push({
         ...d,
@@ -374,7 +441,7 @@ async function runRefGeminiOnDocPaths(paths: string[], modelId: string): Promise
     offset += imageCount;
     fileOrd += 1;
   }
-  return combined;
+  return { drafts: finalizeReferenceDrafts(combined), parseSanityWarnings };
 }
 
 function toPublicUrl(path: string) {
@@ -457,6 +524,7 @@ const ReferenceQuestionsManager: React.FC = () => {
   const [docQueueStats, setDocQueueStats] = useState<{ name: string; chars: number }[]>([]);
   const [docQueueScanning, setDocQueueScanning] = useState(false);
   const [stagedPreview, setStagedPreview] = useState<Draft[]>([]);
+  const [refParseSanityWarnings, setRefParseSanityWarnings] = useState<ParseSanityWarning[]>([]);
   const [pendingPublishFiles, setPendingPublishFiles] = useState<File[] | null>(null);
   const docFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -467,7 +535,8 @@ const ReferenceQuestionsManager: React.FC = () => {
     } catch {
       /* ignore */
     }
-    return REF_GEMINI_MODEL_OPTIONS.find((m) => m.bestValue)!.id;
+    const pro = REF_GEMINI_MODEL_OPTIONS.find((m) => m.id === 'gemini-3-pro-preview');
+    return pro?.id ?? REF_GEMINI_MODEL_OPTIONS[0].id;
   });
 
   useEffect(() => {
@@ -611,6 +680,7 @@ const ReferenceQuestionsManager: React.FC = () => {
 
   const cancelStagedImport = useCallback(() => {
     setStagedPreview([]);
+    setRefParseSanityWarnings([]);
     setPendingPublishFiles(null);
     setDocImportQueue([]);
     setDocQueueStats([]);
@@ -628,13 +698,16 @@ const ReferenceQuestionsManager: React.FC = () => {
     }
     setParsingDoc(true);
     setError(null);
+    setRefParseSanityWarnings([]);
     const combined: Draft[] = [];
+    const sanityCollected: ParseSanityWarning[] = [];
     try {
       let offset = 0;
       let fileOrd = 0;
       for (const file of docImportQueue) {
         const buf = await file.arrayBuffer();
-        const { drafts, imageCount } = await runRefGeminiOnBuffer(buf, file.name, refGeminiModel);
+        const { drafts, imageCount, parseSanity } = await runRefGeminiOnBuffer(buf, file.name, refGeminiModel);
+        if (parseSanity) sanityCollected.push(parseSanity);
         if (drafts.length === 0) {
           setError(`No questions extracted from ${file.name}.`);
           return;
@@ -652,7 +725,8 @@ const ReferenceQuestionsManager: React.FC = () => {
       setPendingPublishFiles([...docImportQueue]);
       setDocImportQueue([]);
       setDocQueueStats([]);
-      setStagedPreview(combined);
+      setStagedPreview(finalizeReferenceDrafts(combined));
+      setRefParseSanityWarnings(sanityCollected);
     } catch (e: any) {
       setError(e?.message || 'Failed to parse documents with Gemini');
     } finally {
@@ -695,7 +769,7 @@ const ReferenceQuestionsManager: React.FC = () => {
         original_filename: formatRefPendingLabel(files),
         uploaded_by: user?.id ?? null,
         ai_status: 'complete',
-        preview_questions: drafts as unknown as Record<string, unknown>,
+        preview_questions: finalizeReferenceDrafts(drafts) as unknown as Record<string, unknown>,
         ai_error: null,
         metadata: additionalPaths.length > 0 ? { additional_doc_paths: additionalPaths } : {},
       });
@@ -729,6 +803,7 @@ const ReferenceQuestionsManager: React.FC = () => {
   const runAiAnalysis = async (set: SetRow) => {
     setAnalyzingSetId(set.id);
     setError(null);
+    setRefParseSanityWarnings([]);
     try {
       await supabase
         .from('reference_question_sets')
@@ -737,19 +812,20 @@ const ReferenceQuestionsManager: React.FC = () => {
       setSets((prev) => prev.map((s) => (s.id === set.id ? { ...s, ai_status: 'analyzing' } : s)));
 
       const paths = allDocPaths(set);
-      const drafts = await runRefGeminiOnDocPaths(paths, refGeminiModel);
+      const { drafts, parseSanityWarnings } = await runRefGeminiOnDocPaths(paths, refGeminiModel);
       if (drafts.length === 0) throw new Error('No questions extracted from document(s)');
 
       const { error: uErr } = await supabase
         .from('reference_question_sets')
         .update({
           ai_status: 'complete',
-          preview_questions: drafts as unknown as Record<string, unknown>,
+          preview_questions: finalizeReferenceDrafts(drafts) as unknown as Record<string, unknown>,
           ai_error: null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', set.id);
       if (uErr) throw uErr;
+      setRefParseSanityWarnings(parseSanityWarnings);
       await loadSets();
     } catch (e: any) {
       const msg = e?.message || 'AI analysis failed';
@@ -765,7 +841,7 @@ const ReferenceQuestionsManager: React.FC = () => {
   };
 
   const commitSetToLibrary = async (set: SetRow) => {
-    const preview = (set.preview_questions || []) as Draft[];
+    const preview = finalizeReferenceDrafts((set.preview_questions || []) as Draft[]);
     if (preview.length === 0) {
       setError('Run AI analysis first.');
       return;
@@ -824,6 +900,8 @@ const ReferenceQuestionsManager: React.FC = () => {
             source: 'mathpix-docx',
             image_indices: p.image_index ?? null,
             set_id: set.id,
+            source_question_number: (p.source_question_number || '').trim() || null,
+            import_file_ordinal: p.import_file_ordinal ?? null,
           },
         };
       });
@@ -928,8 +1006,13 @@ const ReferenceQuestionsManager: React.FC = () => {
 
   const firstPreviewSlice = useMemo(() => {
     if (!activeSet?.preview_questions?.length) return [];
-    return (activeSet.preview_questions as Draft[]).slice(0, 8);
+    return finalizeReferenceDrafts(activeSet.preview_questions as Draft[]).slice(0, 8);
   }, [activeSet]);
+
+  const stagedPreviewOrdered = useMemo(
+    () => finalizeReferenceDrafts(stagedPreview),
+    [stagedPreview]
+  );
 
   const stagedSourceLabel = pendingPublishFiles?.length ? formatRefPendingLabel(pendingPublishFiles) : '';
 
@@ -941,8 +1024,9 @@ const ReferenceQuestionsManager: React.FC = () => {
             <h3 className="text-base font-semibold text-zinc-900">Reference questions import</h3>
             <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
               Add one or more Mathpix <span className="font-mono">.docx</span> files, choose a Gemini model, then{' '}
-              <strong>Parse all with Gemini</strong>. Review the preview, <strong>Publish to server</strong> to store the set, then{' '}
-              <strong>Save to library</strong> on the card to insert rows into <span className="font-mono">reference_questions</span>.
+              <strong>Parse all with Gemini</strong>. Long papers are split into overlapping segments so each response stays smaller
+              (reduces dropped rows on 100–200 question sets). For maximum recall on large papers use <strong>Gemini 3 Pro</strong>. Then{' '}
+              <strong>Publish to server</strong> and <strong>Save to library</strong> on the card.
             </p>
           </div>
           <button
@@ -954,13 +1038,42 @@ const ReferenceQuestionsManager: React.FC = () => {
           </button>
         </div>
 
+        {refParseSanityWarnings.length > 0 ? (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2.5 text-[12px] leading-snug text-amber-950">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-semibold text-amber-900">Count sanity check</p>
+                <p className="mt-1 text-amber-900/90">
+                  Local scan of the extracted DOCX text found more numbered question-like lines than Gemini returned. You may be missing rows —
+                  try Gemini 3 Pro or split the file.
+                </p>
+                <ul className="mt-2 list-inside list-disc space-y-0.5 text-[11px] text-amber-900/85">
+                  {refParseSanityWarnings.map((w, i) => (
+                    <li key={`${w.fileLabel}-${i}`}>
+                      <span className="font-medium">{w.fileLabel}</span>: ~{w.heuristicCount} stems vs {w.extractedCount} extracted
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRefParseSanityWarnings([])}
+                className="shrink-0 text-[11px] font-semibold text-amber-800 underline decoration-amber-300 hover:text-amber-950"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {stagedPreview.length === 0 ? (
           <div className="mt-5">
             <div className="flex flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-violet-300 hover:bg-violet-50/30">
               <iconify-icon icon="mdi:file-document-multiple-outline" width="28" className="text-violet-600" />
               <p className="mt-2 text-sm font-semibold text-zinc-900">DOCX (multi)</p>
               <p className="mt-1 text-[11px] leading-snug text-zinc-500">
-                One Gemini request per file; figure placeholders stay aligned per document, then indices are merged for save.
+                Each file may use several Gemini requests if the text is long. Figures stay aligned per file; preview is sorted by printed
+                question number.
               </p>
               <input
                 ref={docFileInputRef}
@@ -1009,7 +1122,8 @@ const ReferenceQuestionsManager: React.FC = () => {
                   {REF_GEMINI_MODEL_OPTIONS.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.label}
-                      {m.bestValue ? ' — best ₹ efficiency' : ''}
+                      {m.id === 'gemini-3-pro-preview' ? ' — best for 100+ Q' : ''}
+                      {m.bestValue ? ' — lowest ₹' : ''}
                     </option>
                   ))}
                 </select>
@@ -1100,16 +1214,21 @@ const ReferenceQuestionsManager: React.FC = () => {
             <table className="w-full min-w-[560px] table-fixed border-collapse text-left text-[11px]">
               <thead>
                 <tr className="border-b border-zinc-100 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  <th className="w-8 py-2 pl-3">#</th>
+                  <th className="w-14 py-2 pl-3">Q#</th>
                   <th className="py-2">Question</th>
                   <th className="w-28 py-2">Meta</th>
                   <th className="w-16 py-2 pr-3">Fig</th>
                 </tr>
               </thead>
               <tbody>
-                {stagedPreview.slice(0, 40).map((p, i) => (
-                  <tr key={i} className="border-t border-zinc-100 align-top">
-                    <td className="py-2 pl-3 text-zinc-400">{i + 1}</td>
+                {stagedPreviewOrdered.slice(0, 40).map((p, i) => (
+                  <tr
+                    key={`${p.source_question_number || i}-${i}-${p.question_text.slice(0, 24)}`}
+                    className="border-t border-zinc-100 align-top"
+                  >
+                    <td className="py-2 pl-3 font-mono text-[10px] text-zinc-600" title={p.source_question_number || undefined}>
+                      {p.source_question_number?.trim() || `(${i + 1})`}
+                    </td>
                     <td className="py-2 pr-2">
                       <MeasuredSnippet
                         text={p.question_text}
@@ -1125,9 +1244,9 @@ const ReferenceQuestionsManager: React.FC = () => {
                 ))}
               </tbody>
             </table>
-            {stagedPreview.length > 40 && (
+            {stagedPreviewOrdered.length > 40 && (
               <p className="border-t border-zinc-100 px-3 py-2 text-center text-[11px] text-zinc-500">
-                Showing first 40 of {stagedPreview.length} — full list is saved when you publish.
+                Showing first 40 of {stagedPreviewOrdered.length} — full list is saved when you publish.
               </p>
             )}
           </div>
@@ -1345,6 +1464,9 @@ const ReferenceQuestionsManager: React.FC = () => {
                   <ul className="space-y-2 text-[11px] text-zinc-700">
                     {firstPreviewSlice.map((p, i) => (
                       <li key={i} className="rounded-md border border-zinc-100 bg-zinc-50/80 p-2">
+                        <span className="font-mono font-semibold text-indigo-800">
+                          Q{p.source_question_number?.trim() || i + 1}
+                        </span>{' '}
                         <span className="font-semibold text-zinc-900">{p.chapter_name || 'Chapter ?'}</span> ·{' '}
                         {p.difficulty} · {p.question_type} · {p.question_format}
                         <MeasuredSnippet
