@@ -4,6 +4,14 @@
 
 export type DocxEmbeddedImage = { data: string; mimeType: string };
 
+/**
+ * Remove IMAGE_N tokens only. Does not normalize spaces or newlines — keeps stem/option text verbatim
+ * except for stripping figure placeholders the model must not echo.
+ */
+export function stripDocxImageTokens(text: string): string {
+  return String(text ?? '').replace(/\bIMAGE_\d+\b/gi, '');
+}
+
 export function htmlBodyToPlainTextWithImagePlaceholders(body: HTMLElement): string {
   const parts: string[] = [];
   const walk = (node: Node) => {

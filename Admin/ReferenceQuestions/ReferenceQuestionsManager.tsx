@@ -4,7 +4,11 @@ import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
-import { parseDocxBufferWithEmbeddedImages, type DocxEmbeddedImage } from '../../utils/docxFigureExtract';
+import {
+  parseDocxBufferWithEmbeddedImages,
+  stripDocxImageTokens,
+  type DocxEmbeddedImage,
+} from '../../utils/docxFigureExtract';
 
 declare const mammoth: any;
 
@@ -88,14 +92,6 @@ function safeInt(v: unknown, fallback = 0) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function scrubFigurePlaceholders(text: string): string {
-  return (text || '')
-    .replace(/\bIMAGE_\d+\b/gi, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 function attachSingleOrphanRefImage(rows: Draft[], images: DocxEmbeddedImage[]): Draft[] {
   if (images.length !== 1) return rows;
   const unbound: number[] = [];
@@ -108,9 +104,76 @@ function attachSingleOrphanRefImage(rows: Draft[], images: DocxEmbeddedImage[]):
   return rows.map((r, j) => (j === i ? { ...r, image_index: 0 } : r));
 }
 
-function buildRefGeminiUserPrompt(fileName: string, docText: string): string {
+const REF_SOURCE_CHUNK_CHARS = 20_000;
+const REF_SOURCE_CHUNK_OVERLAP = 3_500;
+const REF_GEMINI_MAX_OUTPUT_TOKENS = 65_536;
+
+function splitRefSourceIntoChunks(full: string): string[] {
+  const target = REF_SOURCE_CHUNK_CHARS;
+  const overlap = REF_SOURCE_CHUNK_OVERLAP;
+  if (full.length <= target) return [full];
+  const chunks: string[] = [];
+  let start = 0;
+  let guard = 0;
+  while (start < full.length && guard < 400) {
+    guard += 1;
+    let end = Math.min(start + target, full.length);
+    if (end < full.length) {
+      const slice = full.slice(start, end);
+      let breakAt = slice.lastIndexOf('\n\n');
+      if (breakAt < target * 0.38) breakAt = slice.lastIndexOf('\n');
+      if (breakAt >= target * 0.32) end = start + breakAt + 1;
+    }
+    chunks.push(full.slice(start, end));
+    if (end >= full.length) break;
+    start = Math.max(start + 1, end - overlap);
+  }
+  return chunks.length ? chunks : [full];
+}
+
+function mergeRefChunkDrafts(parts: Draft[][]): Draft[] {
+  const seen = new Set<string>();
+  const out: Draft[] = [];
+  for (const part of parts) {
+    for (const d of part) {
+      const stem = stripDocxImageTokens(d.question_text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200)
+        .toLowerCase();
+      const opts = (d.options || [])
+        .map((o) => stripDocxImageTokens(o).replace(/\s+/g, ' ').trim().slice(0, 72))
+        .join('|');
+      const key = `${stem}::${opts}`;
+      if (!stem) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(d);
+    }
+  }
+  return out;
+}
+
+function buildRefGeminiUserPrompt(
+  fileName: string,
+  docText: string,
+  segment?: { index: number; total: number }
+): string {
+  const segIntro =
+    segment && segment.total > 1
+      ? `SEGMENT ${segment.index} of ${segment.total} (same file split for length). ` +
+        `Extract every question whose stem STARTS in this segment. ` +
+        `Do not repeat questions from earlier segments. ` +
+        `Do not skip any question that starts here.\n\n`
+      : '';
   return (
+    segIntro +
     `You are converting Mathpix-exported questions into strict JSON.\n\n` +
+    `CRITICAL — completeness: extract every question in the document (or this segment). Never omit, merge, or summarize items. ` +
+    `The output array length must match the number of distinct scored items in the source (within this segment if segmented).\n\n` +
+    `CRITICAL — verbatim text: copy question_text and each option string character-for-character from the source ` +
+    `(same spelling, punctuation, math/LaTeX, units). Do not rephrase, fix typos, simplify, or normalize whitespace. ` +
+    `The only allowed edit is removing IMAGE_N tokens from text fields (figures use image_index).\n\n` +
     `Return ONLY valid JSON (no markdown) as an array of objects with:\n` +
     `- question_text (string)\n` +
     `- options (array of 4 strings if MCQ; otherwise empty array)\n` +
@@ -121,13 +184,11 @@ function buildRefGeminiUserPrompt(fileName: string, docText: string): string {
     `- difficulty (Easy|Medium|Hard)\n` +
     `- class_name, subject_name, chapter_name, topic_tag (strings; infer when possible; empty allowed)\n` +
     `- image_index (integer or null): 0-based index matching IMAGE_N in SOURCE TEXT when the item uses that figure; otherwise null\n\n` +
-    `Figures: SOURCE TEXT contains lines IMAGE_0, IMAGE_1, … where the DOCX had an embedded picture — these tokens ARE visible in SOURCE TEXT. ` +
-    `Set image_index to that same integer when the question uses the diagram; use null if no figure. ` +
-    `Do not include IMAGE_N tokens in question_text or options.\n\n` +
-    `Rules:\n` +
-    `- Keep wording as close to source as possible.\n` +
-    `- If options are labeled A/B/C/D, map to array in that order.\n` +
-    `- Do not hallucinate missing answers; use correct_index=0 if unknown.\n\n` +
+    `Figures: SOURCE TEXT contains lines IMAGE_0, IMAGE_1, … for embedded pictures — these tokens ARE visible. ` +
+    `Set image_index to that integer when the question uses the diagram; use null if no figure. ` +
+    `Do not paste IMAGE_N into question_text or options.\n\n` +
+    `If options are labeled A/B/C/D, map to array in that order.\n` +
+    `Do not hallucinate keys; use correct_index=0 if unknown.\n\n` +
     `Source filename: ${fileName}\n\nSOURCE TEXT:\n${docText}`
   );
 }
@@ -173,10 +234,13 @@ function estimateSingleRefParseInr(
   model: Pick<RefGeminiModelOption, 'inputUsdPer1M' | 'outputUsdPer1M'>,
   usdInr: number
 ) {
-  const inputTok = Math.ceil((REF_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + sourceChars) / 4);
-  const outputTok = Math.min(8192, Math.max(800, Math.ceil(inputTok * 0.15)));
-  const usd = (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
-  return { inr: usd * usdInr, inputTok, outputTok };
+  const chunkCalls = Math.max(1, Math.ceil(sourceChars / REF_SOURCE_CHUNK_CHARS));
+  const charsPerCall = Math.ceil(sourceChars / chunkCalls);
+  const inputTok = Math.ceil((REF_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + charsPerCall) / 4);
+  const outputTok = Math.min(REF_GEMINI_MAX_OUTPUT_TOKENS, Math.max(800, Math.ceil(inputTok * 0.18)));
+  const usdPerCall =
+    (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
+  return { inr: usdPerCall * chunkCalls * usdInr, inputTok, outputTok };
 }
 
 async function getDocCharCountForEstimate(file: File): Promise<number> {
@@ -196,9 +260,9 @@ async function downloadRefDocPath(path: string): Promise<ArrayBuffer> {
 }
 
 function normalizeGeminiDraft(r: GeminiDocRow): Draft {
-  const opts = Array.isArray(r.options) ? r.options.map((x) => scrubFigurePlaceholders(String(x))) : [];
+  const opts = Array.isArray(r.options) ? r.options.map((x) => stripDocxImageTokens(String(x))) : [];
   return {
-    question_text: scrubFigurePlaceholders(String(r.question_text || '').trim()),
+    question_text: stripDocxImageTokens(String(r.question_text ?? '')),
     options: opts,
     correct_index: Math.max(0, Math.min(3, safeInt((r as any).correct_index, 0))),
     explanation: String(r.explanation || '').trim(),
@@ -218,43 +282,70 @@ function normalizeGeminiDraft(r: GeminiDocRow): Draft {
   };
 }
 
-async function runGeminiExtract(docText: string, fileName: string, modelId: string): Promise<Draft[]> {
-  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
-  const prompt = buildRefGeminiUserPrompt(fileName, docText);
+function getRefGeminiResponseSchema() {
+  return {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        question_text: { type: Type.STRING },
+        options: { type: Type.ARRAY, items: { type: Type.STRING } },
+        correct_index: { type: Type.NUMBER },
+        explanation: { type: Type.STRING },
+        question_type: { type: Type.STRING },
+        question_format: { type: Type.STRING },
+        difficulty: { type: Type.STRING },
+        class_name: { type: Type.STRING },
+        subject_name: { type: Type.STRING },
+        chapter_name: { type: Type.STRING },
+        topic_tag: { type: Type.STRING },
+        image_index: { type: Type.NUMBER },
+      },
+      required: ['question_text', 'options', 'correct_index', 'explanation', 'question_type', 'difficulty'],
+    },
+  };
+}
 
+async function runGeminiExtractOneChunk(
+  ai: GoogleGenAI,
+  fileName: string,
+  modelId: string,
+  chunkText: string,
+  segment: { index: number; total: number } | undefined
+): Promise<Draft[]> {
+  const prompt = buildRefGeminiUserPrompt(fileName, chunkText, segment);
   const response = await ai.models.generateContent({
     model: modelId,
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
-      temperature: 0.1,
+      temperature: 0,
+      maxOutputTokens: REF_GEMINI_MAX_OUTPUT_TOKENS,
       responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            question_text: { type: Type.STRING },
-            options: { type: Type.ARRAY, items: { type: Type.STRING } },
-            correct_index: { type: Type.NUMBER },
-            explanation: { type: Type.STRING },
-            question_type: { type: Type.STRING },
-            question_format: { type: Type.STRING },
-            difficulty: { type: Type.STRING },
-            class_name: { type: Type.STRING },
-            subject_name: { type: Type.STRING },
-            chapter_name: { type: Type.STRING },
-            topic_tag: { type: Type.STRING },
-            image_index: { type: Type.NUMBER },
-          },
-          required: ['question_text', 'options', 'correct_index', 'explanation', 'question_type', 'difficulty'],
-        },
-      },
+      responseSchema: getRefGeminiResponseSchema(),
     },
   });
-
   const raw = cleanJson(response.text || '[]');
   const parsed = JSON.parse(raw) as GeminiDocRow[];
-  return (Array.isArray(parsed) ? parsed : []).map(normalizeGeminiDraft).filter((x) => x.question_text.length > 0);
+  return (Array.isArray(parsed) ? parsed : [])
+    .map(normalizeGeminiDraft)
+    .filter((x) => stripDocxImageTokens(x.question_text).replace(/\s/g, '').length > 0);
+}
+
+async function runGeminiExtract(docText: string, fileName: string, modelId: string): Promise<Draft[]> {
+  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+  const chunks = splitRefSourceIntoChunks(docText);
+  if (chunks.length === 1) {
+    return runGeminiExtractOneChunk(ai, fileName, modelId, chunks[0], undefined);
+  }
+  const parts: Draft[][] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const piece = await runGeminiExtractOneChunk(ai, fileName, modelId, chunks[i], {
+      index: i + 1,
+      total: chunks.length,
+    });
+    parts.push(piece);
+  }
+  return mergeRefChunkDrafts(parts);
 }
 
 async function runRefGeminiOnBuffer(buf: ArrayBuffer, displayName: string, modelId: string): Promise<{ drafts: Draft[]; imageCount: number }> {
@@ -443,6 +534,16 @@ const ReferenceQuestionsManager: React.FC = () => {
     }
     return t;
   }, [docQueueStats, docImportQueue, bestValueModel]);
+
+  const refTotalGeminiCalls = useMemo(() => {
+    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) {
+      return Math.max(1, docImportQueue.length);
+    }
+    return docQueueStats.reduce(
+      (sum, s) => sum + Math.max(1, Math.ceil((s.chars || 1) / REF_SOURCE_CHUNK_CHARS)),
+      0
+    );
+  }, [docQueueStats, docImportQueue]);
 
   const fmtInr = useCallback(
     (n: number) =>
@@ -934,7 +1035,7 @@ const ReferenceQuestionsManager: React.FC = () => {
                   'Working on estimate…'
                 ) : (
                   <>
-                    <span className="font-semibold text-zinc-800">Est. cost — {docImportQueue.length} API call(s):</span>{' '}
+                    <span className="font-semibold text-zinc-800">Est. cost — ~{refTotalGeminiCalls} API call(s):</span>{' '}
                     <span className="font-mono text-indigo-700">{fmtInr(parseCostEstimateInr)}</span>
                     <span className="mt-1 block text-zinc-500">
                       Approximate only (FX ~₹{REF_USD_INR}/USD). Actual charges follow your Google AI billing.

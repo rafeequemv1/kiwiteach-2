@@ -5,7 +5,11 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
 import { parsePseudoLatexAndMathAllowTables } from '../../utils/latexParser';
-import { parseDocxBufferWithEmbeddedImages, type DocxEmbeddedImage } from '../../utils/docxFigureExtract';
+import {
+  parseDocxBufferWithEmbeddedImages,
+  stripDocxImageTokens,
+  type DocxEmbeddedImage,
+} from '../../utils/docxFigureExtract';
 
 interface PYQRow {
   id: string;
@@ -367,12 +371,12 @@ function applySourceQuestionNumbersFromRawText(rows: Draft[], rawText: string): 
 
 const normalizeGeminiRow = (row: GeminiDocRow): Draft => ({
   ...emptyDraft,
-  question_text: scrubFigurePlaceholders(String(row.question_text || '')),
+  question_text: stripDocxImageTokens(String(row.question_text ?? '')),
   question_format: String((row as any).question_format || 'text').toLowerCase(),
-  option_a: scrubFigurePlaceholders(String(row.option_a || '')),
-  option_b: scrubFigurePlaceholders(String(row.option_b || '')),
-  option_c: scrubFigurePlaceholders(String(row.option_c || '')),
-  option_d: scrubFigurePlaceholders(String(row.option_d || '')),
+  option_a: stripDocxImageTokens(String(row.option_a ?? '')),
+  option_b: stripDocxImageTokens(String(row.option_b ?? '')),
+  option_c: stripDocxImageTokens(String(row.option_c ?? '')),
+  option_d: stripDocxImageTokens(String(row.option_d ?? '')),
   correct_answer: String((row as any).correct_answer || 'A').toUpperCase(),
   correct_index: Number(row.correct_index ?? 0) || 0,
   explanation: String(row.explanation || ''),
@@ -454,19 +458,86 @@ const PYQ_GEMINI_MODEL_OPTIONS: PyqGeminiModelOption[] = [
   },
 ];
 
-function buildPyqGeminiUserPrompt(fileName: string, rawText: string): string {
+const PYQ_SOURCE_CHUNK_CHARS = 20_000;
+const PYQ_SOURCE_CHUNK_OVERLAP = 3_500;
+/** Large JSON arrays need a high ceiling or the response truncates mid-array. */
+const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
+
+function splitPyqSourceIntoChunks(full: string): string[] {
+  const target = PYQ_SOURCE_CHUNK_CHARS;
+  const overlap = PYQ_SOURCE_CHUNK_OVERLAP;
+  if (full.length <= target) return [full];
+  const chunks: string[] = [];
+  let start = 0;
+  let guard = 0;
+  while (start < full.length && guard < 400) {
+    guard += 1;
+    let end = Math.min(start + target, full.length);
+    if (end < full.length) {
+      const slice = full.slice(start, end);
+      let breakAt = slice.lastIndexOf('\n\n');
+      if (breakAt < target * 0.38) breakAt = slice.lastIndexOf('\n');
+      if (breakAt >= target * 0.32) end = start + breakAt + 1;
+    }
+    chunks.push(full.slice(start, end));
+    if (end >= full.length) break;
+    start = Math.max(start + 1, end - overlap);
+  }
+  return chunks.length ? chunks : [full];
+}
+
+function mergePyqChunkDrafts(parts: Draft[][]): Draft[] {
+  const seen = new Set<string>();
+  const out: Draft[] = [];
+  for (const part of parts) {
+    for (const d of part) {
+      const sq = (d.source_question_number || '').trim();
+      const pp = (d.paper_part || '').trim();
+      const stem = stripDocxImageTokens(d.question_text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120)
+        .toLowerCase();
+      const key = `${pp}\t${sq}\t${stem}`;
+      if (!stem) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(d);
+    }
+  }
+  return out;
+}
+
+function buildPyqGeminiUserPrompt(
+  fileName: string,
+  rawText: string,
+  segment?: { index: number; total: number }
+): string {
+  const segIntro =
+    segment && segment.total > 1
+      ? `SEGMENT ${segment.index} of ${segment.total} (same file split for length). ` +
+        `Extract every scored question whose stem STARTS in this segment. ` +
+        `Do not repeat questions you would have output for an earlier segment. ` +
+        `Do not skip any question that starts here. ` +
+        `Still output the full JSON array for this segment only.\n\n`
+      : '';
   return (
+    segIntro +
     'Convert the following exam/PYQ source into a JSON array of scored questions only. Output JSON only, no markdown.\n\n' +
+    'CRITICAL — completeness: extract every scored question in the document (or this segment). Never omit, merge, or summarize questions. ' +
+    'If the source has 50 items, the array must have 50 objects (unless this is a segment: only items starting here).\n\n' +
+    'CRITICAL — verbatim text: copy question_text and every option field character-for-character from the source (same spelling, punctuation, LaTeX/MathJax, units). ' +
+    'Do not rephrase, simplify, fix typos, or change notation. The only allowed edit is removing IMAGE_N lines from text fields (figures use doc_image_index).\n\n' +
     'IGNORE (do not output as questions): cover pages; logos and branding; watermarks; coaching or publisher headers/footers; decorative or banner images; hall-ticket / OMR instructions; ' +
     'generic "Read carefully", duration, maximum marks, or syllabus tables unless they are the sole content of a scored item. ' +
     'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
-    'Do not paraphrase question facts. Keep stems and options verbatim from the source when present. Use empty string for missing optional fields.\n\n' +
+    'Use empty string for missing optional fields where the source has no text.\n\n' +
     'Multi-part papers (Section A/B, Part I/II, etc.): for each row set paper_part to the section label exactly as printed (e.g. "Section A", "Part II"). ' +
     'source_question_number is mandatory on EVERY row: copy the question number EXACTLY as on the paper (e.g. 1, 09, 101, 102, 121, 4a, 12(i)). ' +
     'When a stem starts like "101. The text..." or "102) Match…", set source_question_number to 101 or 102 — never leave it empty. ' +
     'Never renumber 1,2,3… by extraction order; papers often start at 101 or 180 — keep those values. ' +
     'If the paper shows a range (e.g. Questions 121–125), use 121,122,123,124,125 in source_question_number for each row respectively. ' +
-    'You may omit repeating the number at the start of question_text if it is redundant, but you must still set source_question_number. ' +
+    'question_text must still be verbatim from the paper (including a leading "101." if that is how it is printed); always set source_question_number to match. ' +
     'Do not paste section headings or instruction blocks into question_text—only the item stem.\n\n' +
     'Figures: SOURCE TEXT contains lines with IMAGE_0, IMAGE_1, … where the DOCX had an embedded picture — these tokens ARE visible in SOURCE TEXT (img innerText must be respected). ' +
     'The question row that corresponds to that item must set doc_image_index to that same integer (0-based) and question_format "figure" when the item depends on the diagram. ' +
@@ -490,10 +561,13 @@ function estimateSingleDocPyqParseInr(
   model: Pick<PyqGeminiModelOption, 'inputUsdPer1M' | 'outputUsdPer1M'>,
   usdInr: number
 ) {
-  const inputTok = Math.ceil((PYQ_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + sourceChars) / 4);
-  const outputTok = Math.min(8192, Math.max(1200, Math.ceil(inputTok * 0.2)));
-  const usd = (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
-  return { inr: usd * usdInr, inputTok, outputTok };
+  const chunkCalls = Math.max(1, Math.ceil(sourceChars / PYQ_SOURCE_CHUNK_CHARS));
+  const charsPerCall = Math.ceil(sourceChars / chunkCalls);
+  const inputTok = Math.ceil((PYQ_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + charsPerCall) / 4);
+  const outputTok = Math.min(GEMINI_MAX_OUTPUT_TOKENS, Math.max(1200, Math.ceil(inputTok * 0.22)));
+  const usdPerCall =
+    (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
+  return { inr: usdPerCall * chunkCalls * usdInr, inputTok, outputTok };
 }
 
 async function getDocCharCountForEstimate(file: File): Promise<number> {
@@ -572,27 +646,53 @@ function getPyqGeminiResponseSchema() {
   };
 }
 
-async function runPyqGeminiExtract(file: File, modelId: string): Promise<Draft[]> {
-  const { rawText, docxImages } = await extractLocalPyqSource(file);
-  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+async function runPyqGeminiExtractOneChunk(
+  ai: GoogleGenAI,
+  fileName: string,
+  modelId: string,
+  chunkText: string,
+  segment: { index: number; total: number } | undefined
+): Promise<Draft[]> {
   const response = await ai.models.generateContent({
     model: modelId,
     contents: [
       {
         role: 'user',
-        parts: [{ text: buildPyqGeminiUserPrompt(file.name, rawText) }],
+        parts: [{ text: buildPyqGeminiUserPrompt(fileName, chunkText, segment) }],
       },
     ],
     config: {
+      temperature: 0,
+      maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
       responseMimeType: 'application/json',
       responseSchema: getPyqGeminiResponseSchema(),
     },
   });
   const outText = response.text || '[]';
-  const base = parseGeminiJson(outText)
+  return parseGeminiJson(outText)
     .map(normalizeGeminiRow)
     .map(ensureSourceQuestionNumberFromStem)
-    .filter((r) => r.question_text.trim());
+    .filter((r) => stripDocxImageTokens(r.question_text).replace(/\s/g, '').length > 0);
+}
+
+async function runPyqGeminiExtract(file: File, modelId: string): Promise<Draft[]> {
+  const { rawText, docxImages } = await extractLocalPyqSource(file);
+  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+  const chunks = splitPyqSourceIntoChunks(rawText);
+  let base: Draft[] = [];
+  if (chunks.length === 1) {
+    base = await runPyqGeminiExtractOneChunk(ai, file.name, modelId, chunks[0], undefined);
+  } else {
+    const parts: Draft[][] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const piece = await runPyqGeminiExtractOneChunk(ai, file.name, modelId, chunks[i], {
+        index: i + 1,
+        total: chunks.length,
+      });
+      parts.push(piece);
+    }
+    base = mergePyqChunkDrafts(parts);
+  }
   const withPaperNums = applySourceQuestionNumbersFromRawText(base, rawText);
   let withFigures = withPaperNums.map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
   if (docxImages.length > 0) {
@@ -618,15 +718,6 @@ function paperQuestionLabelFromMetadata(meta: Record<string, unknown> | null | u
   if (raw == null) return null;
   const s = String(raw).trim();
   return s || null;
-}
-
-/** Remove DOCX figure placeholders if the model echoed them into text fields. */
-function scrubFigurePlaceholders(text: string): string {
-  return (text || '')
-    .replace(/\bIMAGE_\d+\b/gi, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 const COMPACT_OPT_LEN = 58;
@@ -982,6 +1073,16 @@ const PYQManager: React.FC = () => {
     }
     return t;
   }, [docQueueStats, docImportQueue, bestValueModel]);
+
+  const pyqTotalGeminiCalls = useMemo(() => {
+    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) {
+      return Math.max(1, docImportQueue.length);
+    }
+    return docQueueStats.reduce(
+      (sum, s) => sum + Math.max(1, Math.ceil((s.chars || 1) / PYQ_SOURCE_CHUNK_CHARS)),
+      0
+    );
+  }, [docQueueStats, docImportQueue]);
 
   const fmtInr = useCallback(
     (n: number) =>
@@ -1544,7 +1645,7 @@ const PYQManager: React.FC = () => {
                     'Working on estimate…'
                   ) : (
                     <>
-                      <span className="font-semibold text-zinc-800">Est. cost — {docImportQueue.length} API call(s):</span>{' '}
+                      <span className="font-semibold text-zinc-800">Est. cost — ~{pyqTotalGeminiCalls} API call(s):</span>{' '}
                       <span className="font-mono text-indigo-700">{fmtInr(parseCostEstimateInr)}</span>
                       <span className="mt-1 block text-zinc-500">
                         Approximate only (FX ~₹{PYQ_USD_INR}/USD). Actual charges follow your Google AI billing meters.
