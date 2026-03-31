@@ -60,8 +60,10 @@ type Draft = {
   doc_image_index: number | null;
   /** Section / part label from the paper, e.g. "Section A", "Part II". */
   paper_part: string;
-  /** Original question number as printed (per section). Stored in DB metadata. */
+  /** Original question number as printed (per section). Stored in DB metadata verbatim. */
   source_question_number: string;
+  /** Multi-doc import only: file order for stable sort when Q numbers repeat across files. Not saved to DB. */
+  import_file_ordinal?: number;
 };
 
 type GeminiDocRow = Partial<Draft>;
@@ -91,17 +93,18 @@ const emptyDraft: Draft = {
   source_question_number: '',
 };
 
-/** Stable order: part label → source Q number → original index fallback. */
+/** Stable order: import file → part label → source Q label (numeric-aware, exact string). */
 function sortDraftsExamOrder(rows: Draft[]): Draft[] {
   return [...rows].sort((a, b) => {
+    const oa = a.import_file_ordinal;
+    const ob = b.import_file_ordinal;
+    if (oa != null && ob != null && oa !== ob) return oa - ob;
     const pa = (a.paper_part || '').trim();
     const pb = (b.paper_part || '').trim();
     if (pa !== pb) return pa.localeCompare(pb, undefined, { numeric: true, sensitivity: 'base' });
-    const na = Number.parseInt(String(a.source_question_number || '').trim(), 10);
-    const nb = Number.parseInt(String(b.source_question_number || '').trim(), 10);
-    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
-    if (Number.isFinite(na) && !Number.isFinite(nb)) return -1;
-    if (!Number.isFinite(na) && Number.isFinite(nb)) return 1;
+    const sa = String(a.source_question_number || '').trim();
+    const sb = String(b.source_question_number || '').trim();
+    if (sa !== sb) return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
     return 0;
   });
 }
@@ -190,10 +193,8 @@ function buildPyqMetadata(d: Draft): Record<string, unknown> {
   const part = d.paper_part?.trim();
   if (part) meta.paper_part = part;
   const sq = d.source_question_number?.trim();
-  if (sq) {
-    const n = Number.parseInt(sq, 10);
-    meta.source_question_number = Number.isFinite(n) ? n : sq;
-  }
+  /** Keep exact printed label (preserve leading zeros / suffixes like 4(a)); avoid silent parseInt coercion. */
+  if (sq) meta.source_question_number = sq;
   return meta;
 }
 
@@ -342,8 +343,204 @@ const parseGeminiJson = (txt: string): GeminiDocRow[] => {
   return parsed as GeminiDocRow[];
 };
 
+/** USD → INR for UI estimates only (adjust if your billing uses a different FX). */
+const PYQ_USD_INR = 87;
+
+const PYQ_MODEL_STORAGE_KEY = 'kiwiteach_pyq_gemini_model';
+
+type PyqGeminiModelOption = {
+  id: string;
+  label: string;
+  blurb: string;
+  /** Approx. USD per 1M input tokens (Google AI pricing tier — verify on console). */
+  inputUsdPer1M: number;
+  /** Approx. USD per 1M output tokens. */
+  outputUsdPer1M: number;
+  bestValue: boolean;
+};
+
+const PYQ_GEMINI_MODEL_OPTIONS: PyqGeminiModelOption[] = [
+  {
+    id: 'gemini-flash-lite-latest',
+    label: 'Gemini Flash Lite',
+    blurb: 'Lowest cost — best for bulk PYQ parsing',
+    inputUsdPer1M: 0.05,
+    outputUsdPer1M: 0.2,
+    bestValue: true,
+  },
+  {
+    id: 'gemini-3-flash-preview',
+    label: 'Gemini 3 Flash (preview)',
+    blurb: 'Balanced quality and speed',
+    inputUsdPer1M: 0.15,
+    outputUsdPer1M: 0.6,
+    bestValue: false,
+  },
+  {
+    id: 'gemini-3-pro-preview',
+    label: 'Gemini 3 Pro (preview)',
+    blurb: 'Highest quality — higher cost',
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 10,
+    bestValue: false,
+  },
+];
+
+function buildPyqGeminiUserPrompt(fileName: string, rawText: string): string {
+  return (
+    'Convert the following exam/PYQ source into a JSON array of scored questions only. Output JSON only, no markdown.\n\n' +
+    'IGNORE (do not output as questions): cover pages; logos and branding; watermarks; coaching or publisher headers/footers; decorative or banner images; hall-ticket / OMR instructions; ' +
+    'generic "Read carefully", duration, maximum marks, or syllabus tables unless they are the sole content of a scored item. ' +
+    'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
+    'Do not paraphrase question facts. Keep stems and options verbatim from the source when present. Use empty string for missing optional fields.\n\n' +
+    'Multi-part papers (Section A/B, Part I/II, etc.): for each row set paper_part to the section label exactly as printed (e.g. "Section A", "Part II"). ' +
+    'source_question_number is mandatory: copy the question number EXACTLY as on the paper for that item (e.g. 1, 09, 15, 90, 121, 4a, 12(i)). ' +
+    'Never renumber 1,2,3… by your processing order. If the paper shows a range (e.g. Questions 121–125), use 121,122,123,124,125 in source_question_number for each row respectively. ' +
+    'If the stem still includes the printed number prefix (e.g. "121."), you may keep it in question_text when it is part of the source wording. ' +
+    'Do not paste section headings or instruction blocks into question_text—only the item stem.\n\n' +
+    'Figures: SOURCE TEXT contains placeholders IMAGE_0, IMAGE_1, … at each embedded figure position. For a question that uses a figure, set doc_image_index to that integer (0-based). ' +
+    'Do not include IMAGE_N tokens in question_text or options. If there is no figure for the item, set doc_image_index to -1. ' +
+    'match_list / column matching: you may include a simple HTML <table>…</table> inside question_text for two-column list layouts; keep only table/tr/th/td text, no scripts. ' +
+    'Else use standard option fields for codes / matches.\n\n' +
+    'Required keys per row: question_text, option_a, option_b, option_c, option_d, correct_answer, correct_index, explanation, question_type, question_format, difficulty, ' +
+    'subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url, doc_image_index, paper_part, source_question_number.\n\n' +
+    'image_url: full http(s) URL only if the source already has a public URL; otherwise leave empty and use doc_image_index from IMAGE_N. ' +
+    'question_format "figure" when the item needs a diagram or uses doc_image_index >= 0. ' +
+    'Allowed question_format: text, figure. Allowed question_type: mcq, assertion_reason, reason_based, match_list. Allowed difficulty: easy, medium, hard.\n\n' +
+    `Source filename: ${fileName}\n\nSOURCE TEXT:\n${rawText}`
+  );
+}
+
+const PYQ_GEMINI_FIXED_PROMPT_CHARS = buildPyqGeminiUserPrompt('', '').length;
+
+function estimateSingleDocPyqParseInr(
+  sourceChars: number,
+  fileNameLen: number,
+  model: Pick<PyqGeminiModelOption, 'inputUsdPer1M' | 'outputUsdPer1M'>,
+  usdInr: number
+) {
+  const inputTok = Math.ceil((PYQ_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + sourceChars) / 4);
+  const outputTok = Math.min(8192, Math.max(1200, Math.ceil(inputTok * 0.2)));
+  const usd = (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
+  return { inr: usd * usdInr, inputTok, outputTok };
+}
+
+async function getDocCharCountForEstimate(file: File): Promise<number> {
+  const ext = file.name.toLowerCase();
+  if (ext.endsWith('.txt')) return (await file.text()).length;
+  const mammoth = (window as any)?.mammoth;
+  if (!mammoth?.extractRawText) return 0;
+  const buf = await file.arrayBuffer();
+  const out = await mammoth.extractRawText({ arrayBuffer: buf });
+  return (out.value || '').length;
+}
+
+async function extractLocalPyqSource(file: File): Promise<{ rawText: string; docxImages: DocxEmbeddedImage[] }> {
+  const ext = file.name.toLowerCase();
+  let rawText = '';
+  let docxImages: DocxEmbeddedImage[] = [];
+  if (ext.endsWith('.txt')) {
+    rawText = await file.text();
+  } else {
+    const mammoth = (window as any)?.mammoth;
+    if (!mammoth?.extractRawText) {
+      throw new Error('DOC/DOCX parser not available.');
+    }
+    const buffer = await file.arrayBuffer();
+    if (ext.endsWith('.docx') && mammoth.convertToHtml && mammoth.images?.imgElement) {
+      try {
+        const parsedDoc = await parsePyqDocxBuffer(buffer);
+        rawText = parsedDoc.text;
+        docxImages = parsedDoc.images;
+      } catch {
+        const out = await mammoth.extractRawText({ arrayBuffer: buffer });
+        rawText = out.value || '';
+        docxImages = [];
+      }
+    } else {
+      const out = await mammoth.extractRawText({ arrayBuffer: buffer });
+      rawText = out.value || '';
+    }
+  }
+  if (!rawText.trim()) {
+    throw new Error(`No readable text in ${file.name}`);
+  }
+  return { rawText, docxImages };
+}
+
+function getPyqGeminiResponseSchema() {
+  return {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        question_text: { type: Type.STRING },
+        option_a: { type: Type.STRING },
+        option_b: { type: Type.STRING },
+        option_c: { type: Type.STRING },
+        option_d: { type: Type.STRING },
+        correct_answer: { type: Type.STRING },
+        correct_index: { type: Type.NUMBER },
+        explanation: { type: Type.STRING },
+        question_type: { type: Type.STRING },
+        question_format: { type: Type.STRING },
+        difficulty: { type: Type.STRING },
+        subject_name: { type: Type.STRING },
+        chapter_name: { type: Type.STRING },
+        topic_tag: { type: Type.STRING },
+        class_name: { type: Type.STRING },
+        year: { type: Type.STRING },
+        source_exam: { type: Type.STRING },
+        paper_code: { type: Type.STRING },
+        image_url: { type: Type.STRING },
+        doc_image_index: { type: Type.NUMBER },
+        paper_part: { type: Type.STRING },
+        source_question_number: { type: Type.STRING },
+      },
+    },
+  };
+}
+
+async function runPyqGeminiExtract(file: File, modelId: string): Promise<Draft[]> {
+  const { rawText, docxImages } = await extractLocalPyqSource(file);
+  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+  const response = await ai.models.generateContent({
+    model: modelId,
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: buildPyqGeminiUserPrompt(file.name, rawText) }],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: getPyqGeminiResponseSchema(),
+    },
+  });
+  const outText = response.text || '[]';
+  return parseGeminiJson(outText)
+    .map(normalizeGeminiRow)
+    .filter((r) => r.question_text.trim())
+    .map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
+}
+
+function formatPendingCommitLabel(files: File[]): string {
+  if (files.length === 0) return 'import';
+  if (files.length === 1) return files[0].name;
+  return `${files[0].name} (+${files.length - 1} more)`;
+}
+
 function norm(s: string | null | undefined) {
   return (s || '').trim().toLowerCase();
+}
+
+/** Paper question # from stored metadata (string or legacy numeric). */
+function paperQuestionLabelFromMetadata(meta: Record<string, unknown> | null | undefined): string | null {
+  if (!meta || typeof meta !== 'object') return null;
+  const raw = (meta as { source_question_number?: unknown }).source_question_number;
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  return s || null;
 }
 
 /** Remove DOCX figure placeholders if the model echoed them into text fields. */
@@ -368,19 +565,19 @@ const PyqPaperQuestion: React.FC<{ draft: Draft; index: number }> = ({ draft, in
   const compact = opts.filter((s) => s.length > 0).length === 4 && shouldCompactMcqOptions(optStrs);
   const isMatch = (draft.question_type || '').toLowerCase() === 'match_list';
 
-  const partLine = [draft.paper_part?.trim(), draft.source_question_number?.trim() ? `Q${draft.source_question_number.trim()}` : '']
-    .filter(Boolean)
-    .join(' · ');
+  const sq = draft.source_question_number?.trim();
+  const primaryQ = sq || String(index + 1);
+  const partOnly = draft.paper_part?.trim() || '';
 
   const stemHtml = parsePseudoLatexAndMathAllowTables(draft.question_text || '');
 
   return (
     <div className="mb-4 break-inside-avoid text-black">
       <div className="flex gap-1.5 items-start leading-tight">
-        <span className="shrink-0 font-bold">{index + 1}.</span>
+        <span className="shrink-0 font-bold">{primaryQ}.</span>
         <div className="min-w-0 flex-1">
-          {partLine ? (
-            <p className="mb-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-500">{partLine}</p>
+          {partOnly ? (
+            <p className="mb-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-500">{partOnly}</p>
           ) : null}
           <div
             className="math-content pyq-rich [&_.katex]:text-[inherit]"
@@ -572,7 +769,20 @@ const PYQManager: React.FC = () => {
   const [previewRows, setPreviewRows] = useState<Draft[]>([]);
   const [activeUploadSetId, setActiveUploadSetId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
-  const [pendingCommit, setPendingCommit] = useState<{ file: File; kind: string } | null>(null);
+  const [pendingCommit, setPendingCommit] = useState<{ files: File[]; kind: string } | null>(null);
+  const [docImportQueue, setDocImportQueue] = useState<File[]>([]);
+  const [docQueueStats, setDocQueueStats] = useState<{ name: string; chars: number }[]>([]);
+  const [docQueueScanning, setDocQueueScanning] = useState(false);
+  const [pyqGeminiModel, setPyqGeminiModel] = useState<string>(() => {
+    try {
+      const s = localStorage.getItem(PYQ_MODEL_STORAGE_KEY);
+      if (s && PYQ_GEMINI_MODEL_OPTIONS.some((m) => m.id === s)) return s;
+    } catch {
+      /* ignore */
+    }
+    return PYQ_GEMINI_MODEL_OPTIONS.find((m) => m.bestValue)!.id;
+  });
+  const docFileInputRef = useRef<HTMLInputElement>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterYear, setFilterYear] = useState('');
@@ -621,14 +831,141 @@ const PYQManager: React.FC = () => {
     void load();
   }, []);
 
-  const createUploadSet = async (file: File, kind: string): Promise<string | null> => {
+  useEffect(() => {
+    try {
+      localStorage.setItem(PYQ_MODEL_STORAGE_KEY, pyqGeminiModel);
+    } catch {
+      /* ignore */
+    }
+  }, [pyqGeminiModel]);
+
+  useEffect(() => {
+    if (docImportQueue.length === 0) {
+      setDocQueueStats([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setDocQueueScanning(true);
+      try {
+        const stats: { name: string; chars: number }[] = [];
+        for (const f of docImportQueue) {
+          const chars = await getDocCharCountForEstimate(f);
+          if (cancelled) return;
+          stats.push({ name: f.name, chars });
+        }
+        if (!cancelled) setDocQueueStats(stats);
+      } catch {
+        if (!cancelled) setDocQueueStats([]);
+      } finally {
+        if (!cancelled) setDocQueueScanning(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docImportQueue]);
+
+  const pyqModelMeta = useMemo(
+    () => PYQ_GEMINI_MODEL_OPTIONS.find((m) => m.id === pyqGeminiModel) ?? PYQ_GEMINI_MODEL_OPTIONS[0],
+    [pyqGeminiModel]
+  );
+
+  const bestValueModel = useMemo(() => PYQ_GEMINI_MODEL_OPTIONS.find((m) => m.bestValue)!, []);
+
+  const parseCostEstimateInr = useMemo(() => {
+    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) return null;
+    let t = 0;
+    for (let i = 0; i < docQueueStats.length; i++) {
+      t += estimateSingleDocPyqParseInr(
+        docQueueStats[i].chars,
+        docImportQueue[i].name.length,
+        pyqModelMeta,
+        PYQ_USD_INR
+      ).inr;
+    }
+    return t;
+  }, [docQueueStats, docImportQueue, pyqModelMeta]);
+
+  const parseCostEstimateBestInr = useMemo(() => {
+    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) return null;
+    let t = 0;
+    for (let i = 0; i < docQueueStats.length; i++) {
+      t += estimateSingleDocPyqParseInr(
+        docQueueStats[i].chars,
+        docImportQueue[i].name.length,
+        bestValueModel,
+        PYQ_USD_INR
+      ).inr;
+    }
+    return t;
+  }, [docQueueStats, docImportQueue, bestValueModel]);
+
+  const fmtInr = useCallback(
+    (n: number) =>
+      new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(n),
+    []
+  );
+
+  const appendDocFiles = useCallback((list: FileList | null) => {
+    if (!list?.length) return;
+    setDocImportQueue((prev) => {
+      const next = [...prev];
+      const seen = new Set(next.map((f) => `${f.name}:${f.size}:${f.lastModified}`));
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        const k = `${f.name}:${f.size}:${f.lastModified}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        next.push(f);
+      }
+      return next;
+    });
+    if (docFileInputRef.current) docFileInputRef.current.value = '';
+  }, []);
+
+  const removeDocFromQueue = useCallback((index: number) => {
+    setDocImportQueue((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const parseAllQueuedDocs = useCallback(async () => {
+    if (docImportQueue.length === 0) {
+      alert('Add at least one document.');
+      return;
+    }
+    setParsingDoc(true);
+    const combined: Draft[] = [];
+    try {
+      let fileOrd = 0;
+      for (const file of docImportQueue) {
+        const drafts = await runPyqGeminiExtract(file, pyqGeminiModel);
+        if (drafts.length === 0) {
+          alert(`No questions extracted from ${file.name}.`);
+          return;
+        }
+        combined.push(...drafts.map((d) => ({ ...d, import_file_ordinal: fileOrd })));
+        fileOrd += 1;
+      }
+      setActiveUploadSetId(null);
+      setPendingCommit({ files: [...docImportQueue], kind: 'doc' });
+      setDocImportQueue([]);
+      setDocQueueStats([]);
+      setPreviewRows(sortDraftsExamOrder(combined));
+    } catch (e: any) {
+      alert(e?.message || 'Failed to parse documents with Gemini');
+    } finally {
+      setParsingDoc(false);
+    }
+  }, [docImportQueue, pyqGeminiModel]);
+
+  const createUploadSet = async (originalFilename: string, kind: string): Promise<string | null> => {
     const {
       data: { user },
     } = await supabase.auth.getUser();
     const { data, error } = await supabase
       .from('pyq_upload_sets')
       .insert({
-        original_filename: file.name,
+        original_filename: originalFilename.slice(0, 500),
         source_kind: kind,
         uploaded_by: user?.id ?? null,
       })
@@ -698,130 +1035,8 @@ const PYQManager: React.FC = () => {
       return;
     }
     setActiveUploadSetId(null);
-    setPendingCommit({ file, kind: 'csv' });
+    setPendingCommit({ files: [file], kind: 'csv' });
     setPreviewRows(sortDraftsExamOrder(parsed));
-  };
-
-  const handleDoc = async (file: File) => {
-    const ext = file.name.toLowerCase();
-    const kind = ext.endsWith('.txt') ? 'txt' : 'doc';
-
-    setParsingDoc(true);
-    try {
-      let rawText = '';
-      let docxImages: DocxEmbeddedImage[] = [];
-      if (ext.endsWith('.txt')) {
-        rawText = await file.text();
-      } else {
-        const mammoth = (window as any)?.mammoth;
-        if (!mammoth?.extractRawText) {
-          alert('DOC/DOCX parser not available.');
-          return;
-        }
-        const buffer = await file.arrayBuffer();
-        if (ext.endsWith('.docx') && mammoth.convertToHtml && mammoth.images?.imgElement) {
-          try {
-            const parsedDoc = await parsePyqDocxBuffer(buffer);
-            rawText = parsedDoc.text;
-            docxImages = parsedDoc.images;
-          } catch {
-            const out = await mammoth.extractRawText({ arrayBuffer: buffer });
-            rawText = out.value || '';
-            docxImages = [];
-          }
-        } else {
-          const out = await mammoth.extractRawText({ arrayBuffer: buffer });
-          rawText = out.value || '';
-        }
-      }
-
-      if (!rawText.trim()) {
-        alert('No readable text found in document.');
-        return;
-      }
-
-      const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text:
-                  'Convert the following exam/PYQ source into a JSON array of scored questions only. Output JSON only, no markdown.\n\n' +
-                  'IGNORE (do not output as questions): cover pages; logos and branding; watermarks; coaching or publisher headers/footers; decorative or banner images; hall-ticket / OMR instructions; ' +
-                  'generic "Read carefully", duration, maximum marks, or syllabus tables unless they are the sole content of a scored item. ' +
-                  'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
-                  'Do not paraphrase question facts. Keep stems and options verbatim from the source when present. Use empty string for missing optional fields.\n\n' +
-                  'Multi-part papers (Section A/B, Part I/II, etc.): for each row set paper_part to the section label exactly as printed (e.g. "Section A", "Part II"). ' +
-                  'Set source_question_number to the integer printed for that item in that section (restart numbering per section if the source does). ' +
-                  'Do not paste section headings or instruction blocks into question_text—only the item stem.\n\n' +
-                  'Figures: SOURCE TEXT contains placeholders IMAGE_0, IMAGE_1, … at each embedded figure position. For a question that uses a figure, set doc_image_index to that integer (0-based). ' +
-                  'Do not include IMAGE_N tokens in question_text or options. If there is no figure for the item, set doc_image_index to -1. ' +
-                  'match_list / column matching: you may include a simple HTML <table>…</table> inside question_text for two-column list layouts; keep only table/tr/th/td text, no scripts. ' +
-                  'Else use standard option fields for codes / matches.\n\n' +
-                  'Required keys per row: question_text, option_a, option_b, option_c, option_d, correct_answer, correct_index, explanation, question_type, question_format, difficulty, ' +
-                  'subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url, doc_image_index, paper_part, source_question_number.\n\n' +
-                  'image_url: full http(s) URL only if the source already has a public URL; otherwise leave empty and use doc_image_index from IMAGE_N. ' +
-                  'question_format "figure" when the item needs a diagram or uses doc_image_index >= 0. ' +
-                  'Allowed question_format: text, figure. Allowed question_type: mcq, assertion_reason, reason_based, match_list. Allowed difficulty: easy, medium, hard.\n\n' +
-                  `Source filename: ${file.name}\n\nSOURCE TEXT:\n${rawText}`,
-              },
-            ],
-          },
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                question_text: { type: Type.STRING },
-                option_a: { type: Type.STRING },
-                option_b: { type: Type.STRING },
-                option_c: { type: Type.STRING },
-                option_d: { type: Type.STRING },
-                correct_answer: { type: Type.STRING },
-                correct_index: { type: Type.NUMBER },
-                explanation: { type: Type.STRING },
-                question_type: { type: Type.STRING },
-                question_format: { type: Type.STRING },
-                difficulty: { type: Type.STRING },
-                subject_name: { type: Type.STRING },
-                chapter_name: { type: Type.STRING },
-                topic_tag: { type: Type.STRING },
-                class_name: { type: Type.STRING },
-                year: { type: Type.STRING },
-                source_exam: { type: Type.STRING },
-                paper_code: { type: Type.STRING },
-                image_url: { type: Type.STRING },
-                doc_image_index: { type: Type.NUMBER },
-                paper_part: { type: Type.STRING },
-                source_question_number: { type: Type.STRING },
-              },
-            },
-          },
-        },
-      });
-      const outText = response.text || '[]';
-      const parsed = parseGeminiJson(outText)
-        .map(normalizeGeminiRow)
-        .filter((r) => r.question_text.trim())
-        .map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
-      if (parsed.length === 0) {
-        alert('No questions extracted from document.');
-        return;
-      }
-      setActiveUploadSetId(null);
-      setPendingCommit({ file, kind });
-      setPreviewRows(sortDraftsExamOrder(parsed));
-    } catch (e: any) {
-      alert(e?.message || 'Failed to parse document with Gemini');
-    } finally {
-      setParsingDoc(false);
-    }
   };
 
   const uploadPreviewRows = async () => {
@@ -831,19 +1046,24 @@ const PYQManager: React.FC = () => {
     }
     setSaving(true);
     try {
-      const importLabel =
-        pendingCommit?.file?.name ||
-        (activeUploadSetId ? setNameById.get(activeUploadSetId) : null) ||
-        'pyq-import';
-      const slugBase = importLabel.replace(/[^\w.\-]+/g, '_').slice(0, 60);
+      const importLabelForSlug =
+        pendingCommit?.files?.length
+          ? formatPendingCommitLabel(pendingCommit.files)
+          : activeUploadSetId
+            ? setNameById.get(activeUploadSetId) || null
+            : null;
+      const slugBase = (importLabelForSlug || 'pyq-import').replace(/[^\w.\-]+/g, '_').slice(0, 60);
 
       let setId = activeUploadSetId;
       if (!setId) {
-        if (!pendingCommit) {
+        if (!pendingCommit?.files?.length) {
           alert('Re-import the file, then save.');
           return;
         }
-        const created = await createUploadSet(pendingCommit.file, pendingCommit.kind);
+        const created = await createUploadSet(
+          formatPendingCommitLabel(pendingCommit.files),
+          pendingCommit.kind
+        );
         if (!created) return;
         setId = created;
         setPendingCommit(null);
@@ -878,6 +1098,8 @@ const PYQManager: React.FC = () => {
     setPreviewRows([]);
     setActiveUploadSetId(null);
     setPendingCommit(null);
+    setDocImportQueue([]);
+    setDocQueueStats([]);
     setPreviewModalOpen(false);
   };
 
@@ -1026,7 +1248,7 @@ const PYQManager: React.FC = () => {
 
   const previewSourceLabel = useMemo(
     () =>
-      pendingCommit?.file.name ||
+      (pendingCommit?.files?.length ? formatPendingCommitLabel(pendingCommit.files) : null) ||
       (activeUploadSetId ? setNameById.get(activeUploadSetId) || null : null) ||
       null,
     [pendingCommit, activeUploadSetId, setNameById]
@@ -1119,9 +1341,9 @@ const PYQManager: React.FC = () => {
       <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-base font-semibold text-zinc-900">PYQ import</h3>
         <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
-          Upload a file first. Set <strong>year</strong> (e.g. 2025) per row or in the doc; multi-part papers get{' '}
-          <strong>paper_part</strong> and <strong>source_question_number</strong> stored in metadata and sorted before save. DOC
-          parsing skips logos, cover pages, and generic instructions. Then <strong>Save to bank</strong>.
+          For documents: add one or more files, choose a Gemini model, then click <strong>Parse all with Gemini</strong>. Set{' '}
+          <strong>year</strong> (e.g. 2025) per row or in the doc; multi-part papers use <strong>paper_part</strong> and{' '}
+          <strong>source_question_number</strong> in metadata. Then <strong>Save to bank</strong>.
         </p>
 
         {previewRows.length === 0 ? (
@@ -1159,30 +1381,113 @@ const PYQManager: React.FC = () => {
                 />
               </label>
 
-              <label className="flex cursor-pointer flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-violet-300 hover:bg-violet-50/30">
-                <iconify-icon icon="mdi:file-document-outline" width="28" className="text-violet-600" />
-                <p className="mt-2 text-sm font-semibold text-zinc-900">Import DOC · DOCX · TXT</p>
-                <p className="mt-1 text-[11px] leading-snug text-zinc-500">Text extracted locally; questions structured with Gemini.</p>
-                <span className="mt-4 inline-flex items-center justify-center rounded-lg bg-violet-600 px-3 py-2 text-[12px] font-semibold text-white pointer-events-none">
-                  Choose document
-                </span>
+              <div className="flex flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-violet-300 hover:bg-violet-50/30">
+                <iconify-icon icon="mdi:file-document-multiple-outline" width="28" className="text-violet-600" />
+                <p className="mt-2 text-sm font-semibold text-zinc-900">DOC · DOCX · TXT (multi)</p>
+                <p className="mt-1 text-[11px] leading-snug text-zinc-500">
+                  Add files, pick a model, estimate cost in ₹, then parse. One Gemini request per file (figures stay aligned per document).
+                </p>
                 <input
+                  ref={docFileInputRef}
                   type="file"
                   accept=".doc,.docx,.txt"
+                  multiple
                   className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) void handleDoc(f);
-                  }}
+                  onChange={(e) => appendDocFiles(e.target.files)}
                 />
-              </label>
-            </div>
-            {parsingDoc && (
-              <div className="mt-5 flex items-center gap-2 text-[13px] text-violet-700">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
-                Parsing with Gemini…
+                <button
+                  type="button"
+                  onClick={() => docFileInputRef.current?.click()}
+                  className="mt-3 inline-flex items-center justify-center gap-2 rounded-lg border border-violet-200 bg-white px-3 py-2 text-[12px] font-semibold text-violet-800 shadow-sm hover:bg-violet-50"
+                >
+                  <iconify-icon icon="mdi:folder-open-outline" width="18" />
+                  Add documents
+                </button>
+                {docImportQueue.length > 0 ? (
+                  <ul className="mt-3 max-h-28 space-y-1 overflow-y-auto text-[11px] text-zinc-700">
+                    {docImportQueue.map((f, i) => (
+                      <li
+                        key={`${f.name}-${f.size}-${i}`}
+                        className="flex items-center justify-between gap-2 rounded border border-zinc-100 bg-zinc-50/80 px-2 py-1"
+                      >
+                        <span className="min-w-0 truncate" title={f.name}>
+                          {f.name}
+                        </span>
+                        <button
+                          type="button"
+                          className="shrink-0 text-[10px] font-semibold text-rose-600 hover:underline"
+                          onClick={() => removeDocFromQueue(i)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="mt-3 space-y-1">
+                  <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
+                  <select
+                    value={pyqGeminiModel}
+                    onChange={(e) => setPyqGeminiModel(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
+                  >
+                    {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                        {m.bestValue ? ' — best ₹ efficiency' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] leading-snug text-zinc-500">
+                    <span className="font-semibold text-zinc-700">{pyqModelMeta.label}:</span> {pyqModelMeta.blurb}
+                    {pyqModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
+                      <span className="mt-1 block text-emerald-800">
+                        Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
+                        {fmtInr(parseCostEstimateInr)} with current selection).
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+                <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
+                  {docQueueScanning ? (
+                    <span className="flex items-center gap-2 text-violet-700">
+                      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
+                      Scanning files for estimate…
+                    </span>
+                  ) : docImportQueue.length === 0 ? (
+                    'Estimated Gemini cost (INR) appears after you add documents.'
+                  ) : parseCostEstimateInr == null ? (
+                    'Working on estimate…'
+                  ) : (
+                    <>
+                      <span className="font-semibold text-zinc-800">Est. cost — {docImportQueue.length} API call(s):</span>{' '}
+                      <span className="font-mono text-indigo-700">{fmtInr(parseCostEstimateInr)}</span>
+                      <span className="mt-1 block text-zinc-500">
+                        Approximate only (FX ~₹{PYQ_USD_INR}/USD). Actual charges follow your Google AI billing meters.
+                      </span>
+                    </>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={parsingDoc || docImportQueue.length === 0 || docQueueScanning}
+                  onClick={() => void parseAllQueuedDocs()}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-2.5 text-[12px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
+                >
+                  {parsingDoc ? (
+                    <>
+                      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-white" />
+                      Parsing with Gemini…
+                    </>
+                  ) : (
+                    <>
+                      <iconify-icon icon="mdi:robot-outline" width="18" />
+                      Parse all with Gemini
+                    </>
+                  )}
+                </button>
               </div>
-            )}
+            </div>
           </>
         ) : (
           <>
@@ -1207,7 +1512,7 @@ const PYQManager: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void uploadPreviewRows()}
-                  disabled={saving || previewRows.length === 0 || (!pendingCommit && !activeUploadSetId)}
+                  disabled={saving || previewRows.length === 0 || (!pendingCommit?.files?.length && !activeUploadSetId)}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-[12px] font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
                 >
                   {saving ? 'Saving…' : 'Save to bank'}
@@ -1223,12 +1528,6 @@ const PYQManager: React.FC = () => {
                 </button>
               </div>
             </div>
-            {parsingDoc && (
-              <div className="mt-3 flex items-center gap-2 text-[13px] text-violet-700">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
-                Parsing…
-              </div>
-            )}
 
             <div className="mt-5 overflow-hidden rounded-xl border border-zinc-200 bg-white">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2.5">
@@ -1245,9 +1544,10 @@ const PYQManager: React.FC = () => {
                 <table className="w-full text-left text-[11px]">
                   <thead className="sticky top-0 z-10 bg-zinc-50 text-zinc-600 shadow-sm">
                     <tr>
-                      <th className="whitespace-nowrap px-2 py-2">#</th>
+                      <th className="whitespace-nowrap px-2 py-2" title="Number from the uploaded paper">
+                        Paper Q#
+                      </th>
                       <th className="px-2 py-2">Part</th>
-                      <th className="whitespace-nowrap px-2 py-2">Paper Q</th>
                       <th className="min-w-[200px] px-2 py-2">Question</th>
                       <th className="px-2 py-2">Img</th>
                       <th className="px-2 py-2">Format</th>
@@ -1261,12 +1561,11 @@ const PYQManager: React.FC = () => {
                   <tbody>
                     {previewRows.map((r, i) => (
                       <tr key={`${i}-${r.question_text.slice(0, 12)}`} className="border-t border-zinc-100">
-                        <td className="whitespace-nowrap px-2 py-2 text-zinc-500">{i + 1}</td>
+                        <td className="whitespace-nowrap px-2 py-2 font-mono font-semibold text-zinc-800">
+                          {r.source_question_number?.trim() || '—'}
+                        </td>
                         <td className="max-w-[100px] truncate px-2 py-2 text-zinc-600" title={r.paper_part || ''}>
                           {r.paper_part?.trim() || '—'}
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-2 text-zinc-600">
-                          {r.source_question_number?.trim() || '—'}
                         </td>
                         <td className="px-2 py-2 text-zinc-800">
                           <MeasuredSnippet
@@ -1516,17 +1815,25 @@ const PYQManager: React.FC = () => {
                         <p className="text-[10px] text-zinc-500">No matching questions (adjust filters).</p>
                       ) : (
                         <ul className="space-y-1.5 text-[10px] text-zinc-700">
-                          {questionsForExpanded.slice(0, 40).map((q) => (
-                            <li key={q.id} className="border-b border-zinc-100/80 pb-1.5 last:border-0">
-                              <MeasuredSnippet
-                                text={q.question_text}
-                                className="line-clamp-2 break-words [overflow-wrap:anywhere]"
-                              />
-                              <span className="mt-0.5 block text-zinc-500">
-                                {q.year ?? '—'} · {q.subject_name || '—'} · {q.question_type || '—'}
-                              </span>
-                            </li>
-                          ))}
+                          {questionsForExpanded.slice(0, 40).map((q) => {
+                            const pq = paperQuestionLabelFromMetadata(q.metadata);
+                            return (
+                              <li key={q.id} className="border-b border-zinc-100/80 pb-1.5 last:border-0">
+                                {pq ? (
+                                  <span className="mb-0.5 inline-block rounded bg-zinc-200/80 px-1.5 py-0.5 font-mono text-[9px] font-bold text-zinc-800">
+                                    Q{pq}
+                                  </span>
+                                ) : null}
+                                <MeasuredSnippet
+                                  text={q.question_text}
+                                  className="line-clamp-2 break-words [overflow-wrap:anywhere]"
+                                />
+                                <span className="mt-0.5 block text-zinc-500">
+                                  {q.year ?? '—'} · {q.subject_name || '—'} · {q.question_type || '—'}
+                                </span>
+                              </li>
+                            );
+                          })}
                           {questionsForExpanded.length > 40 && (
                             <li className="text-zinc-400">+{questionsForExpanded.length - 40} more…</li>
                           )}
@@ -1560,6 +1867,7 @@ const PYQManager: React.FC = () => {
               <thead className="sticky top-0 bg-zinc-50 text-zinc-600">
                 <tr>
                   <th className="px-2 py-1.5">Batch</th>
+                  <th className="whitespace-nowrap px-2 py-1.5">Paper Q#</th>
                   <th className="px-2 py-1.5">Question</th>
                   <th className="px-2 py-1.5">Subject</th>
                   <th className="px-2 py-1.5">Type</th>
@@ -1572,6 +1880,9 @@ const PYQManager: React.FC = () => {
                   <tr key={r.id} className="border-t border-zinc-100">
                     <td className="max-w-[120px] truncate px-2 py-1.5 text-zinc-500" title={r.upload_set_id ? setNameById.get(r.upload_set_id) : ''}>
                       {r.upload_set_id ? setNameById.get(r.upload_set_id)?.slice(0, 24) || '—' : '—'}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[10px] font-semibold text-zinc-800">
+                      {paperQuestionLabelFromMetadata(r.metadata) || '—'}
                     </td>
                     <td className="px-2 py-1.5 text-zinc-700">
                       <MeasuredSnippet
@@ -1595,7 +1906,7 @@ const PYQManager: React.FC = () => {
                 ))}
                 {filteredRows.length === 0 && (
                   <tr>
-                    <td className="px-2 py-4 text-zinc-400" colSpan={6}>
+                    <td className="px-2 py-4 text-zinc-400" colSpan={7}>
                       No PYQs match filters.
                     </td>
                   </tr>
