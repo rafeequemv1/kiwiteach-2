@@ -130,7 +130,9 @@ function splitRefSourceIntoChunks(full: string): string[] {
     }
     chunks.push(full.slice(start, end));
     if (end >= full.length) break;
-    start = Math.max(start + 1, end - overlap);
+    let nextStart = end - overlap;
+    if (nextStart <= start) nextStart = end;
+    start = nextStart;
   }
   return chunks.length ? chunks : [full];
 }

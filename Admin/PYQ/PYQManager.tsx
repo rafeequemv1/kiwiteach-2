@@ -508,7 +508,12 @@ function splitPyqSourceIntoChunks(full: string): string[] {
     }
     chunks.push(full.slice(start, end));
     if (end >= full.length) break;
-    start = Math.max(start + 1, end - overlap);
+    // If the softened boundary made this chunk shorter than `overlap`, `end - overlap` would sit at or
+    // before `start` and `Math.max(start + 1, …)` crawls forward by 1 char → hundreds of duplicate calls
+    // and we hit the guard before finishing the file (seen on real NEET DOCX → HTML).
+    let nextStart = end - overlap;
+    if (nextStart <= start) nextStart = end;
+    start = nextStart;
   }
   return chunks.length ? chunks : [full];
 }
