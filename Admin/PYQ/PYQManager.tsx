@@ -1,7 +1,7 @@
 import '../../types';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../supabase/client';
-import { FinishReason, GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { motion } from 'motion/react';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
@@ -78,8 +78,6 @@ type Draft = {
   previewKey?: string;
 };
 
-type GeminiDocRow = Partial<Draft>;
-
 const emptyDraft: Draft = {
   question_text: '',
   question_format: 'text',
@@ -91,7 +89,7 @@ const emptyDraft: Draft = {
   correct_index: 0,
   explanation: '',
   question_type: 'mcq',
-  difficulty: 'Medium',
+  difficulty: '',
   subject_name: '',
   chapter_name: '',
   topic_tag: '',
@@ -281,7 +279,7 @@ const applyMapped = (base: Draft, mapped: Record<string, string>) => ({
     ({ A: 0, B: 1, C: 2, D: 3 }[(mapped.correct_answer || mapped.answer || '').toUpperCase() as 'A' | 'B' | 'C' | 'D'] ?? 0),
   explanation: mapped.explanation || '',
   question_type: (mapped.question_type || mapped.type || 'mcq').toLowerCase(),
-  difficulty: mapped.difficulty || 'Medium',
+  difficulty: mapped.difficulty?.trim() ? String(mapped.difficulty) : '',
   subject_name: mapped.subject_name || mapped.subject || '',
   chapter_name: mapped.chapter_name || mapped.chapter || '',
   topic_tag: mapped.topic_tag || mapped.topic || '',
@@ -376,71 +374,6 @@ function applySourceQuestionNumbersFromRawText(rows: Draft[], rawText: string): 
   });
 }
 
-const normalizeGeminiRow = (row: GeminiDocRow): Draft => ({
-  ...emptyDraft,
-  question_text: stripDocxImageTokens(String(row.question_text ?? '')),
-  question_format: String((row as any).question_format || 'text').toLowerCase(),
-  option_a: stripDocxImageTokens(String(row.option_a ?? '')),
-  option_b: stripDocxImageTokens(String(row.option_b ?? '')),
-  option_c: stripDocxImageTokens(String(row.option_c ?? '')),
-  option_d: stripDocxImageTokens(String(row.option_d ?? '')),
-  correct_answer: String((row as any).correct_answer || 'A').toUpperCase(),
-  correct_index: Number(row.correct_index ?? 0) || 0,
-  explanation: String(row.explanation || ''),
-  question_type: String(row.question_type || 'mcq').toLowerCase(),
-  difficulty: String(row.difficulty || 'Medium'),
-  subject_name: String(row.subject_name || ''),
-  chapter_name: String(row.chapter_name || ''),
-  topic_tag: String(row.topic_tag || ''),
-  class_name: String(row.class_name || 'NEET'),
-  year: row.year == null ? '' : String(row.year),
-  source_exam: String(row.source_exam || 'NEET'),
-  paper_code: String(row.paper_code || ''),
-  image_url: String(row.image_url || ''),
-  doc_image_index: (() => {
-    const v = (row as any).doc_image_index;
-    if (v == null || v === '' || Number(v) === -1) return null;
-    const n = Number(v);
-    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
-  })(),
-  paper_part: String((row as any).paper_part || ''),
-  source_question_number:
-    (row as any).source_question_number == null || (row as any).source_question_number === ''
-      ? ''
-      : String((row as any).source_question_number),
-});
-
-const parseGeminiJson = (txt: string): GeminiDocRow[] => {
-  const cleaned = txt
-    .trim()
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/\s*```$/, '')
-    .trim();
-  try {
-    const parsed = JSON.parse(cleaned);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as GeminiDocRow[];
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const hint =
-      /Unterminated string|Unexpected end|JSON/i.test(msg)
-        ? " This usually means Gemini's reply was cut off or had invalid JSON. Try Gemini 3 Pro, a shorter file, or split the paper into smaller documents."
-        : '';
-    throw new Error(`${msg}.${hint}`);
-  }
-};
-
-function draftsFromGeminiResponseText(outText: string): Draft[] {
-  return parseGeminiJson(outText)
-    .map(normalizeGeminiRow)
-    .map(ensureSourceQuestionNumberFromStem)
-    .filter((r) => stripDocxImageTokens(r.question_text).replace(/\s/g, '').length > 0);
-}
-
-/** USD → INR for UI estimates only (adjust if your billing uses a different FX). */
-const PYQ_USD_INR = 87;
-
 const PYQ_MODEL_STORAGE_KEY = 'kiwiteach_pyq_gemini_model';
 
 type PyqGeminiModelOption = {
@@ -481,12 +414,6 @@ const PYQ_GEMINI_MODEL_OPTIONS: PyqGeminiModelOption[] = [
   },
 ];
 
-/** Smaller segments → smaller JSON per Gemini call → fewer truncated / invalid JSON payloads. */
-const PYQ_SOURCE_CHUNK_CHARS = 7_000;
-const PYQ_SOURCE_CHUNK_OVERLAP = 3_800;
-/** Large JSON arrays need a high ceiling or the response truncates mid-array. */
-const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
-
 type PyqParseProgressPayload = {
   fileIndex: number;
   fileTotal: number;
@@ -495,128 +422,74 @@ type PyqParseProgressPayload = {
   chunkTotal: number;
 };
 
-function splitPyqSourceIntoChunks(full: string): string[] {
-  const target = PYQ_SOURCE_CHUNK_CHARS;
-  const overlap = PYQ_SOURCE_CHUNK_OVERLAP;
-  if (full.length <= target) return [full];
-  const chunks: string[] = [];
-  let start = 0;
-  let guard = 0;
-  while (start < full.length && guard < 400) {
-    guard += 1;
-    let end = Math.min(start + target, full.length);
-    if (end < full.length) {
-      const slice = full.slice(start, end);
-      let breakAt = slice.lastIndexOf('\n\n');
-      if (breakAt < target * 0.38) breakAt = slice.lastIndexOf('\n');
-      if (breakAt >= target * 0.32) end = start + breakAt + 1;
-    }
-    chunks.push(full.slice(start, end));
-    if (end >= full.length) break;
-    // If the softened boundary made this chunk shorter than `overlap`, `end - overlap` would sit at or
-    // before `start` and `Math.max(start + 1, …)` crawls forward by 1 char → hundreds of duplicate calls
-    // and we hit the guard before finishing the file (seen on real NEET DOCX → HTML).
-    let nextStart = end - overlap;
-    if (nextStart <= start) nextStart = end;
-    start = nextStart;
-  }
-  return chunks.length ? chunks : [full];
+const PYQ_DIFFICULTY_FILL_MAX_OUT = 2048;
+const PYQ_DIFFICULTY_BATCH = 10;
+
+function getDifficultyFillResponseSchema() {
+  return {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        question_id: { type: Type.STRING },
+        difficulty: { type: Type.STRING },
+      },
+    },
+  };
 }
 
-function mergePyqChunkDrafts(parts: Draft[][]): Draft[] {
-  const seen = new Set<string>();
-  const out: Draft[] = [];
-  for (const part of parts) {
-    for (const d of part) {
-      const sq = (d.source_question_number || '').trim();
-      const pp = (d.paper_part || '').trim();
-      const stem = stripDocxImageTokens(d.question_text || '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 120)
-        .toLowerCase();
-      const key = `${pp}\t${sq}\t${stem}`;
-      if (!stem) continue;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(d);
-    }
+function normalizeDifficultyLabel(raw: string): string | null {
+  const s = (raw || '').trim().toLowerCase();
+  if (s === 'easy' || s === 'e') return 'easy';
+  if (s === 'medium' || s === 'med' || s === 'm') return 'medium';
+  if (s === 'hard' || s === 'difficult' || s === 'h') return 'hard';
+  if (s.includes('easy')) return 'easy';
+  if (s.includes('hard')) return 'hard';
+  if (s.includes('medium')) return 'medium';
+  return null;
+}
+
+async function runGeminiFillDifficulties(
+  ai: GoogleGenAI,
+  modelId: string,
+  batch: { id: string; question_text: string; subject_name: string | null; question_type: string | null }[]
+): Promise<Map<string, string>> {
+  const payload = batch.map((q) => ({
+    question_id: q.id,
+    question_text: (q.question_text || '').slice(0, 2000),
+    subject: q.subject_name || '',
+    question_type: q.question_type || '',
+  }));
+  const userText =
+    'For each item, assign exactly one difficulty: easy, medium, or hard (lowercase). ' +
+    'Use typical NEET demand: easy = single-concept recall; medium = reasoning or multi-step; hard = lengthy, subtle, or unfamiliar framing. ' +
+    'Return one object per input in the same order; question_id must match.\n\n' +
+    JSON.stringify(payload);
+  const response = await ai.models.generateContent({
+    model: modelId,
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    config: {
+      temperature: 0,
+      maxOutputTokens: PYQ_DIFFICULTY_FILL_MAX_OUT,
+      responseMimeType: 'application/json',
+      responseSchema: getDifficultyFillResponseSchema(),
+    },
+  });
+  const outText = response.text || '[]';
+  let parsed: { question_id?: string; difficulty?: string }[];
+  try {
+    parsed = JSON.parse(outText.trim()) as { question_id?: string; difficulty?: string }[];
+  } catch {
+    throw new Error('Gemini returned invalid JSON for difficulty fill.');
   }
+  const out = new Map<string, string>();
+  if (!Array.isArray(parsed)) return out;
+  parsed.forEach((row, idx) => {
+    const id = row.question_id?.trim() || batch[idx]?.id;
+    const d = normalizeDifficultyLabel(String(row.difficulty || ''));
+    if (id && d) out.set(id, d);
+  });
   return out;
-}
-
-function buildPyqGeminiUserPrompt(
-  fileName: string,
-  rawText: string,
-  segment?: { index: number; total: number }
-): string {
-  const segIntro =
-    segment && segment.total > 1
-      ? `SEGMENT ${segment.index} of ${segment.total} (same file split for length). ` +
-        `Extract every scored question whose stem STARTS in this segment. ` +
-        `Do not repeat questions you would have output for an earlier segment. ` +
-        `Do not skip any question that starts here. ` +
-        `Still output the full JSON array for this segment only.\n\n`
-      : '';
-  return (
-    segIntro +
-    'Convert the following exam/PYQ source into a JSON array of scored questions only. Output JSON only, no markdown.\n\n' +
-    'CRITICAL — completeness: extract every scored question in the document (or this segment). Never omit, merge, or summarize questions. ' +
-    'If the source has 50 items, the array must have 50 objects (unless this is a segment: only items starting here).\n\n' +
-    'CRITICAL — verbatim text: copy question_text and every option field character-for-character from the source (same spelling, punctuation, LaTeX/MathJax, units). ' +
-    'Do not rephrase, simplify, fix typos, or change notation. The only allowed edit is removing IMAGE_N lines from text fields (figures use doc_image_index).\n\n' +
-    'CRITICAL — JSON string rules: escape double-quotes inside any string as backslash-quote; use backslash-n for newlines inside strings (no raw line breaks inside JSON string values). ' +
-    'Output must be one valid JSON array only.\n\n' +
-    'IGNORE (do not output as questions): cover pages; logos and branding; watermarks; coaching or publisher headers/footers; decorative or banner images; hall-ticket / OMR instructions; ' +
-    'generic "Read carefully", duration, maximum marks, or syllabus tables unless they are the sole content of a scored item. ' +
-    'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
-    'Use empty string for missing optional fields where the source has no text.\n\n' +
-    'Multi-part papers (Section A/B, Part I/II, etc.): for each row set paper_part to the section label exactly as printed (e.g. "Section A", "Part II"). ' +
-    'source_question_number is mandatory on EVERY row: copy the question number EXACTLY as on the paper (e.g. 1, 09, 101, 102, 121, 4a, 12(i)). ' +
-    'When a stem starts like "101. The text..." or "102) Match…", set source_question_number to 101 or 102 — never leave it empty. ' +
-    'Never renumber 1,2,3… by extraction order; papers often start at 101 or 180 — keep those values. ' +
-    'If the paper shows a range (e.g. Questions 121–125), use 121,122,123,124,125 in source_question_number for each row respectively. ' +
-    'question_text must still be verbatim from the paper (including a leading "101." if that is how it is printed); always set source_question_number to match. ' +
-    'Do not paste section headings or instruction blocks into question_text—only the item stem.\n\n' +
-    'Figures: SOURCE TEXT contains lines with IMAGE_0, IMAGE_1, … where the DOCX had an embedded picture — these tokens ARE visible in SOURCE TEXT (img innerText must be respected). ' +
-    'The question row that corresponds to that item must set doc_image_index to that same integer (0-based) and question_format "figure" when the item depends on the diagram. ' +
-    'Do not include IMAGE_N tokens in question_text or options. If there is no figure for the item, set doc_image_index to -1. ' +
-    'match_list / column matching: you may include a simple HTML <table>…</table> inside question_text for two-column list layouts; keep only table/tr/th/td text, no scripts. ' +
-    'Else use standard option fields for codes / matches.\n\n' +
-    'Required keys per row: question_text, option_a, option_b, option_c, option_d, correct_answer, correct_index, explanation, question_type, question_format, difficulty, ' +
-    'subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url, doc_image_index, paper_part, source_question_number.\n\n' +
-    'image_url: full http(s) URL only if the source already has a public URL; otherwise leave empty and use doc_image_index from IMAGE_N. ' +
-    'question_format "figure" when the item needs a diagram or uses doc_image_index >= 0. ' +
-    'Allowed question_format: text, figure. Allowed question_type: mcq, assertion_reason, reason_based, match_list. Allowed difficulty: easy, medium, hard.\n\n' +
-    `Source filename: ${fileName}\n\nSOURCE TEXT:\n${rawText}`
-  );
-}
-
-const PYQ_GEMINI_FIXED_PROMPT_CHARS = buildPyqGeminiUserPrompt('', '').length;
-
-function estimateSingleDocPyqParseInr(
-  sourceChars: number,
-  fileNameLen: number,
-  model: Pick<PyqGeminiModelOption, 'inputUsdPer1M' | 'outputUsdPer1M'>,
-  usdInr: number
-) {
-  const chunkCalls = Math.max(1, Math.ceil(sourceChars / PYQ_SOURCE_CHUNK_CHARS));
-  const charsPerCall = Math.ceil(sourceChars / chunkCalls);
-  const inputTok = Math.ceil((PYQ_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + charsPerCall) / 4);
-  const outputTok = Math.min(GEMINI_MAX_OUTPUT_TOKENS, Math.max(1200, Math.ceil(inputTok * 0.22)));
-  const usdPerCall =
-    (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
-  return { inr: usdPerCall * chunkCalls * usdInr, inputTok, outputTok };
-}
-
-async function getDocCharCountForEstimate(file: File): Promise<number> {
-  const ext = file.name.toLowerCase();
-  if (ext.endsWith('.txt')) return (await file.text()).length;
-  const mammoth = (window as any)?.mammoth;
-  if (!mammoth?.extractRawText) return 0;
-  const buf = await file.arrayBuffer();
-  const out = await mammoth.extractRawText({ arrayBuffer: buf });
-  return (out.value || '').length;
 }
 
 async function extractLocalPyqSource(file: File): Promise<{ rawText: string; docxImages: DocxEmbeddedImage[] }> {
@@ -650,117 +523,6 @@ async function extractLocalPyqSource(file: File): Promise<{ rawText: string; doc
     throw new Error(`No readable text in ${file.name}`);
   }
   return { rawText, docxImages };
-}
-
-function getPyqGeminiResponseSchema() {
-  return {
-    type: Type.ARRAY,
-    items: {
-      type: Type.OBJECT,
-      properties: {
-        question_text: { type: Type.STRING },
-        option_a: { type: Type.STRING },
-        option_b: { type: Type.STRING },
-        option_c: { type: Type.STRING },
-        option_d: { type: Type.STRING },
-        correct_answer: { type: Type.STRING },
-        correct_index: { type: Type.NUMBER },
-        explanation: { type: Type.STRING },
-        question_type: { type: Type.STRING },
-        question_format: { type: Type.STRING },
-        difficulty: { type: Type.STRING },
-        subject_name: { type: Type.STRING },
-        chapter_name: { type: Type.STRING },
-        topic_tag: { type: Type.STRING },
-        class_name: { type: Type.STRING },
-        year: { type: Type.STRING },
-        source_exam: { type: Type.STRING },
-        paper_code: { type: Type.STRING },
-        image_url: { type: Type.STRING },
-        doc_image_index: { type: Type.NUMBER },
-        paper_part: { type: Type.STRING },
-        source_question_number: { type: Type.STRING },
-      },
-    },
-  };
-}
-
-async function runPyqGeminiExtractOneChunk(
-  ai: GoogleGenAI,
-  fileName: string,
-  modelId: string,
-  chunkText: string,
-  segment: { index: number; total: number } | undefined
-): Promise<Draft[]> {
-  const callModel = async () => {
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: buildPyqGeminiUserPrompt(fileName, chunkText, segment) }],
-        },
-      ],
-      config: {
-        temperature: 0,
-        maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
-        responseMimeType: 'application/json',
-        responseSchema: getPyqGeminiResponseSchema(),
-      },
-    });
-    const finishReason = response.candidates?.[0]?.finishReason;
-    if (finishReason === FinishReason.MAX_TOKENS) {
-      throw new Error(
-        'Gemini stopped at MAX_TOKENS (output truncated, JSON incomplete). Try Gemini 3 Pro or a shorter document. This app splits long papers into smaller segments to reduce this.'
-      );
-    }
-    const outText = response.text || '[]';
-    return draftsFromGeminiResponseText(outText);
-  };
-
-  try {
-    return await callModel();
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/JSON|parse|Unterminated|Unexpected end|position /i.test(msg)) {
-      await new Promise((r) => setTimeout(r, 900));
-      return await callModel();
-    }
-    throw e;
-  }
-}
-
-async function runPyqGeminiExtract(
-  file: File,
-  modelId: string,
-  onProgress?: (p: { chunkIndex: number; chunkTotal: number }) => void
-): Promise<{ drafts: Draft[]; parseSanity: ParseSanityWarning | null }> {
-  const { rawText, docxImages } = await extractLocalPyqSource(file);
-  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
-  const chunks = splitPyqSourceIntoChunks(rawText);
-  let base: Draft[] = [];
-  if (chunks.length === 1) {
-    onProgress?.({ chunkIndex: 1, chunkTotal: 1 });
-    base = await runPyqGeminiExtractOneChunk(ai, file.name, modelId, chunks[0], undefined);
-  } else {
-    const parts: Draft[][] = [];
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress?.({ chunkIndex: i + 1, chunkTotal: chunks.length });
-      const piece = await runPyqGeminiExtractOneChunk(ai, file.name, modelId, chunks[i], {
-        index: i + 1,
-        total: chunks.length,
-      });
-      parts.push(piece);
-    }
-    base = mergePyqChunkDrafts(parts);
-  }
-  const withPaperNums = applySourceQuestionNumbersFromRawText(base, rawText);
-  let withFigures = withPaperNums.map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
-  if (docxImages.length > 0) {
-    withFigures = attachSingleOrphanDocxImage(withFigures, docxImages);
-  }
-  const parseSanity = buildParseSanityWarning(rawText, withFigures.length, file.name);
-  return { drafts: withFigures, parseSanity };
 }
 
 function localMcqRowToPyqDraft(r: LocalMcqRow): Draft {
@@ -867,7 +629,7 @@ function pyqRowToDraft(r: PYQRow): Draft {
     correct_index: idx,
     explanation: r.explanation || '',
     question_type: r.question_type || 'mcq',
-    difficulty: r.difficulty || 'Medium',
+    difficulty: r.difficulty?.trim() ? r.difficulty : '',
     subject_name: r.subject_name || '',
     chapter_name: r.chapter_name || '',
     topic_tag: r.topic_tag || '',
@@ -1119,9 +881,6 @@ const PYQManager: React.FC = () => {
   const [previewBulkSubject, setPreviewBulkSubject] = useState('');
   const [pendingCommit, setPendingCommit] = useState<{ files: File[]; kind: string } | null>(null);
   const [docImportQueue, setDocImportQueue] = useState<File[]>([]);
-  const [docQueueStats, setDocQueueStats] = useState<{ name: string; chars: number }[]>([]);
-  const [docQueueScanning, setDocQueueScanning] = useState(false);
-  const [pyqImportParser, setPyqImportParser] = useState<'gemini' | 'local'>('gemini');
   const [pyqGeminiModel, setPyqGeminiModel] = useState<string>(() => {
     try {
       const s = localStorage.getItem(PYQ_MODEL_STORAGE_KEY);
@@ -1142,6 +901,7 @@ const PYQManager: React.FC = () => {
   const [filterExam, setFilterExam] = useState('');
   const [expandedSetId, setExpandedSetId] = useState<string | null>(null);
   const [batchPaperPreview, setBatchPaperPreview] = useState<{ setId: string; label: string } | null>(null);
+  const [difficultyFillBusySetId, setDifficultyFillBusySetId] = useState<string | null>(null);
 
   const setNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1189,89 +949,6 @@ const PYQManager: React.FC = () => {
     }
   }, [pyqGeminiModel]);
 
-  useEffect(() => {
-    if (docImportQueue.length === 0) {
-      setDocQueueStats([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      setDocQueueScanning(true);
-      try {
-        const stats: { name: string; chars: number }[] = [];
-        for (const f of docImportQueue) {
-          try {
-            const chars = await getDocCharCountForEstimate(f);
-            if (cancelled) return;
-            stats.push({ name: f.name, chars });
-          } catch {
-            if (cancelled) return;
-            stats.push({ name: f.name, chars: 0 });
-          }
-        }
-        if (!cancelled) setDocQueueStats(stats);
-      } catch {
-        if (!cancelled) setDocQueueStats(docImportQueue.map((f) => ({ name: f.name, chars: 0 })));
-      } finally {
-        if (!cancelled) setDocQueueScanning(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [docImportQueue]);
-
-  const pyqModelMeta = useMemo(
-    () => PYQ_GEMINI_MODEL_OPTIONS.find((m) => m.id === pyqGeminiModel) ?? PYQ_GEMINI_MODEL_OPTIONS[0],
-    [pyqGeminiModel]
-  );
-
-  const bestValueModel = useMemo(() => PYQ_GEMINI_MODEL_OPTIONS.find((m) => m.bestValue)!, []);
-
-  const parseCostEstimateInr = useMemo(() => {
-    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) return null;
-    let t = 0;
-    for (let i = 0; i < docQueueStats.length; i++) {
-      t += estimateSingleDocPyqParseInr(
-        docQueueStats[i].chars,
-        docImportQueue[i].name.length,
-        pyqModelMeta,
-        PYQ_USD_INR
-      ).inr;
-    }
-    return t;
-  }, [docQueueStats, docImportQueue, pyqModelMeta]);
-
-  const parseCostEstimateBestInr = useMemo(() => {
-    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) return null;
-    let t = 0;
-    for (let i = 0; i < docQueueStats.length; i++) {
-      t += estimateSingleDocPyqParseInr(
-        docQueueStats[i].chars,
-        docImportQueue[i].name.length,
-        bestValueModel,
-        PYQ_USD_INR
-      ).inr;
-    }
-    return t;
-  }, [docQueueStats, docImportQueue, bestValueModel]);
-
-  const pyqTotalGeminiCalls = useMemo(() => {
-    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) {
-      return Math.max(1, docImportQueue.length);
-    }
-    return docQueueStats.reduce(
-      (sum, s) => sum + Math.max(1, Math.ceil((s.chars || 1) / PYQ_SOURCE_CHUNK_CHARS)),
-      0
-    );
-  }, [docQueueStats, docImportQueue]);
-
-  const fmtInr = useCallback(
-    (n: number) =>
-      new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(n),
-    []
-  );
-
   const appendDocFiles = useCallback((list: FileList | null) => {
     if (!list?.length) return;
     /** Snapshot immediately — clearing the input below can empty the live FileList before setState runs. */
@@ -1317,18 +994,7 @@ const PYQManager: React.FC = () => {
           chunkIndex: 1,
           chunkTotal: 1,
         });
-        const { drafts, parseSanity } =
-          pyqImportParser === 'local'
-            ? await runLocalPyqExtract(file)
-            : await runPyqGeminiExtract(file, pyqGeminiModel, ({ chunkIndex, chunkTotal }) => {
-                setPyqParseProgress({
-                  fileIndex: fi + 1,
-                  fileTotal,
-                  fileName: file.name,
-                  chunkIndex,
-                  chunkTotal,
-                });
-              });
+        const { drafts, parseSanity } = await runLocalPyqExtract(file);
         if (parseSanity) sanityCollected.push(parseSanity);
         if (drafts.length === 0) {
           alert(`No questions extracted from ${file.name}.`);
@@ -1340,7 +1006,6 @@ const PYQManager: React.FC = () => {
       setActiveUploadSetId(null);
       setPendingCommit({ files: [...docImportQueue], kind: 'doc' });
       setDocImportQueue([]);
-      setDocQueueStats([]);
       setPreviewRows(sortDraftsExamOrder(combined));
       setPyqParseSanityWarnings(sanityCollected);
     } catch (e: any) {
@@ -1349,7 +1014,48 @@ const PYQManager: React.FC = () => {
       setParsingDoc(false);
       setPyqParseProgress(null);
     }
-  }, [docImportQueue, pyqGeminiModel, pyqImportParser]);
+  }, [docImportQueue]);
+
+  const fillBlankDifficultiesForBatch = useCallback(
+    async (setId: string) => {
+      const subset = rows.filter((r) => r.upload_set_id === setId && !(r.difficulty && String(r.difficulty).trim()));
+      if (subset.length === 0) {
+        alert('No questions with blank difficulty in this batch.');
+        return;
+      }
+      try {
+        assertGeminiApiKey();
+      } catch (e: any) {
+        alert(e?.message || 'Set your Gemini API key in environment config.');
+        return;
+      }
+      if (!confirm(`Fill difficulty for ${subset.length} question(s) using Gemini (${pyqGeminiModel})? This will use your API quota.`)) {
+        return;
+      }
+      setDifficultyFillBusySetId(setId);
+      try {
+        const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+        let updated = 0;
+        for (let i = 0; i < subset.length; i += PYQ_DIFFICULTY_BATCH) {
+          const chunk = subset.slice(i, i + PYQ_DIFFICULTY_BATCH);
+          const maps = await runGeminiFillDifficulties(ai, pyqGeminiModel, chunk);
+          for (const r of chunk) {
+            const d = maps.get(r.id);
+            if (!d) continue;
+            const { error } = await supabase.from('pyq_questions_neet').update({ difficulty: d }).eq('id', r.id);
+            if (!error) updated += 1;
+          }
+        }
+        await load();
+        alert(updated ? `Updated difficulty for ${updated} question(s).` : 'No rows updated (check API response).');
+      } catch (e: any) {
+        alert(e?.message || 'Difficulty fill failed');
+      } finally {
+        setDifficultyFillBusySetId(null);
+      }
+    },
+    [rows, pyqGeminiModel]
+  );
 
   /** One Supabase row per exam year; reuses existing row so separate uploads merge into the same batch. */
   const resolveYearUploadSet = useCallback(
@@ -1526,7 +1232,6 @@ const PYQManager: React.FC = () => {
     setActiveUploadSetId(null);
     setPendingCommit(null);
     setDocImportQueue([]);
-    setDocQueueStats([]);
     setPreviewModalOpen(false);
   };
 
@@ -1769,7 +1474,7 @@ const PYQManager: React.FC = () => {
       '1',
       'Reasoning for the answer',
       'assertion_reason',
-      'medium',
+      '',
       'Biology',
       'Genetics',
       'Mendelian inheritance',
@@ -1802,10 +1507,9 @@ const PYQManager: React.FC = () => {
       <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-base font-semibold text-zinc-900">PYQ import</h3>
         <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
-          For documents: add one or more files, choose a Gemini model, then click <strong>Parse all with Gemini</strong>. Set{' '}
-          <strong>year</strong> (e.g. 2025) per row or in the doc; multi-part papers use <strong>paper_part</strong> and{' '}
-          <strong>source_question_number</strong> in metadata. Then <strong>Save to bank</strong>. Imports are grouped into{' '}
-          <strong>one upload batch per exam year</strong>—parsing another file for the same year adds questions to that batch.
+          For documents: add files and <strong>Parse all locally</strong> (no AI on import). Set <strong>year</strong> (e.g. 2025) before save; multi-part papers use{' '}
+          <strong>paper_part</strong> and <strong>source_question_number</strong>. Then <strong>Save to bank</strong>. Imports merge into{' '}
+          <strong>one batch per exam year</strong>. Difficulty stays blank unless you add it in CSV or use <strong>Fill blank difficulties</strong> (Gemini) on a batch.
         </p>
 
         {previewRows.length === 0 ? (
@@ -1847,8 +1551,9 @@ const PYQManager: React.FC = () => {
                 <iconify-icon icon="mdi:file-document-multiple-outline" width="28" className="text-violet-600" />
                 <p className="mt-2 text-sm font-semibold text-zinc-900">DOC · DOCX · TXT (multi)</p>
                 <p className="mt-1 text-[11px] leading-snug text-zinc-500">
-                  Add files, choose <strong>Gemini</strong> or <strong>local</strong> parser, then parse. Local needs a strict MCQ layout and
-                  uses no API. Gemini splits long papers into segments; figures stay aligned per document.
+                  Add one or more files and parse <strong>locally</strong> (no AI during import). Expects numbered MCQs, four options as (A)–(D) or
+                  (1)–(4), and an answer line. Figures from DOCX use IMAGE_N placeholders. After saving, you can fill blank difficulties with Gemini
+                  from an upload batch’s question list.
                 </p>
                 <input
                   ref={docFileInputRef}
@@ -1887,109 +1592,28 @@ const PYQManager: React.FC = () => {
                     ))}
                   </ul>
                 ) : null}
-                <div className="mt-3 space-y-2">
-                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Parser</span>
-                  <div className="flex flex-col gap-2 text-[11px] text-zinc-800">
-                    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2">
-                      <input
-                        type="radio"
-                        name="pyq-parser"
-                        className="mt-0.5"
-                        checked={pyqImportParser === 'gemini'}
-                        onChange={() => setPyqImportParser('gemini')}
-                      />
-                      <span>
-                        <span className="font-semibold">Gemini</span>
-                        <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
-                          Best for messy layouts, explanations, and metadata. Uses your API key and may split long files into
-                          segments.
-                        </span>
-                      </span>
-                    </label>
-                    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2">
-                      <input
-                        type="radio"
-                        name="pyq-parser"
-                        className="mt-0.5"
-                        checked={pyqImportParser === 'local'}
-                        onChange={() => setPyqImportParser('local')}
-                      />
-                      <span>
-                        <span className="font-semibold">Local only</span>
-                        <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
-                          No AI — free and instant. Expects numbered questions, four options as (A)–(D) or (1)–(4), and an
-                          Ans/Answer/Key line. Skips blocks that do not match.
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
-                {pyqImportParser === 'gemini' ? (
-                  <div className="mt-3 space-y-1">
-                    <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
-                    <select
-                      value={pyqGeminiModel}
-                      onChange={(e) => setPyqGeminiModel(e.target.value)}
-                      className="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
-                    >
-                      {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label}
-                          {m.bestValue ? ' — best ₹ efficiency' : ''}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] leading-snug text-zinc-500">
-                      <span className="font-semibold text-zinc-700">{pyqModelMeta.label}:</span> {pyqModelMeta.blurb}
-                      {pyqModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
-                        <span className="mt-1 block text-emerald-800">
-                          Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
-                          {fmtInr(parseCostEstimateInr)} with current selection).
-                        </span>
-                      ) : null}
-                    </p>
-                  </div>
-                ) : null}
                 <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
-                  {pyqImportParser === 'local' ? (
-                    <span>
-                      <span className="font-semibold text-zinc-800">Local parse:</span> no Gemini calls and no API cost. Year and subject are
-                      often empty—use <strong>Year & subject</strong> under the preview (or edit table cells) before <strong>Save to bank</strong>.
-                    </span>
-                  ) : docQueueScanning ? (
-                    <span className="flex items-center gap-2 text-violet-700">
-                      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
-                      Scanning files for estimate…
-                    </span>
-                  ) : docImportQueue.length === 0 ? (
-                    'Estimated Gemini cost (INR) appears after you add documents.'
-                  ) : parseCostEstimateInr == null ? (
-                    'Working on estimate…'
-                  ) : (
-                    <>
-                      <span className="font-semibold text-zinc-800">Est. cost — ~{pyqTotalGeminiCalls} API call(s):</span>{' '}
-                      <span className="font-mono text-indigo-700">{fmtInr(parseCostEstimateInr)}</span>
-                      <span className="mt-1 block text-zinc-500">
-                        Approximate only (FX ~₹{PYQ_USD_INR}/USD). Actual charges follow your Google AI billing meters.
-                      </span>
-                    </>
-                  )}
+                  <span>
+                    <span className="font-semibold text-zinc-800">Local extract:</span> no API cost. Difficulty is left blank by default. Year and
+                    subject are often missing—use <strong>Year & subject</strong> below the preview (or table cells) before <strong>Save to bank</strong>.
+                    After upload, open a batch and use <strong>Fill blank difficulties</strong> (Gemini) if needed.
+                  </span>
                 </div>
                 <button
                   type="button"
-                  disabled={parsingDoc || docImportQueue.length === 0 || docQueueScanning}
+                  disabled={parsingDoc || docImportQueue.length === 0}
                   onClick={() => void parseAllQueuedDocs()}
                   className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-2.5 text-[12px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
                 >
                   {parsingDoc ? (
                     <>
                       <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-white" />
-                      {pyqImportParser === 'local' ? 'Parsing locally…' : 'Parsing with Gemini…'}
+                      Parsing locally…
                     </>
                   ) : (
                     <>
-                      <iconify-icon icon={pyqImportParser === 'local' ? 'mdi:file-document-outline' : 'mdi:robot-outline'} width="18" />
-                      {pyqImportParser === 'local' ? 'Parse all locally' : 'Parse all with Gemini'}
+                      <iconify-icon icon="mdi:file-document-outline" width="18" />
+                      Parse all locally
                     </>
                   )}
                 </button>
@@ -2090,8 +1714,8 @@ const PYQManager: React.FC = () => {
                   <div className="min-w-0">
                     <p className="font-semibold text-amber-900">Count sanity check</p>
                     <p className="mt-1 text-amber-900/90">
-                      Plain-text scan suggests more numbered stems than Gemini returned. Some questions may be missing — try Pro, shorter
-                      chunks, or verify the paper layout.
+                      Plain-text scan suggests more numbered stems than were extracted. Some questions may be missing — verify the paper layout or split
+                      the file.
                     </p>
                     <ul className="mt-2 list-inside list-disc space-y-0.5 text-[11px] text-amber-900/85">
                       {pyqParseSanityWarnings.map((w, i) => (
@@ -2374,6 +1998,9 @@ const PYQManager: React.FC = () => {
             {filteredSets.map((s) => {
               const agg = aggregateForSet(s.id);
               const expanded = expandedSetId === s.id;
+              const blankDifficultyCount = rows.filter(
+                (r) => r.upload_set_id === s.id && !(r.difficulty && String(r.difficulty).trim())
+              ).length;
               return (
                 <div
                   key={s.id}
@@ -2454,6 +2081,37 @@ const PYQManager: React.FC = () => {
                     </button>
                   </div>
                   {expanded && (
+                    <>
+                      <div className="mt-3 flex flex-col gap-2 rounded-md border border-violet-100 bg-violet-50/40 p-2.5 sm:flex-row sm:flex-wrap sm:items-end">
+                        <label className="flex flex-col gap-0.5">
+                          <span className="text-[9px] font-bold uppercase tracking-wide text-zinc-500">Gemini model</span>
+                          <select
+                            value={pyqGeminiModel}
+                            onChange={(e) => setPyqGeminiModel(e.target.value)}
+                            disabled={difficultyFillBusySetId === s.id}
+                            className="min-w-[10rem] rounded-md border border-zinc-200 bg-white px-2 py-1 text-[10px] font-medium text-zinc-900 outline-none focus:border-violet-400 disabled:opacity-60"
+                          >
+                            {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          disabled={difficultyFillBusySetId === s.id || blankDifficultyCount === 0}
+                          onClick={() => void fillBlankDifficultiesForBatch(s.id)}
+                          className="rounded-lg border border-violet-300 bg-violet-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
+                        >
+                          {difficultyFillBusySetId === s.id
+                            ? 'Filling…'
+                            : `Fill blank difficulties${blankDifficultyCount ? ` (${blankDifficultyCount})` : ''}`}
+                        </button>
+                        <p className="w-full text-[10px] leading-snug text-zinc-600">
+                          Sets <strong>easy</strong> / <strong>medium</strong> / <strong>hard</strong> only for rows with no difficulty. Requires Gemini API key.
+                        </p>
+                      </div>
                     <div className="mt-3 max-h-48 overflow-auto rounded-md border border-zinc-100 bg-zinc-50/80 p-2">
                       {questionsForExpanded.length === 0 ? (
                         <p className="text-[10px] text-zinc-500">No matching questions (adjust filters).</p>
@@ -2473,7 +2131,7 @@ const PYQManager: React.FC = () => {
                                   className="line-clamp-2 break-words [overflow-wrap:anywhere]"
                                 />
                                 <span className="mt-0.5 block text-zinc-500">
-                                  {q.year ?? '—'} · {q.subject_name || '—'} · {q.question_type || '—'}
+                                  {q.year ?? '—'} · {q.subject_name || '—'} · {q.question_type || '—'} · diff: {q.difficulty?.trim() || '—'}
                                 </span>
                               </li>
                             );
@@ -2484,6 +2142,7 @@ const PYQManager: React.FC = () => {
                         </ul>
                       )}
                     </div>
+                    </>
                   )}
                 </div>
               );
@@ -2567,7 +2226,7 @@ const PYQManager: React.FC = () => {
           role="dialog"
           aria-modal="true"
           aria-busy="true"
-          aria-label="Parsing documents with Gemini"
+          aria-label="Parsing documents locally"
         >
           <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
             <div className="flex items-start gap-4">
@@ -2577,7 +2236,7 @@ const PYQManager: React.FC = () => {
               />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-zinc-900">
-                  {pyqImportParser === 'local' ? 'Parsing locally' : 'Parsing with Gemini'}
+                  Parsing locally
                 </p>
                 <p className="mt-1 break-words text-[13px] leading-snug text-zinc-600">
                   {pyqParseProgress ? (
