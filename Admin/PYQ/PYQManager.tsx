@@ -12,6 +12,7 @@ import {
   type DocxEmbeddedImage,
 } from '../../utils/docxFigureExtract';
 import { buildParseSanityWarning, type ParseSanityWarning } from '../../utils/examQuestionCountHeuristic';
+import { extractLocalMcqRowsFromText, type LocalMcqRow } from '../../utils/localMcqExtract';
 
 interface PYQRow {
   id: string;
@@ -758,6 +759,40 @@ async function runPyqGeminiExtract(
   return { drafts: withFigures, parseSanity };
 }
 
+function localMcqRowToPyqDraft(r: LocalMcqRow): Draft {
+  const ca = (r.correct_answer || 'A').toUpperCase();
+  const letter = ca === 'B' || ca === 'C' || ca === 'D' || ca === 'A' ? ca : 'A';
+  const correct_index = letter === 'A' ? 0 : letter === 'B' ? 1 : letter === 'C' ? 2 : 3;
+  const hasFig = /\bIMAGE_\d+\b/i.test(r.question_text);
+  return {
+    ...emptyDraft,
+    source_question_number: r.source_question_number,
+    question_text: r.question_text,
+    option_a: r.option_a,
+    option_b: r.option_b,
+    option_c: r.option_c,
+    option_d: r.option_d,
+    correct_answer: letter,
+    correct_index,
+    explanation: r.explanation,
+    doc_image_index: r.doc_image_index,
+    question_format: hasFig ? 'figure' : 'text',
+  };
+}
+
+async function runLocalPyqExtract(file: File): Promise<{ drafts: Draft[]; parseSanity: ParseSanityWarning | null }> {
+  const { rawText, docxImages } = await extractLocalPyqSource(file);
+  const rows = extractLocalMcqRowsFromText(rawText);
+  let base = rows.map(localMcqRowToPyqDraft);
+  base = applySourceQuestionNumbersFromRawText(base, rawText);
+  let withFigures = base.map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
+  if (docxImages.length > 0) {
+    withFigures = attachSingleOrphanDocxImage(withFigures, docxImages);
+  }
+  const parseSanity = buildParseSanityWarning(rawText, withFigures.length, file.name);
+  return { drafts: withFigures, parseSanity };
+}
+
 function formatPendingCommitLabel(files: File[]): string {
   if (files.length === 0) return 'import';
   if (files.length === 1) return files[0].name;
@@ -1000,6 +1035,7 @@ const PYQManager: React.FC = () => {
   const [docImportQueue, setDocImportQueue] = useState<File[]>([]);
   const [docQueueStats, setDocQueueStats] = useState<{ name: string; chars: number }[]>([]);
   const [docQueueScanning, setDocQueueScanning] = useState(false);
+  const [pyqImportParser, setPyqImportParser] = useState<'gemini' | 'local'>('gemini');
   const [pyqGeminiModel, setPyqGeminiModel] = useState<string>(() => {
     try {
       const s = localStorage.getItem(PYQ_MODEL_STORAGE_KEY);
@@ -1191,18 +1227,21 @@ const PYQManager: React.FC = () => {
           fileIndex: fi + 1,
           fileTotal,
           fileName: file.name,
-          chunkIndex: 0,
+          chunkIndex: 1,
           chunkTotal: 1,
         });
-        const { drafts, parseSanity } = await runPyqGeminiExtract(file, pyqGeminiModel, ({ chunkIndex, chunkTotal }) => {
-          setPyqParseProgress({
-            fileIndex: fi + 1,
-            fileTotal,
-            fileName: file.name,
-            chunkIndex,
-            chunkTotal,
-          });
-        });
+        const { drafts, parseSanity } =
+          pyqImportParser === 'local'
+            ? await runLocalPyqExtract(file)
+            : await runPyqGeminiExtract(file, pyqGeminiModel, ({ chunkIndex, chunkTotal }) => {
+                setPyqParseProgress({
+                  fileIndex: fi + 1,
+                  fileTotal,
+                  fileName: file.name,
+                  chunkIndex,
+                  chunkTotal,
+                });
+              });
         if (parseSanity) sanityCollected.push(parseSanity);
         if (drafts.length === 0) {
           alert(`No questions extracted from ${file.name}.`);
@@ -1218,12 +1257,12 @@ const PYQManager: React.FC = () => {
       setPreviewRows(sortDraftsExamOrder(combined));
       setPyqParseSanityWarnings(sanityCollected);
     } catch (e: any) {
-      alert(e?.message || 'Failed to parse documents with Gemini');
+      alert(e?.message || 'Failed to parse documents');
     } finally {
       setParsingDoc(false);
       setPyqParseProgress(null);
     }
-  }, [docImportQueue, pyqGeminiModel]);
+  }, [docImportQueue, pyqGeminiModel, pyqImportParser]);
 
   const createUploadSet = async (originalFilename: string, kind: string): Promise<string | null> => {
     const {
@@ -1656,8 +1695,8 @@ const PYQManager: React.FC = () => {
                 <iconify-icon icon="mdi:file-document-multiple-outline" width="28" className="text-violet-600" />
                 <p className="mt-2 text-sm font-semibold text-zinc-900">DOC · DOCX · TXT (multi)</p>
                 <p className="mt-1 text-[11px] leading-snug text-zinc-500">
-                  Add files, pick a model, estimate cost in ₹, then parse. Long papers are split into overlapping segments (several API calls per
-                  file); figures stay aligned per document.
+                  Add files, choose <strong>Gemini</strong> or <strong>local</strong> parser, then parse. Local needs a strict MCQ layout and
+                  uses no API. Gemini splits long papers into segments; figures stay aligned per document.
                 </p>
                 <input
                   ref={docFileInputRef}
@@ -1696,32 +1735,75 @@ const PYQManager: React.FC = () => {
                     ))}
                   </ul>
                 ) : null}
-                <div className="mt-3 space-y-1">
-                  <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
-                  <select
-                    value={pyqGeminiModel}
-                    onChange={(e) => setPyqGeminiModel(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
-                  >
-                    {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.label}
-                        {m.bestValue ? ' — best ₹ efficiency' : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] leading-snug text-zinc-500">
-                    <span className="font-semibold text-zinc-700">{pyqModelMeta.label}:</span> {pyqModelMeta.blurb}
-                    {pyqModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
-                      <span className="mt-1 block text-emerald-800">
-                        Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
-                        {fmtInr(parseCostEstimateInr)} with current selection).
+                <div className="mt-3 space-y-2">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Parser</span>
+                  <div className="flex flex-col gap-2 text-[11px] text-zinc-800">
+                    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2">
+                      <input
+                        type="radio"
+                        name="pyq-parser"
+                        className="mt-0.5"
+                        checked={pyqImportParser === 'gemini'}
+                        onChange={() => setPyqImportParser('gemini')}
+                      />
+                      <span>
+                        <span className="font-semibold">Gemini</span>
+                        <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                          Best for messy layouts, explanations, and metadata. Uses your API key and may split long files into
+                          segments.
+                        </span>
                       </span>
-                    ) : null}
-                  </p>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2">
+                      <input
+                        type="radio"
+                        name="pyq-parser"
+                        className="mt-0.5"
+                        checked={pyqImportParser === 'local'}
+                        onChange={() => setPyqImportParser('local')}
+                      />
+                      <span>
+                        <span className="font-semibold">Local only</span>
+                        <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                          No AI — free and instant. Expects numbered questions, four options as (A)–(D) or (1)–(4), and an
+                          Ans/Answer/Key line. Skips blocks that do not match.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
                 </div>
+                {pyqImportParser === 'gemini' ? (
+                  <div className="mt-3 space-y-1">
+                    <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
+                    <select
+                      value={pyqGeminiModel}
+                      onChange={(e) => setPyqGeminiModel(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
+                    >
+                      {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                          {m.bestValue ? ' — best ₹ efficiency' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] leading-snug text-zinc-500">
+                      <span className="font-semibold text-zinc-700">{pyqModelMeta.label}:</span> {pyqModelMeta.blurb}
+                      {pyqModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
+                        <span className="mt-1 block text-emerald-800">
+                          Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
+                          {fmtInr(parseCostEstimateInr)} with current selection).
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
+                ) : null}
                 <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
-                  {docQueueScanning ? (
+                  {pyqImportParser === 'local' ? (
+                    <span>
+                      <span className="font-semibold text-zinc-800">Local parse:</span> no Gemini calls and no API cost for this import.
+                    </span>
+                  ) : docQueueScanning ? (
                     <span className="flex items-center gap-2 text-violet-700">
                       <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
                       Scanning files for estimate…
@@ -1749,12 +1831,12 @@ const PYQManager: React.FC = () => {
                   {parsingDoc ? (
                     <>
                       <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-white" />
-                      Parsing with Gemini…
+                      {pyqImportParser === 'local' ? 'Parsing locally…' : 'Parsing with Gemini…'}
                     </>
                   ) : (
                     <>
-                      <iconify-icon icon="mdi:robot-outline" width="18" />
-                      Parse all with Gemini
+                      <iconify-icon icon={pyqImportParser === 'local' ? 'mdi:file-document-outline' : 'mdi:robot-outline'} width="18" />
+                      {pyqImportParser === 'local' ? 'Parse all locally' : 'Parse all with Gemini'}
                     </>
                   )}
                 </button>
@@ -2233,7 +2315,9 @@ const PYQManager: React.FC = () => {
                 aria-hidden
               />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-zinc-900">Parsing with Gemini</p>
+                <p className="text-sm font-semibold text-zinc-900">
+                  {pyqImportParser === 'local' ? 'Parsing locally' : 'Parsing with Gemini'}
+                </p>
                 <p className="mt-1 break-words text-[13px] leading-snug text-zinc-600">
                   {pyqParseProgress ? (
                     <>

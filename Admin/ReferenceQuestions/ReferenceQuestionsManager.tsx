@@ -10,6 +10,7 @@ import {
   type DocxEmbeddedImage,
 } from '../../utils/docxFigureExtract';
 import { buildParseSanityWarning, type ParseSanityWarning } from '../../utils/examQuestionCountHeuristic';
+import { correctLetterToIndex, extractLocalMcqRowsFromText, type LocalMcqRow } from '../../utils/localMcqExtract';
 
 declare const mammoth: any;
 
@@ -302,6 +303,33 @@ function normalizeGeminiDraft(r: GeminiDocRow): Draft {
   };
 }
 
+function refDraftFromLocalRow(r: LocalMcqRow): Draft {
+  return normalizeGeminiDraft({
+    source_question_number: r.source_question_number,
+    question_text: r.question_text,
+    options: [r.option_a, r.option_b, r.option_c, r.option_d],
+    correct_index: correctLetterToIndex(r.correct_answer),
+    explanation: r.explanation,
+    question_type: 'mcq',
+    question_format: /\bIMAGE_\d+\b/i.test(r.question_text) ? 'figure' : 'text',
+    difficulty: 'Medium',
+    image_index: r.doc_image_index,
+  });
+}
+
+async function runRefLocalOnBuffer(
+  buf: ArrayBuffer,
+  displayName: string
+): Promise<{ drafts: Draft[]; imageCount: number; parseSanity: ParseSanityWarning | null }> {
+  const { text, images } = await parseDocxBufferWithEmbeddedImages(buf, mammoth);
+  if (!text.trim()) throw new Error(`No text extracted from ${displayName}`);
+  const rows = extractLocalMcqRowsFromText(text);
+  let drafts = rows.map(refDraftFromLocalRow);
+  drafts = attachSingleOrphanRefImage(drafts, images);
+  const parseSanity = buildParseSanityWarning(text, drafts.length, displayName);
+  return { drafts, imageCount: images.length, parseSanity };
+}
+
 function getRefGeminiResponseSchema() {
   return {
     type: Type.ARRAY,
@@ -530,6 +558,7 @@ const ReferenceQuestionsManager: React.FC = () => {
   const [pendingPublishFiles, setPendingPublishFiles] = useState<File[] | null>(null);
   const docFileInputRef = useRef<HTMLInputElement>(null);
 
+  const [refImportParser, setRefImportParser] = useState<'gemini' | 'local'>('gemini');
   const [refGeminiModel, setRefGeminiModel] = useState<string>(() => {
     try {
       const s = localStorage.getItem(REF_MODEL_STORAGE_KEY);
@@ -708,7 +737,10 @@ const ReferenceQuestionsManager: React.FC = () => {
       let fileOrd = 0;
       for (const file of docImportQueue) {
         const buf = await file.arrayBuffer();
-        const { drafts, imageCount, parseSanity } = await runRefGeminiOnBuffer(buf, file.name, refGeminiModel);
+        const { drafts, imageCount, parseSanity } =
+          refImportParser === 'local'
+            ? await runRefLocalOnBuffer(buf, file.name)
+            : await runRefGeminiOnBuffer(buf, file.name, refGeminiModel);
         if (parseSanity) sanityCollected.push(parseSanity);
         if (drafts.length === 0) {
           setError(`No questions extracted from ${file.name}.`);
@@ -734,7 +766,7 @@ const ReferenceQuestionsManager: React.FC = () => {
     } finally {
       setParsingDoc(false);
     }
-  }, [docImportQueue, refGeminiModel]);
+  }, [docImportQueue, refGeminiModel, refImportParser]);
 
   const publishStagedBatch = useCallback(async () => {
     const files = pendingPublishFiles;
@@ -1025,8 +1057,7 @@ const ReferenceQuestionsManager: React.FC = () => {
           <div>
             <h3 className="text-base font-semibold text-zinc-900">Reference questions import</h3>
             <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
-              Add one or more Mathpix <span className="font-mono">.docx</span> files, choose a Gemini model, then{' '}
-              <strong>Parse all with Gemini</strong>. Long papers are split into overlapping segments so each response stays smaller
+              Add one or more Mathpix <span className="font-mono">.docx</span> files, choose <strong>Gemini</strong> or <strong>local</strong> parser, then parse. Long papers with Gemini are split into overlapping segments so each response stays smaller
               (reduces dropped rows on 100–200 question sets). For maximum recall on large papers use <strong>Gemini 3 Pro</strong>. Then{' '}
               <strong>Publish to server</strong> and <strong>Save to library</strong> on the card.
             </p>
@@ -1114,33 +1145,74 @@ const ReferenceQuestionsManager: React.FC = () => {
                   ))}
                 </ul>
               ) : null}
-              <div className="mt-3 space-y-1">
-                <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
-                <select
-                  value={refGeminiModel}
-                  onChange={(e) => setRefGeminiModel(e.target.value)}
-                  className="w-full max-w-md rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
-                >
-                  {REF_GEMINI_MODEL_OPTIONS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                      {m.id === 'gemini-3-pro-preview' ? ' — best for 100+ Q' : ''}
-                      {m.bestValue ? ' — lowest ₹' : ''}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] leading-snug text-zinc-500">
-                  <span className="font-semibold text-zinc-700">{refModelMeta.label}:</span> {refModelMeta.blurb}
-                  {refModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
-                    <span className="mt-1 block text-emerald-800">
-                      Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
-                      {fmtInr(parseCostEstimateInr)} with current selection).
+              <div className="mt-3 max-w-md space-y-2">
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Parser</span>
+                <div className="flex flex-col gap-2 text-[11px] text-zinc-800">
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2">
+                    <input
+                      type="radio"
+                      name="ref-parser"
+                      className="mt-0.5"
+                      checked={refImportParser === 'gemini'}
+                      onChange={() => setRefImportParser('gemini')}
+                    />
+                    <span>
+                      <span className="font-semibold">Gemini</span>
+                      <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                        Best quality on varied layouts. Uses API key; long files use multiple requests.
+                      </span>
                     </span>
-                  ) : null}
-                </p>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2">
+                    <input
+                      type="radio"
+                      name="ref-parser"
+                      className="mt-0.5"
+                      checked={refImportParser === 'local'}
+                      onChange={() => setRefImportParser('local')}
+                    />
+                    <span>
+                      <span className="font-semibold">Local only</span>
+                      <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                        No AI — same numbered MCQ rules as PYQ local import. Unmatched blocks are skipped.
+                      </span>
+                    </span>
+                  </label>
+                </div>
               </div>
-              <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
-                {docQueueScanning ? (
+              {refImportParser === 'gemini' ? (
+                <div className="mt-3 max-w-md space-y-1">
+                  <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
+                  <select
+                    value={refGeminiModel}
+                    onChange={(e) => setRefGeminiModel(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
+                  >
+                    {REF_GEMINI_MODEL_OPTIONS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                        {m.id === 'gemini-3-pro-preview' ? ' — best for 100+ Q' : ''}
+                        {m.bestValue ? ' — lowest ₹' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] leading-snug text-zinc-500">
+                    <span className="font-semibold text-zinc-700">{refModelMeta.label}:</span> {refModelMeta.blurb}
+                    {refModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
+                      <span className="mt-1 block text-emerald-800">
+                        Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
+                        {fmtInr(parseCostEstimateInr)} with current selection).
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+              ) : null}
+              <div className="mt-2 max-w-md rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
+                {refImportParser === 'local' ? (
+                  <span>
+                    <span className="font-semibold text-zinc-800">Local parse:</span> no Gemini calls and no API cost for this import.
+                  </span>
+                ) : docQueueScanning ? (
                   <span className="flex items-center gap-2 text-violet-700">
                     <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
                     Scanning files for estimate…
@@ -1168,12 +1240,12 @@ const ReferenceQuestionsManager: React.FC = () => {
                 {parsingDoc ? (
                   <>
                     <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-white" />
-                    Parsing with Gemini…
+                    {refImportParser === 'local' ? 'Parsing locally…' : 'Parsing with Gemini…'}
                   </>
                 ) : (
                   <>
-                    <iconify-icon icon="mdi:robot-outline" width="18" />
-                    Parse all with Gemini
+                    <iconify-icon icon={refImportParser === 'local' ? 'mdi:file-document-outline' : 'mdi:robot-outline'} width="18" />
+                    {refImportParser === 'local' ? 'Parse all locally' : 'Parse all with Gemini'}
                   </>
                 )}
               </button>
