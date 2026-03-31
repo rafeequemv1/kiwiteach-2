@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../supabase/client';
 import InteractiveQuizSession from '../Quiz/components/InteractiveQuizSession';
 import type { Question, QuestionType } from '../Quiz/types';
@@ -67,6 +67,13 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
   const [loadingStart, setLoadingStart] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionQuestions, setSessionQuestions] = useState<Question[] | null>(null);
+  const practiceAnchorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (sessionQuestions?.length) {
+      practiceAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [sessionQuestions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,54 +144,52 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
 
   if (sessionQuestions && sessionQuestions.length > 0) {
     return (
-      <InteractiveQuizSession
-        questions={sessionQuestions}
-        topic="NEET PYQ practice"
-        onExit={() => setSessionQuestions(null)}
-        exitButtonLabel="Back to NEET"
-      />
+      <div ref={practiceAnchorRef} className="relative w-full flex justify-center px-3 py-4 md:px-4">
+        <InteractiveQuizSession
+          questions={sessionQuestions}
+          topic="NEET PYQ practice"
+          onExit={() => setSessionQuestions(null)}
+          exitButtonLabel="Back to NEET"
+          layout="embedded"
+        />
+      </div>
     );
   }
 
   return (
-    <section
-      id="pyqs"
-      className="scroll-mt-24 border-t border-zinc-200 bg-white px-4 py-16 md:px-6 md:py-24"
-    >
-      <div className="mx-auto max-w-3xl">
-        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500">Practice</p>
-        <h2 className="mt-2 text-3xl font-black tracking-tight text-zinc-900 md:text-4xl">Previous year questions</h2>
-        <p className="mt-3 text-base leading-relaxed text-zinc-600">
-          Work through NEET PYQs from our bank. Choose a year and subject (optional), set how many questions to include, then start a timed practice session.
+    <section id="pyqs" className="scroll-mt-24 border-t border-zinc-200 bg-zinc-50/50 px-4 py-10 md:px-6 md:py-14">
+      <div className="mx-auto max-w-lg">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Practice</p>
+        <h2 className="mt-1 text-xl font-bold tracking-tight text-zinc-900 md:text-2xl">Previous year questions</h2>
+        <p className="mt-2 text-sm leading-relaxed text-zinc-600">
+          Filter by year and subject, choose how many questions, then practice in the panel below.
         </p>
 
         {!isLoggedIn && (
           <div
-            className="mt-8 rounded-2xl border border-indigo-200 bg-indigo-50/80 p-5 text-sm text-indigo-950"
+            className="mt-5 rounded-lg border border-indigo-200 bg-indigo-50/90 p-4 text-sm text-indigo-950"
             style={{ boxShadow: landingTheme.shadow.soft }}
           >
-            <p className="font-semibold">Sign in to practice</p>
-            <p className="mt-1 text-indigo-900/80">
-              PYQ practice uses your KiwiTeach account so attempts stay private. Use the same login as the dashboard.
-            </p>
+            <p className="font-medium">Sign in to practice</p>
+            <p className="mt-1 text-xs text-indigo-900/85">Uses your KiwiTeach account.</p>
             <button
               type="button"
               onClick={onLoginClick}
-              className="mt-4 rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-black uppercase tracking-widest text-white hover:bg-indigo-700"
+              className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700"
             >
               Sign in
             </button>
           </div>
         )}
 
-        <div className="mt-10 grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Year</span>
+        <div className="mt-6 grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium uppercase text-zinc-500">Year</span>
             <select
               value={yearFilter}
               onChange={(e) => setYearFilter(e.target.value)}
               disabled={loadingMeta}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-400"
+              className="rounded-lg border border-zinc-200 bg-white px-2 py-2 text-xs font-medium text-zinc-900 outline-none focus:border-indigo-400"
             >
               <option value="">All years</option>
               {years.map((y) => (
@@ -194,13 +199,13 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Subject</span>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium uppercase text-zinc-500">Subject</span>
             <select
               value={subjectFilter}
               onChange={(e) => setSubjectFilter(e.target.value)}
               disabled={loadingMeta}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-400"
+              className="rounded-lg border border-zinc-200 bg-white px-2 py-2 text-xs font-medium text-zinc-900 outline-none focus:border-indigo-400"
             >
               <option value="">All subjects</option>
               {subjects.map((s) => (
@@ -210,26 +215,26 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 sm:col-span-2">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Number of questions</span>
+          <label className="col-span-2 flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium uppercase text-zinc-500">Questions</span>
             <input
               type="number"
               min={1}
               max={200}
               value={questionCount}
               onChange={(e) => setQuestionCount(parseInt(e.target.value, 10) || 25)}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-400"
+              className="w-full max-w-[8rem] rounded-lg border border-zinc-200 bg-white px-2 py-2 text-xs font-medium text-zinc-900 outline-none focus:border-indigo-400"
             />
           </label>
         </div>
 
-        {error && <p className="mt-4 text-sm font-medium text-rose-600">{error}</p>}
+        {error && <p className="mt-3 text-xs font-medium text-rose-600">{error}</p>}
 
         <button
           type="button"
           onClick={() => void startPractice()}
           disabled={loadingStart || loadingMeta}
-          className="mt-8 w-full rounded-2xl bg-zinc-900 py-4 text-xs font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-zinc-900/15 transition hover:bg-zinc-800 disabled:opacity-50 sm:w-auto sm:px-12"
+          className="mt-5 w-full rounded-lg bg-zinc-900 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-white transition hover:bg-zinc-800 disabled:opacity-50"
         >
           {loadingStart ? 'Loading…' : 'Start practice'}
         </button>

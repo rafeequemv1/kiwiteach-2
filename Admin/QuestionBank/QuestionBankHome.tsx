@@ -122,6 +122,9 @@ const QuestionBankHome: React.FC = () => {
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
   /** Syllabus topic opened for full detail (Neural Studio — syllabus mode) */
   const [syllabusDetailTopic, setSyllabusDetailTopic] = useState<string | null>(null);
+  /** Uniform bulk edits for syllabus-focused mode */
+  const [syllabusUniformDelta, setSyllabusUniformDelta] = useState(1);
+  const [syllabusUniformTarget, setSyllabusUniformTarget] = useState(1);
   const [bankUserId, setBankUserId] = useState<string | null>(null);
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
   const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
@@ -526,7 +529,38 @@ const QuestionBankHome: React.FC = () => {
   const handleTopicCountChange = (topic: string, count: number) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; cfg.topicCounts = { ...cfg.topicCounts, [topic]: { ...cfg.topicCounts[topic], count: Math.max(0, count) } }; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
   const handleTopicToggle = (topic: string) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const current = cfg.topicCounts[topic]; cfg.topicCounts = { ...cfg.topicCounts, [topic]: { ...current, enabled: !current.enabled } }; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
   const handleBulkTopicsAction = (action: 'all' | 'none') => { if (!activeEditingChapterId || !activeChapterSyllabus.length) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const next = { ...cfg.topicCounts }; activeChapterSyllabus.forEach(t => { if (next[t]) next[t] = { ...next[t], enabled: action === 'all' }; }); cfg.topicCounts = next; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
-  
+
+  const handleAddUniformToEnabledSyllabusTopics = (delta: number) => {
+    if (!activeEditingChapterId || delta === 0 || activeChapterSyllabus.length === 0) return;
+    setChapterConfigs((prev) => {
+      const cfg = { ...prev[activeEditingChapterId!] };
+      const next = { ...cfg.topicCounts };
+      activeChapterSyllabus.forEach((topic) => {
+        const cur = next[topic] ?? { count: 0, enabled: false };
+        if (!cur.enabled) return;
+        next[topic] = { ...cur, count: Math.max(0, cur.count + delta) };
+      });
+      cfg.topicCounts = next;
+      return { ...prev, [activeEditingChapterId!]: cfg };
+    });
+  };
+
+  const handleSetUniformCountForEnabledSyllabusTopics = (n: number) => {
+    if (!activeEditingChapterId || activeChapterSyllabus.length === 0) return;
+    const v = Math.max(0, Math.floor(Number.isFinite(n) ? n : 0));
+    setChapterConfigs((prev) => {
+      const cfg = { ...prev[activeEditingChapterId!] };
+      const next = { ...cfg.topicCounts };
+      activeChapterSyllabus.forEach((topic) => {
+        const cur = next[topic] ?? { count: 0, enabled: false };
+        if (!cur.enabled) return;
+        next[topic] = { ...cur, count: v };
+      });
+      cfg.topicCounts = next;
+      return { ...prev, [activeEditingChapterId!]: cfg };
+    });
+  };
+
   const openDocViewer = async (id: string) => {
     const chapter = chapters.find(c => c.id === id);
     if (!chapter?.doc_path) return alert("Source Doc not found for this chapter.");
@@ -926,16 +960,16 @@ const QuestionBankHome: React.FC = () => {
 
             <main className="flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar bg-zinc-100/40 p-3 sm:p-6 lg:p-10">
                 {mode === 'studio' ? (
-                    <div className="max-w-7xl mx-auto space-y-10 animate-fade-in pb-40">
-                         {/* Studio content remains as-is, just rendering structure around configs */}
-                         {selectedChapterIds.size === 0 ? <div className="py-40 text-center opacity-30 flex flex-col items-center justify-center"><iconify-icon icon="mdi:arrow-left-bold" width="64" className="mb-4 animate-bounce-subtle text-zinc-300" /><p className="text-sm font-black uppercase tracking-[0.3em] text-zinc-400">Select Target Chapters</p></div> : (
+                    <div className="max-w-5xl mx-auto space-y-4 animate-fade-in pb-20">
+                         {/* Studio — compact layout */}
+                         {selectedChapterIds.size === 0 ? <div className="py-24 text-center opacity-30 flex flex-col items-center justify-center"><iconify-icon icon="mdi:arrow-left-bold" width="48" className="mb-3 animate-bounce-subtle text-zinc-300" /><p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Select chapters</p></div> : (
                             <>
-                                <header className="flex flex-col md:flex-row justify-between items-stretch md:items-end gap-4 md:gap-6"><div className="flex-1 min-w-0"><h2 className="text-2xl sm:text-4xl font-black text-zinc-900 tracking-tight uppercase leading-none">Neural Studio</h2><div className="flex flex-wrap items-center gap-2 mt-3 sm:mt-4 bg-white p-1 rounded-2xl border border-zinc-200 w-full sm:w-fit">{(['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-flash-lite-latest'] as const).map(m => (<button key={m} onClick={() => setSelectedModel(m)} className={`flex-1 sm:flex-none px-3 sm:px-4 py-2 rounded-xl text-[8px] sm:text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1 sm:gap-2 ${selectedModel === m ? 'bg-indigo-600 text-white shadow-lg' : 'text-zinc-400 hover:text-zinc-600'}`}><iconify-icon icon={m.includes('pro') ? 'mdi:diamond-stone' : m.includes('flash') ? 'mdi:lightning-bolt' : 'mdi:feather'} /> {m.includes('pro') ? 'Pro' : m.includes('flash') ? 'Flash' : 'Lite'}</button>))}</div></div><button onClick={handleRunForge} className="bg-zinc-900 text-white px-6 sm:px-10 py-4 sm:py-5 rounded-2xl sm:rounded-[2rem] font-black text-[10px] sm:text-xs uppercase tracking-[0.2em] sm:tracking-[0.3em] shadow-2xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 sm:gap-3 active:scale-95 group shrink-0 w-full md:w-auto"><iconify-icon icon="mdi:lightning-bolt" width="20" className="group-hover:animate-pulse" /> Initiate Forge</button></header>
-                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                                    <div className="lg:col-span-5 space-y-6">
+                                <header className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3"><div className="flex-1 min-w-0"><h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight">Neural Studio</h2><div className="flex flex-wrap items-center gap-1 mt-2 bg-white p-0.5 rounded-lg border border-zinc-200 w-full sm:w-fit">{(['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-flash-lite-latest'] as const).map(m => (<button key={m} onClick={() => setSelectedModel(m)} className={`flex-1 sm:flex-none px-2.5 py-1.5 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all flex items-center justify-center gap-1 ${selectedModel === m ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}><iconify-icon icon={m.includes('pro') ? 'mdi:diamond-stone' : m.includes('flash') ? 'mdi:lightning-bolt' : 'mdi:feather'} width="14" /> {m.includes('pro') ? 'Pro' : m.includes('flash') ? 'Flash' : 'Lite'}</button>))}</div></div><button onClick={handleRunForge} className="bg-zinc-900 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 w-full md:w-auto"><iconify-icon icon="mdi:lightning-bolt" width="18" className="group-hover:animate-pulse" /> Forge</button></header>
+                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                                    <div className="lg:col-span-5 space-y-3">
                                         {activeConfig && (
-                                            <div className="bg-white p-4 sm:p-8 rounded-2xl sm:rounded-[3rem] border border-zinc-100 shadow-sm space-y-6 sm:space-y-8 animate-fade-in min-w-0 max-w-full overflow-hidden">
-                                                <h3 className="text-xs font-black text-zinc-900 uppercase tracking-tight truncate border-b border-zinc-50 pb-4">Tuning Chapter Configuration</h3>
+                                            <div className="bg-white p-3 sm:p-4 rounded-xl border border-zinc-200 shadow-sm space-y-4 animate-fade-in min-w-0 max-w-full overflow-hidden">
+                                                <h3 className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide truncate border-b border-zinc-100 pb-2">Chapter config</h3>
                                                 <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Synthesis Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => handleSynthesisModeChange('standard')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'standard' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Standard</button><button onClick={() => handleSynthesisModeChange('syllabus')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'syllabus' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Syllabus Focused</button></div></div>
                                                 {/* (Rest of Studio Config as per original...) */}
                                                 {activeConfig.synthesisMode === 'syllabus' ? (
@@ -950,6 +984,60 @@ const QuestionBankHome: React.FC = () => {
                                                             </div>
                                                           </div>
                                                           <p className="text-[8px] font-medium text-zinc-500 px-1 -mt-1">Tap a card to include/exclude and set question counts.</p>
+                                                          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-2.5 space-y-2">
+                                                            <p className="text-[9px] font-semibold text-indigo-950">Uniform counts (enabled topics only)</p>
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                              <span className="text-[8px] font-medium text-zinc-600">Add</span>
+                                                              <input
+                                                                type="number"
+                                                                min={0}
+                                                                max={50}
+                                                                value={syllabusUniformDelta}
+                                                                onChange={(e) =>
+                                                                  setSyllabusUniformDelta(Math.max(0, parseInt(e.target.value, 10) || 0))
+                                                                }
+                                                                className="w-12 rounded border border-zinc-200 bg-white px-1 py-0.5 text-center text-[11px] font-bold text-indigo-700 outline-none focus:border-indigo-400"
+                                                              />
+                                                              <span className="text-[8px] text-zinc-500">to each</span>
+                                                              <button
+                                                                type="button"
+                                                                onClick={() => handleAddUniformToEnabledSyllabusTopics(syllabusUniformDelta)}
+                                                                className="rounded-md bg-indigo-600 px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-white hover:bg-indigo-700"
+                                                              >
+                                                                Apply
+                                                              </button>
+                                                              <button
+                                                                type="button"
+                                                                onClick={() => handleAddUniformToEnabledSyllabusTopics(-syllabusUniformDelta)}
+                                                                className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-[8px] font-semibold text-zinc-600 hover:bg-zinc-50"
+                                                                title="Subtract this amount from each enabled topic"
+                                                              >
+                                                                −
+                                                              </button>
+                                                            </div>
+                                                            <div className="flex flex-wrap items-center gap-2 border-t border-indigo-100/80 pt-2">
+                                                              <span className="text-[8px] font-medium text-zinc-600">Set all enabled to</span>
+                                                              <input
+                                                                type="number"
+                                                                min={0}
+                                                                max={100}
+                                                                value={syllabusUniformTarget}
+                                                                onChange={(e) =>
+                                                                  setSyllabusUniformTarget(Math.max(0, parseInt(e.target.value, 10) || 0))
+                                                                }
+                                                                className="w-12 rounded border border-zinc-200 bg-white px-1 py-0.5 text-center text-[11px] font-bold text-indigo-700 outline-none focus:border-indigo-400"
+                                                              />
+                                                              <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                  handleSetUniformCountForEnabledSyllabusTopics(syllabusUniformTarget)
+                                                                }
+                                                                className="rounded-md bg-white px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50"
+                                                              >
+                                                                Set
+                                                              </button>
+                                                            </div>
+                                                          </div>
                                                           <div className="max-h-[min(420px,50vh)] overflow-y-auto custom-scrollbar p-2 sm:p-3 bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
                                                             {isFetchingSyllabus && <p className="text-xs text-center p-4 text-zinc-400 animate-pulse">Fetching syllabus…</p>}
                                                             {activeChapterSyllabus.length === 0 && !isFetchingSyllabus && (
@@ -1001,7 +1089,100 @@ const QuestionBankHome: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
-                                    <div className="lg:col-span-7 flex flex-col gap-6"><div className="bg-zinc-900 rounded-[3rem] p-8 text-white shadow-xl flex items-center justify-between border-4 border-indigo-500/20"><div className="flex items-center gap-4"><div className="w-14 h-14 bg-indigo-500 text-white rounded-2xl flex items-center justify-center shadow-lg"><iconify-icon icon="mdi:currency-inr" width="28" /></div><div><span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Estimated Batch Cost</span><div className="flex items-baseline gap-2"><span className="text-4xl font-black">₹{estimatedBatchCost}</span><span className="text-xs font-bold text-indigo-400 uppercase">INR</span></div></div></div><div className="text-right"><span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Batch Allocation</span><div className="flex flex-col items-end"><span className="text-2xl font-black">{grandTotals.questions} <span className="text-xs opacity-50 uppercase">Total Items</span></span><div className="flex items-center gap-2 mt-1"><span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">{grandTotals.figures} Figure-Based</span><span className="text-[10px] font-bold text-zinc-500">•</span><span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">{grandTotals.questions - grandTotals.figures} Text-Only</span></div></div></div></div><div className="bg-white p-8 rounded-[3.5rem] border border-zinc-100 shadow-sm flex-1 overflow-hidden"><h3 className="text-xl font-black text-zinc-800 uppercase tracking-tight flex items-center gap-3 mb-8"><iconify-icon icon="mdi:layers-triple" className="text-indigo-600" /> Selected Batch</h3><div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar max-h-[400px] pr-2">{Array.from(selectedChapterIds).map((id: string) => { const chapter = chapters.find(c => c.id === id); const config = chapterConfigs[id as string]; const isActive = activeEditingChapterId === id; let chapterTotalCount = 0; if (config?.synthesisMode === 'syllabus') { const topics = Object.values(config.topicCounts || {}) as { count: number; enabled: boolean }[]; chapterTotalCount = topics.reduce((sum, t) => sum + (t.enabled ? t.count : 0), 0); } else chapterTotalCount = config?.total || 0; return <div key={id} onClick={() => setActiveEditingChapterId(id)} className={`bg-zinc-50 border-2 rounded-[2rem] p-5 flex items-center gap-5 transition-all cursor-pointer group ${isActive ? 'bg-white border-indigo-600 shadow-xl' : 'border-zinc-100 hover:border-indigo-200'}`}><div className="flex-1 min-w-0"><h4 className={`text-xs font-black uppercase truncate mb-1 ${isActive ? 'text-indigo-700' : 'text-zinc-700'}`}>{String(chapter?.name || 'Selected Chapter')}</h4><div className="flex flex-wrap gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase bg-white px-1.5 py-0.5 rounded border border-zinc-100">{chapterTotalCount} Qs</span>{config?.synthesisMode === 'syllabus' ? <span className="text-[8px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 uppercase">SYLLABUS FOCUSED</span> : <><span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded uppercase">E:{config?.diff?.easy || 0}</span><span className="text-[8px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded uppercase">H:{config?.diff?.hard || 0}</span></>}</div></div><div className="flex items-center gap-2"><button onClick={(e) => { e.stopPropagation(); openDocViewer(id); }} className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-500 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center border border-indigo-100 shadow-sm" title="View Full Document"><iconify-icon icon="mdi:file-document-outline" /></button><button onClick={(e) => { e.stopPropagation(); handleToggleChapter(String(id)); }} className="text-zinc-200 hover:text-rose-500"><iconify-icon icon="mdi:close-circle-outline" width="20" /></button></div></div>; })}</div></div></div></div>
+                                    <div className="lg:col-span-7 flex flex-col gap-3">
+                                      <div className="bg-zinc-900 rounded-xl p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3 border border-indigo-500/30">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                          <div className="w-10 h-10 shrink-0 bg-indigo-500 text-white rounded-lg flex items-center justify-center shadow-md">
+                                            <iconify-icon icon="mdi:currency-inr" width="22" />
+                                          </div>
+                                          <div>
+                                            <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">Est. cost</span>
+                                            <div className="flex items-baseline gap-1.5">
+                                              <span className="text-2xl font-bold">₹{estimatedBatchCost}</span>
+                                              <span className="text-[10px] font-medium text-indigo-300 uppercase">INR</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="text-right text-[10px]">
+                                          <span className="font-semibold text-zinc-400 uppercase tracking-wide block">Batch</span>
+                                          <span className="font-bold text-lg">{grandTotals.questions} <span className="text-zinc-500 font-normal text-xs">items</span></span>
+                                          <div className="mt-0.5 text-zinc-400">
+                                            <span className="text-rose-300">{grandTotals.figures} fig</span>
+                                            <span className="mx-1">·</span>
+                                            <span className="text-indigo-300">{grandTotals.questions - grandTotals.figures} text</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm flex-1 overflow-hidden min-h-0">
+                                        <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 mb-4">
+                                          <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
+                                        </h3>
+                                        <div className="flex flex-col gap-2 overflow-y-auto custom-scrollbar max-h-[min(360px,50vh)] pr-1">
+                                          {Array.from(selectedChapterIds).map((id: string) => {
+                                            const chapter = chapters.find(c => c.id === id);
+                                            const config = chapterConfigs[id as string];
+                                            const isActive = activeEditingChapterId === id;
+                                            let chapterTotalCount = 0;
+                                            if (config?.synthesisMode === 'syllabus') {
+                                              const topics = Object.values(config.topicCounts || {}) as { count: number; enabled: boolean }[];
+                                              chapterTotalCount = topics.reduce((sum, t) => sum + (t.enabled ? t.count : 0), 0);
+                                            } else chapterTotalCount = config?.total || 0;
+                                            return (
+                                              <div
+                                                key={id}
+                                                onClick={() => setActiveEditingChapterId(id)}
+                                                className={`bg-zinc-50 border rounded-lg p-3 flex items-center gap-3 transition-all cursor-pointer group ${
+                                                  isActive ? 'bg-white border-indigo-500 shadow-sm' : 'border-zinc-200 hover:border-indigo-200'
+                                                }`}
+                                              >
+                                                <div className="flex-1 min-w-0">
+                                                  <h4 className={`text-[11px] font-semibold uppercase truncate ${isActive ? 'text-indigo-700' : 'text-zinc-700'}`}>
+                                                    {String(chapter?.name || 'Chapter')}
+                                                  </h4>
+                                                  <div className="flex flex-wrap gap-1 mt-0.5">
+                                                    <span className="text-[8px] font-semibold text-zinc-500 uppercase bg-white px-1 py-0.5 rounded border border-zinc-100">
+                                                      {chapterTotalCount} Q
+                                                    </span>
+                                                    {config?.synthesisMode === 'syllabus' ? (
+                                                      <span className="text-[8px] font-semibold text-rose-600 bg-rose-50 px-1 py-0.5 rounded uppercase">Syllabus</span>
+                                                    ) : (
+                                                      <>
+                                                        <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded">E:{config?.diff?.easy || 0}</span>
+                                                        <span className="text-[8px] font-semibold text-rose-700 bg-rose-50 px-1 py-0.5 rounded">H:{config?.diff?.hard || 0}</span>
+                                                      </>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                  <button
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      openDocViewer(id);
+                                                    }}
+                                                    className="w-7 h-7 rounded-md bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center border border-indigo-100"
+                                                    title="View document"
+                                                    type="button"
+                                                  >
+                                                    <iconify-icon icon="mdi:file-document-outline" width="16" />
+                                                  </button>
+                                                  <button
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleToggleChapter(String(id));
+                                                    }}
+                                                    className="text-zinc-300 hover:text-rose-500 p-0.5"
+                                                    type="button"
+                                                  >
+                                                    <iconify-icon icon="mdi:close-circle-outline" width="18" />
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    </div>
+                                </div>
                             {syllabusDetailTopic && activeConfig && (
                               <div
                                 className="fixed inset-0 z-[140] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-zinc-900/50 backdrop-blur-sm"
