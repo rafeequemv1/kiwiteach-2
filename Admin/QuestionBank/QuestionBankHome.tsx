@@ -562,10 +562,71 @@ const QuestionBankHome: React.FC = () => {
   };
 
   const openDocViewer = async (id: string) => {
-    const chapter = chapters.find(c => c.id === id);
-    if (!chapter?.doc_path) return alert("Source Doc not found for this chapter.");
-    setIsSaving(true); setForgeProgress('Rendering...');
-    try { const { data: blob } = await supabase.storage.from('chapters').download(chapter.doc_path); if (!blob) throw new Error(); const arrayBuffer = await blob.arrayBuffer(); const result = await (window as any).mammoth.convertToHtml({ arrayBuffer }); setDocViewer({ html: result.value, name: chapter.name }); } catch (e) { alert("Render failed."); } finally { setIsSaving(false); setForgeProgress(''); }
+    const chapter = chapters.find((c) => c.id === id);
+    if (!chapter) {
+      alert('Chapter not found.');
+      return;
+    }
+    setIsSaving(true);
+    setForgeProgress('Loading source…');
+    setDocViewer(null);
+    setPdfViewer(null);
+
+    try {
+      const { data: row, error: rowErr } = await supabase
+        .from('chapters')
+        .select('doc_path, pdf_path, name')
+        .eq('id', id)
+        .maybeSingle();
+      if (rowErr) throw rowErr;
+
+      const docPath = row?.doc_path ?? chapter.doc_path ?? null;
+      const pdfPath = row?.pdf_path ?? (chapter as { pdf_path?: string }).pdf_path ?? null;
+      const name = (row?.name || chapter.name || 'Chapter').trim();
+
+      const openPdfFromStoragePath = async (path: string) => {
+        const { data, error } = await supabase.storage.from('chapters').createSignedUrl(path, 3600);
+        if (error || !data?.signedUrl) throw error || new Error('Could not create PDF link');
+        setPdfViewer({ url: data.signedUrl, name });
+      };
+
+      const docLower = (docPath || '').toLowerCase();
+
+      if (docPath && docLower.endsWith('.pdf')) {
+        await openPdfFromStoragePath(docPath);
+        return;
+      }
+      if (!docPath && pdfPath) {
+        await openPdfFromStoragePath(pdfPath);
+        return;
+      }
+
+      if (!docPath) {
+        alert('No source document path for this chapter. Upload a DOCX or PDF in Knowledge Base.');
+        return;
+      }
+
+      const mammoth = (window as any).mammoth;
+      if (!mammoth?.convertToHtml) {
+        alert('Document viewer (mammoth) is not loaded. Refresh the page.');
+        return;
+      }
+
+      const { data: blob, error: dlErr } = await supabase.storage.from('chapters').download(docPath);
+      if (dlErr || !blob) throw dlErr || new Error('Download failed');
+
+      const arrayBuffer = await blob.arrayBuffer();
+      const result = await mammoth.convertToHtml({ arrayBuffer });
+      setDocViewer({ html: result.value, name });
+    } catch (e) {
+      console.error('openDocViewer', e);
+      alert(
+        'Could not open source. For PDF-only chapters use the Knowledge Base explorer, or ensure the file is DOCX and storage access is allowed.'
+      );
+    } finally {
+      setIsSaving(false);
+      setForgeProgress('');
+    }
   };
 
   const classFilterOptions = useMemo(() => {
@@ -1289,6 +1350,63 @@ const QuestionBankHome: React.FC = () => {
                 )}
             </main>
         </div>
+
+        {pdfViewer && (
+          <div className="fixed inset-0 z-[350] flex flex-col bg-slate-900/95 p-4 backdrop-blur-md animate-fade-in">
+            <div className="mx-auto mb-3 flex w-full max-w-6xl items-center justify-between text-white">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-500 shadow-lg">
+                  <iconify-icon icon="mdi:file-pdf-box" width="18" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="truncate text-xs font-bold">{pdfViewer.name}</h4>
+                  <p className="text-[8px] font-semibold uppercase tracking-widest text-slate-400">Source (PDF)</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPdfViewer(null)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 transition-all hover:bg-white/20"
+                aria-label="Close"
+              >
+                <iconify-icon icon="mdi:close" width="16" />
+              </button>
+            </div>
+            <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 overflow-hidden rounded-xl border border-white/10 bg-white shadow-2xl">
+              <iframe src={pdfViewer.url} title={pdfViewer.name} className="h-full min-h-[70vh] w-full border-none" />
+            </div>
+          </div>
+        )}
+
+        {docViewer && (
+          <div className="fixed inset-0 z-[350] flex flex-col bg-slate-900/95 p-4 backdrop-blur-md animate-fade-in">
+            <div className="mx-auto mb-3 flex w-full max-w-5xl items-center justify-between text-white">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-500 shadow-lg">
+                  <iconify-icon icon="mdi:file-document-outline" width="18" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="truncate text-xs font-bold">{docViewer.name}</h4>
+                  <p className="text-[8px] font-semibold uppercase tracking-widest text-slate-400">Source (DOCX)</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDocViewer(null)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 transition-all hover:bg-white/20"
+                aria-label="Close"
+              >
+                <iconify-icon icon="mdi:close" width="16" />
+              </button>
+            </div>
+            <div className="custom-scrollbar mx-auto w-full max-w-5xl flex-1 overflow-y-auto rounded-xl border border-white/10 bg-white p-6 shadow-2xl md:p-12">
+              <div
+                className="prose prose-slate max-w-none font-serif text-base leading-relaxed text-slate-700"
+                dangerouslySetInnerHTML={{ __html: docViewer.html }}
+              />
+            </div>
+          </div>
+        )}
     </div>
   );
 };
