@@ -424,6 +424,207 @@ type PyqParseProgressPayload = {
 
 const PYQ_DIFFICULTY_FILL_MAX_OUT = 2048;
 const PYQ_DIFFICULTY_BATCH = 10;
+const PYQ_CHAPTER_FILL_MAX_OUT = 8192;
+const PYQ_CHAPTER_BATCH = 6;
+const SYLLABUS_CATALOG_MAX_CHARS = 110_000;
+
+type SyllabusCatalogRow = {
+  class_name: string;
+  subject_name: string;
+  chapter_name: string;
+};
+
+function normSyllabusPart(s: string | null | undefined): string {
+  return (s || '').trim().replace(/\s+/g, ' ');
+}
+
+async function fetchNeetSyllabusCatalog(): Promise<{ kbName: string | null; rows: SyllabusCatalogRow[] }> {
+  const { data: kbs, error: kbErr } = await supabase.from('knowledge_bases').select('id, name').order('name');
+  if (kbErr) throw kbErr;
+  const neetKb = (kbs || []).find((k) => /neet/i.test(String(k.name || '')));
+  if (!neetKb?.id) {
+    return { kbName: null, rows: [] };
+  }
+  const kbId = neetKb.id as string;
+  const kbName = (neetKb as { name?: string }).name ?? null;
+
+  const mapChapter = (r: { name?: string | null; subject_name?: string | null; class_name?: string | null }): SyllabusCatalogRow => ({
+    class_name: normSyllabusPart(r.class_name) || 'NEET',
+    subject_name: normSyllabusPart(r.subject_name),
+    chapter_name: normSyllabusPart(r.name),
+  });
+
+  const { data: chRows, error: chErr } = await supabase
+    .from('chapters')
+    .select('name, subject_name, class_name')
+    .eq('kb_id', kbId)
+    .limit(8000);
+  if (chErr) throw chErr;
+
+  const fromChapters: SyllabusCatalogRow[] = (chRows || [])
+    .map(mapChapter)
+    .filter((r) => r.chapter_name && r.subject_name);
+
+  const { data: setRows } = await supabase.from('syllabus_sets').select('id').eq('knowledge_base_id', kbId);
+  const setIds = (setRows || []).map((s) => s.id).filter(Boolean);
+  let fromEntries: SyllabusCatalogRow[] = [];
+  if (setIds.length > 0) {
+    const { data: entRows, error: entErr } = await supabase
+      .from('syllabus_entries')
+      .select('class_name, subject_name, chapter_name')
+      .in('syllabus_set_id', setIds)
+      .limit(8000);
+    if (!entErr && entRows) {
+      fromEntries = entRows
+        .map((r) => ({
+          class_name: normSyllabusPart(r.class_name) || 'NEET',
+          subject_name: normSyllabusPart(r.subject_name),
+          chapter_name: normSyllabusPart(r.chapter_name),
+        }))
+        .filter((r) => r.chapter_name && r.subject_name);
+    }
+  }
+
+  const seen = new Set<string>();
+  const out: SyllabusCatalogRow[] = [];
+  for (const r of [...fromChapters, ...fromEntries]) {
+    const key = `${r.class_name}\t${r.subject_name}\t${r.chapter_name}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return { kbName, rows: out };
+}
+
+function filterCatalogForBatch(
+  catalog: SyllabusCatalogRow[],
+  batch: { subject_name: string | null }[]
+): SyllabusCatalogRow[] {
+  const hinted = new Set(
+    batch.map((b) => normSyllabusPart(b.subject_name)).filter((s) => s.length > 0)
+  );
+  if (hinted.size === 0) return catalog;
+  const narrowed = catalog.filter((c) => hinted.has(c.subject_name));
+  return narrowed.length > 0 ? narrowed : catalog;
+}
+
+function trimCatalogJson(catalog: SyllabusCatalogRow[]): string {
+  const payload = catalog.map((r) => ({
+    class_name: r.class_name,
+    subject_name: r.subject_name,
+    chapter_name: r.chapter_name,
+  }));
+  let s = JSON.stringify(payload);
+  if (s.length <= SYLLABUS_CATALOG_MAX_CHARS) return s;
+  const half = Math.max(50, Math.floor((payload.length * SYLLABUS_CATALOG_MAX_CHARS) / s.length) - 1);
+  return JSON.stringify(payload.slice(0, half));
+}
+
+function resolveCatalogMatch(
+  out: { subject_name?: string; chapter_name?: string; class_name?: string },
+  catalog: SyllabusCatalogRow[]
+): SyllabusCatalogRow | null {
+  const sn = normSyllabusPart(out.subject_name || '');
+  const cn = normSyllabusPart(out.chapter_name || '');
+  const cl = normSyllabusPart(out.class_name || '') || 'NEET';
+
+  const exact = catalog.find(
+    (a) =>
+      normSyllabusPart(a.subject_name) === sn &&
+      normSyllabusPart(a.chapter_name) === cn &&
+      normSyllabusPart(a.class_name) === cl
+  );
+  if (exact) return exact;
+
+  const ci = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const exactCi = catalog.find(
+    (a) => ci(normSyllabusPart(a.subject_name), sn) && ci(normSyllabusPart(a.chapter_name), cn) && ci(normSyllabusPart(a.class_name), cl)
+  );
+  if (exactCi) return exactCi;
+
+  if (sn) {
+    const pool = catalog.filter((a) => ci(normSyllabusPart(a.subject_name), sn));
+    const sub = pool.find(
+      (a) =>
+        ci(normSyllabusPart(a.chapter_name), cn) ||
+        normSyllabusPart(a.chapter_name).toLowerCase().includes(cn.toLowerCase()) ||
+        cn.toLowerCase().includes(normSyllabusPart(a.chapter_name).toLowerCase())
+    );
+    if (sub) return sub;
+  }
+
+  const cnOnly = catalog.find((a) => ci(normSyllabusPart(a.chapter_name), cn));
+  return cnOnly || null;
+}
+
+function getChapterSubjectFillResponseSchema() {
+  return {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        question_id: { type: Type.STRING },
+        subject_name: { type: Type.STRING },
+        chapter_name: { type: Type.STRING },
+        class_name: { type: Type.STRING },
+      },
+    },
+  };
+}
+
+async function runGeminiFillChapterSubject(
+  ai: GoogleGenAI,
+  modelId: string,
+  batch: { id: string; question_text: string; subject_name: string | null; chapter_name: string | null; class_name: string | null }[],
+  syllabusJson: string,
+  kbLabel: string
+): Promise<Map<string, { subject_name: string; chapter_name: string; class_name: string }>> {
+  const payload = batch.map((q) => ({
+    question_id: q.id,
+    question_text: (q.question_text || '').slice(0, 2200),
+    subject_name_hint: normSyllabusPart(q.subject_name) || '',
+    chapter_name_hint: normSyllabusPart(q.chapter_name) || '',
+    class_name_hint: normSyllabusPart(q.class_name) || '',
+  }));
+  const userText =
+    `You map NEET practice questions to official syllabus rows. Knowledge base: ${kbLabel}.\n\n` +
+    'ALLOWED_SYLLABUS is a JSON array of objects {class_name, subject_name, chapter_name}. ' +
+    'You MUST copy subject_name, chapter_name, and class_name EXACTLY from one row in ALLOWED_SYLLABUS (same spelling and casing as in the list). ' +
+    'Pick the single best-matching chapter for each question from the question stem and options. ' +
+    'If a question already has subject_name_hint or chapter_name_hint that matches a row, prefer consistency. ' +
+    'If nothing fits, use empty strings for all three fields for that question.\n\n' +
+    `ALLOWED_SYLLABUS:\n${syllabusJson}\n\nQUESTIONS:\n` +
+    JSON.stringify(payload);
+  const response = await ai.models.generateContent({
+    model: modelId,
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    config: {
+      temperature: 0,
+      maxOutputTokens: PYQ_CHAPTER_FILL_MAX_OUT,
+      responseMimeType: 'application/json',
+      responseSchema: getChapterSubjectFillResponseSchema(),
+    },
+  });
+  const outText = response.text || '[]';
+  let parsed: { question_id?: string; subject_name?: string; chapter_name?: string; class_name?: string }[];
+  try {
+    parsed = JSON.parse(outText.trim()) as typeof parsed;
+  } catch {
+    throw new Error('Gemini returned invalid JSON for chapter/subject fill.');
+  }
+  const out = new Map<string, { subject_name: string; chapter_name: string; class_name: string }>();
+  if (!Array.isArray(parsed)) return out;
+  parsed.forEach((row, idx) => {
+    const id = row.question_id?.trim() || batch[idx]?.id;
+    if (!id) return;
+    out.set(id, {
+      subject_name: normSyllabusPart(row.subject_name || ''),
+      chapter_name: normSyllabusPart(row.chapter_name || ''),
+      class_name: normSyllabusPart(row.class_name || ''),
+    });
+  });
+  return out;
+}
 
 function getDifficultyFillResponseSchema() {
   return {
@@ -902,6 +1103,7 @@ const PYQManager: React.FC = () => {
   const [expandedSetId, setExpandedSetId] = useState<string | null>(null);
   const [batchPaperPreview, setBatchPaperPreview] = useState<{ setId: string; label: string } | null>(null);
   const [difficultyFillBusySetId, setDifficultyFillBusySetId] = useState<string | null>(null);
+  const [syllabusFillBusySetId, setSyllabusFillBusySetId] = useState<string | null>(null);
 
   const setNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1052,6 +1254,82 @@ const PYQManager: React.FC = () => {
         alert(e?.message || 'Difficulty fill failed');
       } finally {
         setDifficultyFillBusySetId(null);
+      }
+    },
+    [rows, pyqGeminiModel]
+  );
+
+  const fillBlankChapterSubjectForBatch = useCallback(
+    async (setId: string) => {
+      const subset = rows.filter(
+        (r) =>
+          r.upload_set_id === setId &&
+          (!(r.subject_name && String(r.subject_name).trim()) || !(r.chapter_name && String(r.chapter_name).trim()))
+      );
+      if (subset.length === 0) {
+        alert('No questions with blank subject or chapter in this batch.');
+        return;
+      }
+      try {
+        assertGeminiApiKey();
+      } catch (e: any) {
+        alert(e?.message || 'Set your Gemini API key in environment config.');
+        return;
+      }
+      let catalog: SyllabusCatalogRow[] = [];
+      let kbLabel = 'NEET';
+      try {
+        const loaded = await fetchNeetSyllabusCatalog();
+        catalog = loaded.rows;
+        kbLabel = loaded.kbName || 'NEET';
+      } catch (e: any) {
+        alert(e?.message || 'Failed to load syllabus from database.');
+        return;
+      }
+      if (catalog.length === 0) {
+        alert(
+          'No syllabus catalog found for a NEET knowledge base. Add chapters under Knowledge Base (or syllabus entries) then try again.'
+        );
+        return;
+      }
+      if (
+        !confirm(
+          `Match ${subset.length} question(s) to syllabus chapters using Gemini (${pyqGeminiModel})? Uses ${catalog.length} catalog row(s) from the database.`
+        )
+      ) {
+        return;
+      }
+      setSyllabusFillBusySetId(setId);
+      try {
+        const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+        let updated = 0;
+        for (let i = 0; i < subset.length; i += PYQ_CHAPTER_BATCH) {
+          const chunk = subset.slice(i, i + PYQ_CHAPTER_BATCH);
+          const narrowed = filterCatalogForBatch(catalog, chunk);
+          const syllabusJson = trimCatalogJson(narrowed.length > 0 ? narrowed : catalog);
+          const maps = await runGeminiFillChapterSubject(ai, pyqGeminiModel, chunk, syllabusJson, kbLabel);
+          for (const r of chunk) {
+            const raw = maps.get(r.id);
+            if (!raw) continue;
+            const matched = resolveCatalogMatch(raw, catalog);
+            if (!matched) continue;
+            const { error } = await supabase
+              .from('pyq_questions_neet')
+              .update({
+                subject_name: matched.subject_name,
+                chapter_name: matched.chapter_name,
+                class_name: matched.class_name,
+              })
+              .eq('id', r.id);
+            if (!error) updated += 1;
+          }
+        }
+        await load();
+        alert(updated ? `Updated subject/chapter for ${updated} question(s).` : 'No rows updated (check API response and syllabus list).');
+      } catch (e: any) {
+        alert(e?.message || 'Chapter/subject fill failed');
+      } finally {
+        setSyllabusFillBusySetId(null);
       }
     },
     [rows, pyqGeminiModel]
@@ -1419,6 +1697,16 @@ const PYQManager: React.FC = () => {
     const list = rows.filter((r) => r.upload_set_id === batchPaperPreview.setId);
     return sortDraftsExamOrder(list.map(pyqRowToDraft));
   }, [rows, batchPaperPreview]);
+
+  const openBatchTestPaperPreview = useCallback((s: PyqUploadSet) => {
+    setBatchPaperPreview({
+      setId: s.id,
+      label:
+        s.ingestion_year != null
+          ? `Year ${s.ingestion_year}${s.original_filename ? ` · ${s.original_filename}` : ''}`
+          : s.original_filename || 'PYQ batch',
+    });
+  }, []);
 
   const clearFilters = () => {
     setSearchQuery('');
@@ -2001,6 +2289,12 @@ const PYQManager: React.FC = () => {
               const blankDifficultyCount = rows.filter(
                 (r) => r.upload_set_id === s.id && !(r.difficulty && String(r.difficulty).trim())
               ).length;
+              const blankSyllabusSlotCount = rows.filter(
+                (r) =>
+                  r.upload_set_id === s.id &&
+                  (!(r.subject_name && String(r.subject_name).trim()) || !(r.chapter_name && String(r.chapter_name).trim()))
+              ).length;
+              const batchAiBusy = difficultyFillBusySetId === s.id || syllabusFillBusySetId === s.id;
               return (
                 <div
                   key={s.id}
@@ -2008,58 +2302,65 @@ const PYQManager: React.FC = () => {
                     agg.pending ? 'border-amber-200 bg-amber-50/40' : 'border-zinc-200 bg-white hover:shadow-md'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p
-                        className="truncate text-sm font-semibold text-zinc-900"
-                        title={s.ingestion_year != null ? `Year ${s.ingestion_year}` : s.original_filename || ''}
-                      >
-                        {s.ingestion_year != null ? `Year ${s.ingestion_year}` : s.original_filename || 'Upload'}
-                      </p>
-                      {s.ingestion_year != null && s.original_filename ? (
-                        <p className="mt-0.5 truncate text-[10px] text-zinc-500" title={s.original_filename}>
-                          {s.original_filename}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Open test paper preview for this batch"
+                    onClick={() => openBatchTestPaperPreview(s)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openBatchTestPaperPreview(s);
+                      }
+                    }}
+                    title="Open test paper preview (same layout as after parsing an import)"
+                    className="-m-1 cursor-pointer rounded-lg p-1 text-left outline-none ring-indigo-300 ring-offset-2 hover:bg-zinc-50/90 focus-visible:ring-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className="truncate text-sm font-semibold text-zinc-900"
+                          title={s.ingestion_year != null ? `Year ${s.ingestion_year}` : s.original_filename || ''}
+                        >
+                          {s.ingestion_year != null ? `Year ${s.ingestion_year}` : s.original_filename || 'Upload'}
                         </p>
-                      ) : null}
-                      <p className="mt-0.5 text-[10px] text-zinc-400">{new Date(s.created_at).toLocaleString()}</p>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end gap-1">
-                      <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-800">
-                        {agg.count} Q
-                      </span>
-                      {agg.pending && (
-                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-900">
-                          Unsaved preview
+                        {s.ingestion_year != null && s.original_filename ? (
+                          <p className="mt-0.5 truncate text-[10px] text-zinc-500" title={s.original_filename}>
+                            {s.original_filename}
+                          </p>
+                        ) : null}
+                        <p className="mt-0.5 text-[10px] text-zinc-400">{new Date(s.created_at).toLocaleString()}</p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-800">
+                          {agg.count} Q
                         </span>
-                      )}
+                        {agg.pending && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-900">
+                            Unsaved preview
+                          </span>
+                        )}
+                      </div>
                     </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-zinc-600">
+                      <span className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-medium">Year {agg.yearLabel}</span>
+                      {agg.subjects.map((sub) => (
+                        <span key={sub} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-emerald-900">
+                          {sub}
+                        </span>
+                      ))}
+                      {agg.types.map((t) => (
+                        <span key={t} className="rounded-md bg-violet-50 px-1.5 py-0.5 text-violet-900">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-1 text-[10px] uppercase text-zinc-400">Source: {s.source_kind}</p>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-zinc-600">
-                    <span className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-medium">Year {agg.yearLabel}</span>
-                    {agg.subjects.map((sub) => (
-                      <span key={sub} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-emerald-900">
-                        {sub}
-                      </span>
-                    ))}
-                    {agg.types.map((t) => (
-                      <span key={t} className="rounded-md bg-violet-50 px-1.5 py-0.5 text-violet-900">
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                  <p className="mt-1 text-[10px] uppercase text-zinc-400">Source: {s.source_kind}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
+                  <div className="mt-3 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
-                      onClick={() =>
-                        setBatchPaperPreview({
-                          setId: s.id,
-                          label:
-                            s.ingestion_year != null
-                              ? `Year ${s.ingestion_year}${s.original_filename ? ` · ${s.original_filename}` : ''}`
-                              : s.original_filename || 'PYQ batch',
-                        })
-                      }
+                      onClick={() => openBatchTestPaperPreview(s)}
                       className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[10px] font-semibold text-indigo-800 hover:bg-indigo-100"
                     >
                       Preview paper
@@ -2088,7 +2389,7 @@ const PYQManager: React.FC = () => {
                           <select
                             value={pyqGeminiModel}
                             onChange={(e) => setPyqGeminiModel(e.target.value)}
-                            disabled={difficultyFillBusySetId === s.id}
+                            disabled={batchAiBusy}
                             className="min-w-[10rem] rounded-md border border-zinc-200 bg-white px-2 py-1 text-[10px] font-medium text-zinc-900 outline-none focus:border-violet-400 disabled:opacity-60"
                           >
                             {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
@@ -2100,7 +2401,7 @@ const PYQManager: React.FC = () => {
                         </label>
                         <button
                           type="button"
-                          disabled={difficultyFillBusySetId === s.id || blankDifficultyCount === 0}
+                          disabled={batchAiBusy || blankDifficultyCount === 0}
                           onClick={() => void fillBlankDifficultiesForBatch(s.id)}
                           className="rounded-lg border border-violet-300 bg-violet-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
                         >
@@ -2108,39 +2409,70 @@ const PYQManager: React.FC = () => {
                             ? 'Filling…'
                             : `Fill blank difficulties${blankDifficultyCount ? ` (${blankDifficultyCount})` : ''}`}
                         </button>
+                        <button
+                          type="button"
+                          disabled={batchAiBusy || blankSyllabusSlotCount === 0}
+                          onClick={() => void fillBlankChapterSubjectForBatch(s.id)}
+                          className="rounded-lg border border-emerald-300 bg-emerald-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          {syllabusFillBusySetId === s.id
+                            ? 'Matching syllabus…'
+                            : `Fill subject & chapter${blankSyllabusSlotCount ? ` (${blankSyllabusSlotCount})` : ''}`}
+                        </button>
                         <p className="w-full text-[10px] leading-snug text-zinc-600">
-                          Sets <strong>easy</strong> / <strong>medium</strong> / <strong>hard</strong> only for rows with no difficulty. Requires Gemini API key.
+                          <strong>Difficulty:</strong> easy / medium / hard for empty difficulty rows.{' '}
+                          <strong>Subject & chapter:</strong> picks from your NEET <strong>chapters</strong> and <strong>syllabus_entries</strong> catalog
+                          (exact strings). Requires Gemini API key.
                         </p>
                       </div>
-                    <div className="mt-3 max-h-48 overflow-auto rounded-md border border-zinc-100 bg-zinc-50/80 p-2">
+                    <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-100 bg-white">
                       {questionsForExpanded.length === 0 ? (
-                        <p className="text-[10px] text-zinc-500">No matching questions (adjust filters).</p>
+                        <p className="p-2 text-[10px] text-zinc-500">No matching questions (adjust filters).</p>
                       ) : (
-                        <ul className="space-y-1.5 text-[10px] text-zinc-700">
-                          {questionsForExpanded.slice(0, 40).map((q) => {
-                            const pq = paperQuestionLabelFromMetadata(q.metadata);
-                            return (
-                              <li key={q.id} className="border-b border-zinc-100/80 pb-1.5 last:border-0">
-                                {pq ? (
-                                  <span className="mb-0.5 inline-block rounded bg-zinc-200/80 px-1.5 py-0.5 font-mono text-[9px] font-bold text-zinc-800">
-                                    Q{pq}
-                                  </span>
-                                ) : null}
-                                <MeasuredSnippet
-                                  text={q.question_text}
-                                  className="line-clamp-2 break-words [overflow-wrap:anywhere]"
-                                />
-                                <span className="mt-0.5 block text-zinc-500">
-                                  {q.year ?? '—'} · {q.subject_name || '—'} · {q.question_type || '—'} · diff: {q.difficulty?.trim() || '—'}
-                                </span>
-                              </li>
-                            );
-                          })}
-                          {questionsForExpanded.length > 40 && (
-                            <li className="text-zinc-400">+{questionsForExpanded.length - 40} more…</li>
-                          )}
-                        </ul>
+                        <table className="w-full text-left text-[10px] text-zinc-700">
+                          <thead className="sticky top-0 z-[1] bg-zinc-100/95 text-zinc-600 shadow-sm">
+                            <tr>
+                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Paper Q#</th>
+                              <th className="min-w-[140px] px-2 py-1.5 font-semibold">Question</th>
+                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Subject</th>
+                              <th className="min-w-[88px] px-2 py-1.5 font-semibold">Chapter</th>
+                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Difficulty</th>
+                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Year</th>
+                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Type</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {questionsForExpanded.slice(0, 40).map((q) => {
+                              const pq = paperQuestionLabelFromMetadata(q.metadata);
+                              return (
+                                <tr key={q.id} className="border-t border-zinc-100 align-top">
+                                  <td className="whitespace-nowrap px-2 py-1.5 font-mono font-semibold text-zinc-800">
+                                    {pq || '—'}
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <MeasuredSnippet
+                                      text={q.question_text.length > 160 ? `${q.question_text.slice(0, 160)}…` : q.question_text}
+                                      className="line-clamp-2 break-words [overflow-wrap:anywhere] leading-snug"
+                                    />
+                                  </td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.subject_name || '—'}</td>
+                                  <td className="max-w-[120px] truncate px-2 py-1.5 text-zinc-600" title={q.chapter_name || ''}>
+                                    {q.chapter_name || '—'}
+                                  </td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.difficulty?.trim() || '—'}</td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.year ?? '—'}</td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.question_type || '—'}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       )}
+                      {questionsForExpanded.length > 40 ? (
+                        <p className="border-t border-zinc-100 bg-zinc-50/80 px-2 py-1 text-[9px] text-zinc-500">
+                          +{questionsForExpanded.length - 40} more (adjust filters or use All PYQs below)
+                        </p>
+                      ) : null}
                     </div>
                     </>
                   )}
