@@ -10,6 +10,7 @@ import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
 import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 import { flagReasonTooltip, QuestionFlagReason } from './QuestionPaperItem';
+import { prepare, layout } from '@chenglou/pretext';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -33,6 +34,85 @@ interface PageLayout {
     leftCol: QuizBlock[];
     rightCol: QuizBlock[];
     isCover?: boolean;
+}
+
+function ptToPx(pt: number): number {
+  return pt * (96 / 72);
+}
+
+function htmlToPlainText(htmlLike: string | null | undefined): string {
+  if (!htmlLike) return '';
+  if (typeof document === 'undefined') return htmlLike;
+  const div = document.createElement('div');
+  div.innerHTML = htmlLike;
+  return (div.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+/** Row labels for matching tables: P, Q, R, S, … (aligns with typical option keying). */
+function matchingRowLetter(index: number): string {
+  return String.fromCharCode(80 + Math.max(0, index));
+}
+
+const ROMAN_ROW_SUFFIX = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii'] as const;
+
+/**
+ * When columnA/columnB arrays exist, question text often repeats those lists after a
+ * "Column A" / "Column I" header. The paper layout shows a single table instead.
+ */
+function matchingStemTextForPaper(raw: string): string {
+  const t = (raw || '').replace(/<br\s*\/?>/gi, '\n').trim();
+  if (!t) return t;
+  let cut = t.length;
+  // Start at a list header only (not "in Column B" mid-sentence). Column B-only dupes are
+  // almost always preceded by a Column A / Column I block, which this removes in one go.
+  const blockStarts = [
+    /\r?\n\s*Column\s+A\b[\s\S]*$/i,
+    /\r?\n\s*Column\s+I\b[\s\S]*$/i,
+    /\r?\n\s*Column\s+II\b[\s\S]*$/i,
+    /\r?\n\s*Column\s+1\b[\s\S]*$/i,
+  ];
+  for (const re of blockStarts) {
+    const m = re.exec(t);
+    if (m && m.index !== undefined && m.index < cut) cut = m.index;
+  }
+  if (cut < t.length) {
+    return t
+      .slice(0, cut)
+      .replace(/[:\s\u3000]+$/g, '')
+      .trim();
+  }
+  return t;
+}
+
+/** Max plain-text length per option to allow exam-style 2×2 choice layout (stem + choices stay one block). */
+const COMPACT_OPTION_MAX_PLAIN_LEN = 60;
+
+function shouldUseCompactOptionGrid(options: string[] | undefined | null): boolean {
+  if (!options || options.length !== 4) return false;
+  for (const o of options) {
+    const raw = String(o || '');
+    if (!raw.trim()) return false;
+    if (/<img\b/i.test(raw)) return false;
+    const plain = htmlToPlainText(parsePseudoLatexAndMath(raw));
+    if (plain.length > COMPACT_OPTION_MAX_PLAIN_LEN) return false;
+  }
+  return true;
+}
+
+function choicesInnerHtmlForMeasure(options: string[], compact: boolean): string {
+  const cells = options.map(
+    (o: string, i: number) =>
+      `<div style="display:flex;gap:4px;align-items:flex-start;line-height:1.25;color:black;"><span style="flex-shrink:0">(${i + 1})</span><span>${parsePseudoLatexAndMath(o)}</span></div>`
+  );
+  if (compact && options.length === 4) {
+    return `<div style="display:grid;grid-template-columns:1fr 1fr;column-gap:10px;row-gap:3px;margin-top:6px;color:black;">${cells.join('')}</div>`;
+  }
+  return `<div style="margin-top:6px;color:black;">${options
+    .map(
+      (o: string, i: number) =>
+        `<div style="padding-left:12px;color:black;display:flex;gap:4px;align-items:flex-start;line-height:1.25;">(${i + 1}) ${parsePseudoLatexAndMath(o)}</div>`
+    )
+    .join('')}</div>`;
 }
 
 /**
@@ -200,6 +280,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [showChapters, setShowChapters] = useState(false);
   const [showDifficulty, setShowDifficulty] = useState(initialLayoutConfig?.showDifficulty ?? false);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
+  /** Gap after each question (px); pagination picks 15–25 for tight bottom fill, display uses chosen value. */
+  const [appliedQuestionGapPx, setAppliedQuestionGapPx] = useState(20);
   const [allowPastReplacements, setAllowPastReplacements] = useState(sourceOptions?.allowPastQuestions ?? false);
   const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
   const [flagReasonsByQuestionId, setFlagReasonsByQuestionId] = useState<Record<string, string>>({});
@@ -339,7 +421,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               forcedBreaks: Array.from(forcedBreaks),
               showIntroPage, showChapterListOnCover,
               includeExplanations, groupBySubject, showDifficulty,
-              figureSizes, viewMode
+              figureSizes, viewMode,
           };
           await onSave(currentQuestions, layoutConfig, editableTopic);
           setSaveComplete(true);
@@ -757,20 +839,24 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     };
   }, [viewMode, PAGE_WIDTH_PX, pages.length]);
 
-  // Tuned for denser, safer packing in both logic ON/OFF layouts.
-  const HEADER_HEIGHT_FIRST = 74;
-  const HEADER_HEIGHT_OTHER = 50; 
-  const FOOTER_RESERVE_PX = 28; 
-  const SAFETY_BUFFER = 6;
-  const BLOCK_BUFFER = 2;
+  // Pagination height must match the real page DOM or questions break early and leave large bottom gaps.
+  const FOOTER_RESERVE_PX = 10;
+  const SAFETY_BUFFER = 0;
   const INVISIBLE_FOOTER_FILL_LINES = 24;
+  /** mt-auto strip under the padded area (topic / engine / page x of y). ~px at 96dpi. */
+  const PAGE_FOOTER_META_STRIP_PX = 34;
+  /** Thin rule + mb-3 above the two columns. */
+  const TOP_COLUMN_CHROME_PX = 14;
+  /** Per-block slack in pagination height sums (replaces former space-optimizer-driven buffer). */
+  const PACKING_BLOCK_BUFFER = 1.45;
+  const GAP_CANDIDATES = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] as const;
+  const TARGET_QUESTION_GAP_PX = 20;
 
-  const getColumnHeightLimit = (pIdx: number) => {
+  const getColumnHeightLimit = (_pIdx: number) => {
       const marginYPx = paperConfig.marginY * MM_TO_PX;
-      const availableHeightPx = PAGE_HEIGHT_PX - (2 * marginYPx);
-      const isFirstContentPage = showIntroPage ? pIdx === 1 : pIdx === 0;
-      const header = isFirstContentPage ? HEADER_HEIGHT_FIRST : HEADER_HEIGHT_OTHER;
-      return availableHeightPx - header - FOOTER_RESERVE_PX - SAFETY_BUFFER; 
+      const bodyBelowMeta = PAGE_HEIGHT_PX - PAGE_FOOTER_META_STRIP_PX;
+      const innerContentPx = bodyBelowMeta - 2 * marginYPx;
+      return innerContentPx - TOP_COLUMN_CHROME_PX - SAFETY_BUFFER;
   };
 
   useEffect(() => {
@@ -793,11 +879,44 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         measureContainer.style.color = 'black';
         document.body.appendChild(measureContainer);
 
-        const newPages: PageLayout[] = [];
-        if (showIntroPage) newPages.push({ leftCol: [], rightCol: [], isCover: true });
-
         const heightMap: Record<FigureSize, number> = { small: 80, medium: 120, large: 180 };
-        const units: PaginationUnit[] = [];
+        const unitPackList: Array<{
+          blocks: QuizBlock[];
+          baseSum: number;
+          hasQuestionCore: boolean;
+          forceBreak: boolean;
+          questionCount: number;
+        }> = [];
+        const pretextCache = new Map<string, ReturnType<typeof prepare>>();
+        const colWidthPx = colWidthMm * MM_TO_PX;
+        const contentWidthPx = Math.max(40, colWidthPx - 12);
+        const fontPx = ptToPx(paperConfig.fontSize);
+        const coreFont = `${fontPx}px ${paperConfig.fontFamily}`;
+        const optionFont = `${Math.max(10, fontPx * 0.95)}px ${paperConfig.fontFamily}`;
+        const explanationFont = `${Math.max(10, fontPx * 0.95)}px ${paperConfig.fontFamily}`;
+
+        const estimateTextHeightWithPretext = (
+          text: string,
+          maxWidthPx: number,
+          lineHeightPx: number,
+          font: string,
+          whiteSpace: 'normal' | 'pre-wrap' = 'normal'
+        ): number | null => {
+          const cleaned = (text || '').trim();
+          if (!cleaned || maxWidthPx <= 0 || lineHeightPx <= 0) return 0;
+          try {
+            const key = `${font}|${whiteSpace}|${cleaned}`;
+            let prepared = pretextCache.get(key);
+            if (!prepared) {
+              prepared = prepare(cleaned, font, { whiteSpace });
+              pretextCache.set(key, prepared);
+            }
+            const out = layout(prepared, maxWidthPx, lineHeightPx);
+            return Math.max(0, out.height);
+          } catch {
+            return null;
+          }
+        };
 
         const sortedQuestions = groupBySubject ? [...currentQuestions].sort((a,b) => (a.sourceSubjectName||'').localeCompare(b.sourceSubjectName||'')) : currentQuestions;
         let lastSubject = "";
@@ -817,7 +936,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
              const coreDiv = document.createElement('div'); 
              coreDiv.style.display = 'flex'; coreDiv.style.flexDirection = 'column'; coreDiv.style.marginBottom = '2px'; coreDiv.style.color = 'black';
-             const renderedQText = parsePseudoLatexAndMath(q.text);
+             const colA = q.columnA || q.column_a;
+             const colB = q.columnB || q.column_b;
+             const stemRaw =
+               q.type === 'matching' && colA && colB && colA.length > 0
+                 ? matchingStemTextForPaper(String(q.text || ''))
+                 : String(q.text || '');
+             const renderedQText = parsePseudoLatexAndMath(stemRaw);
              const qText = document.createElement('div'); 
              qText.innerHTML = `<b style="color: black;">${qIndex + 1}.</b> ${renderedQText}${showDifficulty ? ` <span style="font-size: 0.7em; font-weight: 900; border: 0.5pt solid black; padding: 1px 2px; text-transform: uppercase; margin-left: 4px; color: black;">${q.difficulty}</span>` : ''}`; 
              coreDiv.appendChild(qText);
@@ -838,26 +963,91 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                  coreDiv.appendChild(srcImg);
              }
 
-             const colA = q.columnA || q.column_a;
-             const colB = q.columnB || q.column_b;
-
              if (q.type === 'matching' && colA && colB && colA.length > 0) {
                 const table = document.createElement('table');
                 table.style.width = '100%'; table.style.borderCollapse = 'collapse'; table.style.marginTop = '4px'; table.style.fontSize = '0.9em'; table.style.color = 'black'; table.style.border = '0.5pt solid black';
                 table.innerHTML = `
                   <thead><tr style="border-bottom: 0.5pt solid black; background-color: #f8fafc;"><th style="text-align: left; width: 50%; padding: 4px; border-right: 0.5pt solid black; color: black;">Column A</th><th style="text-align: left; width: 50%; padding: 4px; color: black;">Column B</th></tr></thead>
-                  <tbody>${colA.map((ca: string, i: number) => `<tr style="border-bottom: 0.25pt solid #ddd;"><td style="padding: 4px; border-right: 0.5pt solid black; color: black;">(${String.fromCharCode(65+i)}) ${parsePseudoLatexAndMath(ca)}</td><td style="padding: 4px; color: black;">(${['i','ii','iii','iv','v'][i] || i+1}) ${parsePseudoLatexAndMath(colB[i] || '')}</td></tr>`).join('')}</tbody>
+                  <tbody>${colA.map((ca: string, i: number) => `<tr style="border-bottom: 0.25pt solid #ddd;"><td style="padding: 4px; border-right: 0.5pt solid black; color: black;">(${matchingRowLetter(i)}) ${parsePseudoLatexAndMath(ca)}</td><td style="padding: 4px; color: black;">(${ROMAN_ROW_SUFFIX[i] ?? i + 1}) ${parsePseudoLatexAndMath(colB[i] || '')}</td></tr>`).join('')}</tbody>
                 `;
                 coreDiv.appendChild(table);
              }
 
-             if (showChoices) { 
-                 const opts = document.createElement('div'); opts.style.marginTop = '4px';
-                 opts.innerHTML = q.options.map((o: any, i: number) => `<div style="padding-left: 12px; color: black;">(${i+1}) ${parsePseudoLatexAndMath(o)}</div>`).join(''); 
-                 coreDiv.appendChild(opts); 
+             if (showChoices && Array.isArray(q.options)) {
+                 const opts = document.createElement('div');
+                 const compactOpts = shouldUseCompactOptionGrid(q.options);
+                 opts.innerHTML = choicesInnerHtmlForMeasure(q.options, compactOpts);
+                 coreDiv.appendChild(opts);
              }
 
-            measureContainer.appendChild(coreDiv); const coreH = coreDiv.getBoundingClientRect().height; measureContainer.removeChild(coreDiv);
+            // Hybrid measurement:
+            // - Pretext for text-heavy parts (question stem + options)
+            // - DOM fallback for rich/complex pieces (tables) when needed.
+            const lineHeightPx = paperConfig.lineHeight * fontPx;
+            const qPlain = `${qIndex + 1}. ${htmlToPlainText(renderedQText)}${showDifficulty ? ` ${q.difficulty || ''}` : ''}`;
+            let pretextCoreHeight =
+              estimateTextHeightWithPretext(qPlain, contentWidthPx, lineHeightPx, coreFont, 'normal') ?? 0;
+
+            if (showChoices && Array.isArray(q.options)) {
+              const optionLineHeight = Math.max(14, lineHeightPx * 0.95);
+              const compactOpts = shouldUseCompactOptionGrid(q.options);
+              if (compactOpts) {
+                const halfW = Math.max(28, (contentWidthPx - 28) / 2);
+                for (const pair of [
+                  [0, 1],
+                  [2, 3],
+                ] as const) {
+                  let rowH = 0;
+                  for (const i of pair) {
+                    const optionPlain = `(${i + 1}) ${htmlToPlainText(parsePseudoLatexAndMath(q.options[i] || ''))}`;
+                    rowH = Math.max(
+                      rowH,
+                      estimateTextHeightWithPretext(optionPlain, halfW, optionLineHeight, optionFont, 'normal') ?? 0
+                    );
+                  }
+                  pretextCoreHeight += rowH + 2;
+                }
+                pretextCoreHeight += 4;
+              } else {
+                for (let i = 0; i < q.options.length; i += 1) {
+                  const optionPlain = `(${i + 1}) ${htmlToPlainText(parsePseudoLatexAndMath(q.options[i] || ''))}`;
+                  pretextCoreHeight +=
+                    (estimateTextHeightWithPretext(optionPlain, Math.max(20, contentWidthPx - 12), optionLineHeight, optionFont, 'normal') ??
+                      0) + 2;
+                }
+                pretextCoreHeight += 4;
+              }
+            }
+
+            if (q.figureDataUrl) {
+                const currentSize: FigureSize = figureSizes[q.id] || 'medium';
+                pretextCoreHeight += heightMap[currentSize] + 8;
+            }
+
+            if (showSourceFigure && q.sourceFigureDataUrl) {
+                pretextCoreHeight += 80 + 8;
+            }
+
+            let tableHeight = 0;
+            if (q.type === 'matching' && colA && colB && colA.length > 0) {
+              const tableOnly = document.createElement('div');
+              const table = document.createElement('table');
+              table.style.width = '100%'; table.style.borderCollapse = 'collapse'; table.style.marginTop = '4px'; table.style.fontSize = '0.9em'; table.style.color = 'black'; table.style.border = '0.5pt solid black';
+              table.innerHTML = `
+                <thead><tr style="border-bottom: 0.5pt solid black; background-color: #f8fafc;"><th style="text-align: left; width: 50%; padding: 4px; border-right: 0.5pt solid black; color: black;">Column A</th><th style="text-align: left; width: 50%; padding: 4px; color: black;">Column B</th></tr></thead>
+                <tbody>${colA.map((ca: string, i: number) => `<tr style="border-bottom: 0.25pt solid #ddd;"><td style="padding: 4px; border-right: 0.5pt solid black; color: black;">(${matchingRowLetter(i)}) ${parsePseudoLatexAndMath(ca)}</td><td style="padding: 4px; color: black;">(${ROMAN_ROW_SUFFIX[i] ?? i + 1}) ${parsePseudoLatexAndMath(colB[i] || '')}</td></tr>`).join('')}</tbody>
+              `;
+              tableOnly.appendChild(table);
+              measureContainer.appendChild(tableOnly);
+              tableHeight = tableOnly.getBoundingClientRect().height;
+              measureContainer.removeChild(tableOnly);
+            }
+
+            const pretextBasedCoreH = Math.ceil(pretextCoreHeight + tableHeight + 10);
+            measureContainer.appendChild(coreDiv);
+            const domCoreH = coreDiv.getBoundingClientRect().height;
+            measureContainer.removeChild(coreDiv);
+            const coreH = Math.max(pretextBasedCoreH, domCoreH * 0.92);
             unitBlocks.push({ type: 'question-core', question: q, globalIndex: qIndex, height: coreH });
 
              if (includeExplanations) {
@@ -867,8 +1057,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                  div.style.padding = '6px'; 
                  div.style.backgroundColor = '#fcfcfc'; 
                  div.style.border = '0.4pt solid #e5e7eb'; 
-                 div.style.marginTop = '2px'; 
-                 div.style.marginBottom = '6px';
+                 div.style.marginTop = '4px'; 
+                 div.style.marginBottom = '5px';
                  div.style.borderRadius = '2px';
                  div.style.color = 'black';
                  
@@ -886,124 +1076,244 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     <div style="color: black; font-size: 0.95em; line-height: 1.3;">${renderedExp}</div>
                     ${metaHtml}
                  `;
-                measureContainer.appendChild(div); const expH = div.getBoundingClientRect().height; measureContainer.removeChild(div);
+                const expPlain = `Ans: (${(q.correctIndex || 0) + 1}) ${htmlToPlainText(renderedExp)} ${metaParts.join(' ')}`.trim();
+                const expPretextH =
+                  estimateTextHeightWithPretext(
+                    expPlain,
+                    Math.max(20, contentWidthPx - 8),
+                    Math.max(14, lineHeightPx * 0.9),
+                    explanationFont,
+                    'normal'
+                  ) ?? 0;
+                measureContainer.appendChild(div); const expDomH = div.getBoundingClientRect().height; measureContainer.removeChild(div);
+                const expH = Math.max(expDomH * 0.9, expPretextH + 22);
                 unitBlocks.push({ type: 'explanation-box', question: q, globalIndex: qIndex, content: div.innerHTML, height: expH });
              }
 
-             units.push({
-                blocks: unitBlocks,
-                heightWithGap: unitBlocks.reduce((sum, b) => sum + b.height + BLOCK_BUFFER, 0),
-                forceBreak: forcedBreaks.has(q.id),
-                questionCount: unitBlocks.filter(b => b.type === 'question-core').length
+             const hasQuestionCore = unitBlocks.some((b) => b.type === 'question-core');
+             unitPackList.push({
+               blocks: unitBlocks,
+               baseSum: unitBlocks.reduce((sum, b) => sum + b.height + PACKING_BLOCK_BUFFER, 0),
+               hasQuestionCore,
+               forceBreak: forcedBreaks.has(q.id),
+               questionCount: unitBlocks.filter((b) => b.type === 'question-core').length,
              });
         });
 
-        let cursor = 0;
-        let currentPageIdx = showIntroPage ? 1 : 0;
-        while (cursor < units.length) {
-            const limit = getColumnHeightLimit(currentPageIdx);
-            const start = cursor;
-            const remainingQuestions = units.slice(start).reduce((sum, u) => sum + u.questionCount, 0);
-            const enforceMinPerColumn = remainingQuestions >= 6;
+        type QueueUnit = PaginationUnit & { hasSubjectHeader: boolean };
 
-            const fillRight = (rightStart: number) => {
-                let rightHeight = 0;
-                let rightQuestions = 0;
-                let rightEnd = rightStart - 1;
-                for (let k = rightStart; k < units.length; k++) {
-                    const unit = units[k];
-                    if (unit.forceBreak && k !== rightStart) break;
-                    if (rightHeight + unit.heightWithGap > limit) break;
-                    rightHeight += unit.heightWithGap;
-                    rightQuestions += unit.questionCount;
-                    rightEnd = k;
-                }
-                return { rightHeight, rightQuestions, rightEnd };
-            };
+        const scoreTupleBetter = (a: [number, number], b: [number, number]) => {
+          if (a[0] < b[0]) return true;
+          if (a[0] > b[0]) return false;
+          return a[1] < b[1];
+        };
 
-            let leftHeight = 0;
-            let leftQuestions = 0;
-            let bestLeftEnd = -1;
-            let bestRightEnd = -1;
-            let bestConsumed = 0;
-            let bestScore = -1;
-            let bestStrictLeftEnd = -1;
-            let bestStrictRightEnd = -1;
-            let bestStrictConsumed = 0;
-            let bestStrictScore = -1;
+        const paginateForGap = (packGap: number): { draftPages: PageLayout[]; tuple: [number, number] } => {
+          const queue: QueueUnit[] = unitPackList.map((u) => ({
+            blocks: u.blocks,
+            heightWithGap: u.baseSum + (u.hasQuestionCore ? packGap : 0),
+            forceBreak: u.forceBreak,
+            questionCount: u.questionCount,
+            hasSubjectHeader: u.blocks.some((b) => b.type === 'subject-header'),
+          }));
 
-            for (let leftEnd = start; leftEnd < units.length; leftEnd++) {
-                const leftUnit = units[leftEnd];
-                if (leftUnit.forceBreak && leftEnd !== start) break;
-                if (leftHeight + leftUnit.heightWithGap > limit) break;
-                leftHeight += leftUnit.heightWithGap;
-                leftQuestions += leftUnit.questionCount;
+          const allowLookaheadReorder = true;
+          const lookaheadDepth = 24;
 
-                const rightStart = leftEnd + 1;
-                const { rightHeight, rightQuestions, rightEnd } = fillRight(rightStart);
-                const consumed = (leftEnd - start + 1) + Math.max(0, rightEnd - rightStart + 1);
-                const score = leftHeight + rightHeight;
-                const meetsMinimum = leftQuestions >= 3 && rightQuestions >= 3;
-
-                if (
-                    consumed > bestConsumed ||
-                    (consumed === bestConsumed && score > bestScore)
-                ) {
-                    bestConsumed = consumed;
-                    bestScore = score;
-                    bestLeftEnd = leftEnd;
-                    bestRightEnd = rightEnd;
-                }
-
-                if (
-                    meetsMinimum &&
-                    (
-                        consumed > bestStrictConsumed ||
-                        (consumed === bestStrictConsumed && score > bestStrictScore)
-                    )
-                ) {
-                    bestStrictConsumed = consumed;
-                    bestStrictScore = score;
-                    bestStrictLeftEnd = leftEnd;
-                    bestStrictRightEnd = rightEnd;
-                }
+          const sections: QueueUnit[][] = [];
+          let activeSection: QueueUnit[] = [];
+          for (const unit of queue) {
+            if (activeSection.length === 0) {
+              activeSection.push(unit);
+              continue;
             }
-
-            if (enforceMinPerColumn && bestStrictLeftEnd >= start) {
-                bestLeftEnd = bestStrictLeftEnd;
-                bestRightEnd = bestStrictRightEnd;
+            if (unit.hasSubjectHeader || unit.forceBreak) {
+              sections.push(activeSection);
+              activeSection = [unit];
+            } else {
+              activeSection.push(unit);
             }
+          }
+          if (activeSection.length > 0) sections.push(activeSection);
 
-            if (bestLeftEnd < start) {
-                bestLeftEnd = start;
-                bestRightEnd = start - 1;
+          const fillColumnFromQueue = (
+            q: QueueUnit[],
+            heightLimit: number,
+            lockFrontUnit: boolean
+          ): { usedHeight: number; out: QuizBlock[]; outUnits: QueueUnit[] } => {
+            let used = 0;
+            const out: QuizBlock[] = [];
+            const outUnits: QueueUnit[] = [];
+            while (q.length > 0) {
+              if (q[0].forceBreak && out.length > 0) break;
+              const remaining = heightLimit - used;
+              if (lockFrontUnit && out.length === 0) {
+                const locked = q[0];
+                if (locked.heightWithGap > remaining) break;
+                q.shift();
+                outUnits.push(locked);
+                out.push(...locked.blocks);
+                used += locked.heightWithGap;
+                continue;
+              }
+
+              let pickIndex = -1;
+              let bestHeight = -1;
+              const maxScan = Math.min(q.length, lookaheadDepth);
+              for (let i = 0; i < maxScan; i += 1) {
+                const candidate = q[i];
+                if (!allowLookaheadReorder && i > 0) break;
+                if (i > 0 && candidate.forceBreak) break;
+                if (candidate.heightWithGap <= remaining && candidate.heightWithGap > bestHeight) {
+                  bestHeight = candidate.heightWithGap;
+                  pickIndex = i;
+                }
+              }
+
+              if (pickIndex === -1) break;
+              const [picked] = q.splice(pickIndex, 1);
+              outUnits.push(picked);
+              out.push(...picked.blocks);
+              used += picked.heightWithGap;
             }
+            return { usedHeight: used, out, outUnits };
+          };
 
-            const leftUnits = units.slice(start, bestLeftEnd + 1);
-            const rightStart = bestLeftEnd + 1;
-            const rightUnits = bestRightEnd >= rightStart ? units.slice(rightStart, bestRightEnd + 1) : [];
+          type WorkingPage = {
+            pageIdx: number;
+            heightLimit: number;
+            leftUnits: QueueUnit[];
+            rightUnits: QueueUnit[];
+          };
+          const workingPages: WorkingPage[] = [];
+          const unitsHeight = (arr: QueueUnit[]) => arr.reduce((sum, u) => sum + u.heightWithGap, 0);
+          const canMoveUnitIntoColumn = (unit: QueueUnit, destCol: QueueUnit[]) => {
+            if (unit.forceBreak && destCol.length > 0) return false;
+            if (unit.hasSubjectHeader && destCol.length > 0) return false;
+            return true;
+          };
 
-            const leftCol = leftUnits.flatMap(unit => unit.blocks);
-            const rightCol = rightUnits.flatMap(unit => unit.blocks);
-            newPages.push({ leftCol, rightCol });
+          let currentPageIdx = showIntroPage ? 1 : 0;
+          for (const section of sections) {
+            let mustPlaceSectionHeader = section[0]?.hasSubjectHeader ?? false;
+            while (section.length > 0) {
+              const limit = getColumnHeightLimit(currentPageIdx);
+              const left = fillColumnFromQueue(section, limit, mustPlaceSectionHeader);
+              if (mustPlaceSectionHeader && left.out.length > 0) mustPlaceSectionHeader = false;
+              const right = fillColumnFromQueue(section, limit, mustPlaceSectionHeader);
+              if (mustPlaceSectionHeader && right.out.length > 0) mustPlaceSectionHeader = false;
 
-            cursor = Math.max(bestRightEnd + 1, bestLeftEnd + 1);
-            currentPageIdx++;
-        }
-        
-        if (showAnswerKey) {
-            newPages.push({
-                leftCol: [{ type: 'answer-key', content: 'key', height: 0 }],
-                rightCol: []
+              if (left.out.length === 0 && right.out.length === 0) {
+                const first = section.shift();
+                if (!first) break;
+                workingPages.push({
+                  pageIdx: currentPageIdx,
+                  heightLimit: limit,
+                  leftUnits: [first],
+                  rightUnits: [],
+                });
+                mustPlaceSectionHeader = false;
+                currentPageIdx += 1;
+                continue;
+              }
+
+              workingPages.push({
+                pageIdx: currentPageIdx,
+                heightLimit: limit,
+                leftUnits: [...left.outUnits],
+                rightUnits: [...right.outUnits],
+              });
+              currentPageIdx += 1;
+            }
+          }
+
+          for (let p = 0; p < workingPages.length - 1; p += 1) {
+            const cur = workingPages[p];
+            const nxt = workingPages[p + 1];
+
+            let moved = true;
+            while (moved) {
+              moved = false;
+              const usedLeft = unitsHeight(cur.leftUnits);
+              const usedRight = unitsHeight(cur.rightUnits);
+              const slackLeft = cur.heightLimit - usedLeft;
+              const slackRight = cur.heightLimit - usedRight;
+              const nextLeftHead = nxt.leftUnits[0];
+              const nextRightHead = nxt.rightUnits[0];
+
+              const candidates: Array<{ from: 'left' | 'right'; to: 'left' | 'right'; unit: QueueUnit; score: number }> = [];
+              const addCandidate = (from: 'left' | 'right', unit: QueueUnit | undefined) => {
+                if (!unit) return;
+                if (unit.heightWithGap <= slackLeft && canMoveUnitIntoColumn(unit, cur.leftUnits)) {
+                  candidates.push({ from, to: 'left', unit, score: slackLeft - unit.heightWithGap });
+                }
+                if (unit.heightWithGap <= slackRight && canMoveUnitIntoColumn(unit, cur.rightUnits)) {
+                  candidates.push({ from, to: 'right', unit, score: slackRight - unit.heightWithGap });
+                }
+              };
+              addCandidate('left', nextLeftHead);
+              addCandidate('right', nextRightHead);
+              if (candidates.length === 0) break;
+
+              candidates.sort((a, b) => a.score - b.score);
+              const best = candidates[0];
+              const fromCol = best.from === 'left' ? nxt.leftUnits : nxt.rightUnits;
+              const toCol = best.to === 'left' ? cur.leftUnits : cur.rightUnits;
+              const picked = fromCol.shift();
+              if (!picked) break;
+              toCol.push(picked);
+              moved = true;
+            }
+          }
+
+          const compactedPages = workingPages.filter((pg) => pg.leftUnits.length > 0 || pg.rightUnits.length > 0);
+          let slackSum = 0;
+          for (const pg of compactedPages) {
+            slackSum +=
+              (pg.heightLimit - unitsHeight(pg.leftUnits)) + (pg.heightLimit - unitsHeight(pg.rightUnits));
+          }
+          const tuple: [number, number] = [compactedPages.length, slackSum];
+
+          const draftPages: PageLayout[] = [];
+          if (showIntroPage) draftPages.push({ leftCol: [], rightCol: [], isCover: true });
+          compactedPages.forEach((pg) => {
+            draftPages.push({
+              leftCol: pg.leftUnits.flatMap((u) => u.blocks),
+              rightCol: pg.rightUnits.flatMap((u) => u.blocks),
             });
+          });
+          if (showAnswerKey) {
+            draftPages.push({
+              leftCol: [{ type: 'answer-key', content: 'key', height: 0 }],
+              rightCol: [],
+            });
+          }
+          return { draftPages, tuple };
+        };
+
+        let bestTuple: [number, number] = [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+        let bestPages: PageLayout[] | null = null;
+        let bestGap = TARGET_QUESTION_GAP_PX;
+
+        for (const packGap of GAP_CANDIDATES) {
+          const { draftPages, tuple } = paginateForGap(packGap);
+          if (!bestPages || scoreTupleBetter(tuple, bestTuple)) {
+            bestTuple = tuple;
+            bestPages = draftPages;
+            bestGap = packGap;
+          }
         }
-        
-        setPages(newPages);
+
+        setAppliedQuestionGapPx(bestGap);
+        setPages(bestPages ?? [{ leftCol: [], rightCol: [] }]);
         document.body.removeChild(measureContainer);
         setTimeout(() => setIsPaginating(false), 50);
     };
-    const timer = setTimeout(measureAndPaginate, 100);
-    return () => clearTimeout(timer);
+    let raf1 = 0;
+    raf1 = requestAnimationFrame(() => {
+      measureAndPaginate();
+    });
+    return () => cancelAnimationFrame(raf1);
   }, [currentQuestions, includeExplanations, showDifficulty, groupBySubject, forcedBreaks, showChoices, showSourceFigure, showIntroPage, showTopics, showChapters, showAnswerKey, paperConfig, figureSizes]);
 
   const scrollToPage = (idx: number) => {
@@ -1036,18 +1346,46 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     </button>
   );
 
+  const questionBlockTailMarginPx = (block: QuizBlock, next: QuizBlock | undefined, gapPx: number): number | undefined => {
+    if (gapPx <= 0) return undefined;
+    if (block.type === 'subject-header' || block.type === 'answer-key') return undefined;
+    if (block.type === 'explanation-box') return Math.round(6 + gapPx);
+    if (block.type === 'question-core') {
+      if (next?.type === 'explanation-box' && next.question?.id === block.question?.id) return 2;
+      return Math.round(2 + gapPx);
+    }
+    return undefined;
+  };
+
   const BlockRenderer: React.FC<{
-      block: QuizBlock; showChoices: boolean; showSourceFigure: boolean; showDifficulty: boolean; onDelete?: (id: string) => void; onReplace?: (q: Question) => void; onFlag?: (q: Question, reason?: QuestionFlagReason) => void;
-  }> = ({ block, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
+      block: QuizBlock;
+      nextBlock?: QuizBlock;
+      questionGapPx: number;
+      showChoices: boolean;
+      showSourceFigure: boolean;
+      showDifficulty: boolean;
+      onDelete?: (id: string) => void;
+      onReplace?: (q: Question) => void;
+      onFlag?: (q: Question, reason?: QuestionFlagReason) => void;
+  }> = ({ block, nextBlock, questionGapPx, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
       if (block.type === 'subject-header') return <div className="border-y border-black py-0.25 text-center font-black text-[0.9em] uppercase tracking-widest bg-white mb-3 mt-1 text-black">PART: {block.content}</div>;
       const q = block.question;
       if (!q) return null;
+
+      const tailMb = questionBlockTailMarginPx(block, nextBlock, questionGapPx);
       
       if (block.type === 'explanation-box') {
           return (
               <div 
-                  className="p-1.5 px-2 text-black mb-1 leading-tight math-content" 
-                  style={{ fontSize: '0.9em', backgroundColor: '#fcfcfc', border: '0.4pt solid #e5e7eb', borderRadius: '2px', color: 'black' }}
+                  className={`p-1.5 px-2 mt-1 text-black leading-tight math-content ${tailMb === undefined ? 'mb-1.5' : ''}`}
+                  style={{
+                    fontSize: '0.9em',
+                    backgroundColor: '#fcfcfc',
+                    border: '0.4pt solid #e5e7eb',
+                    borderRadius: '2px',
+                    color: 'black',
+                    ...(tailMb !== undefined ? { marginBottom: tailMb } : {}),
+                  }}
                   dangerouslySetInnerHTML={{ __html: block.content || '' }} 
               />
           );
@@ -1055,6 +1393,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
       const colA = q.columnA || q.column_a;
       const colB = q.columnB || q.column_b;
+      const displayStem =
+        q.type === 'matching' && colA && colB && colA.length > 0
+          ? matchingStemTextForPaper(String(q.text || ''))
+          : String(q.text || '');
       const stableQid = String(q.originalId || q.id);
       const isFlagged = flaggedQuestionIds.has(stableQid);
       const flagReasonStored = flagReasonsByQuestionId[stableQid];
@@ -1066,7 +1408,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       const currentSize = figureSizes[q.id] || 'medium';
 
       return (
-          <div className="leading-tight relative group text-black mb-1 break-inside-avoid math-content">
+          <div
+            className={`leading-tight relative group text-black break-inside-avoid math-content ${tailMb === undefined ? 'mb-0.5' : ''}`}
+            style={tailMb !== undefined ? { marginBottom: tailMb } : undefined}
+          >
               {/* Question Control Buttons: Positioned top-right to avoid being clipped by page-container overflow */}
               <div className="no-print absolute right-0 top-0 z-20 flex items-center gap-1 rounded-bl-md border-b border-l border-zinc-200 bg-white/90 pb-1 pl-2 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100">
                   <button 
@@ -1148,13 +1493,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               <div className="flex gap-1.5 items-start">
                   <b className="shrink-0 text-black">{block.globalIndex! + 1}.</b>
                   <div className="flex-1 text-black">
-                      <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(q.text || '') }} />
+                      <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(displayStem) }} />
                       {showDifficulty && <span className="ml-1 px-1 py-0.25 rounded text-[0.6em] font-black uppercase border border-black align-middle inline-block leading-none text-black">{q.difficulty}</span>}
                   </div>
               </div>
               {q.figureDataUrl && (
                   <div
-                    className="ml-5 my-1.5 p-1 border border-black/20 rounded inline-block bg-white shadow-sm relative group/figure"
+                    className="ml-5 mt-2 mb-1 p-1 border border-black/20 rounded inline-block bg-white shadow-sm relative group/figure"
                     title={isFlagged ? flagTip : undefined}
                   >
                       <img src={q.figureDataUrl} className="object-contain mix-blend-multiply" style={{ maxHeight: heightMap[currentSize] }} alt="Figure Asset" />
@@ -1166,13 +1511,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                   </div>
               )}
               {showSourceFigure && q.sourceFigureDataUrl && (
-                  <div className="relative ml-5 my-1.5 inline-block overflow-hidden rounded-md border border-zinc-200 bg-zinc-50/80 p-1 shadow-sm">
+                  <div className="relative ml-5 mt-1.5 mb-1 inline-block overflow-hidden rounded-md border border-zinc-200 bg-zinc-50/80 p-1 shadow-sm">
                       <div className="absolute left-0 top-0 z-10 rounded-br-md bg-zinc-900 px-1.5 py-0.5 text-[5pt] font-semibold uppercase tracking-widest text-white">Reference Source</div>
                       <img src={q.sourceFigureDataUrl} className="max-h-[80px] object-contain mix-blend-multiply opacity-80" alt="Source Asset" />
                   </div>
               )}
               {q.type === 'matching' && colA && colB && colA.length > 0 && (
-                  <div className="ml-5 my-2 border border-black overflow-hidden rounded-sm">
+                  <div className="ml-5 mt-2 mb-1.5 border border-black overflow-hidden rounded-sm">
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em', color: 'black' }}>
                           <thead>
                               <tr style={{ borderBottom: '0.5pt solid black', backgroundColor: '#f8fafc' }}>
@@ -1183,8 +1528,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                           <tbody>
                               {colA.map((ca: string, i: number) => (
                                   <tr key={i} style={{ borderBottom: '0.25pt solid #eee' }}>
-                                      <td style={{ padding: '4px', borderRight: '0.5pt solid black', color: 'black' }}>({String.fromCharCode(65 + i)}) <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(ca) }} /></td>
-                                      <td style={{ padding: '4px', color: 'black' }}>({['i', 'ii', 'iii', 'iv', 'v'][i] || i + 1}) <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(colB[i] || '') }} /></td>
+                                      <td style={{ padding: '4px', borderRight: '0.5pt solid black', color: 'black' }}>({matchingRowLetter(i)}) <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(ca) }} /></td>
+                                      <td style={{ padding: '4px', color: 'black' }}>({ROMAN_ROW_SUFFIX[i] ?? i + 1}) <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(colB[i] || '') }} /></td>
                                   </tr>
                               ))}
                           </tbody>
@@ -1192,14 +1537,25 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                   </div>
               )}
               {showChoices && q.options && (
-                  <div className="ml-5 mt-1 space-y-0 font-medium text-black">
-                      {q.options.map((o: string, i: number) => (
-                          <div key={i} className="flex gap-1.5 items-start leading-tight">
-                              <span className="shrink-0 text-black">({i + 1})</span>
-                              <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(o) }} />
-                          </div>
-                      ))}
-                  </div>
+                  shouldUseCompactOptionGrid(q.options) ? (
+                      <div className="ml-5 mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 font-medium text-black leading-tight">
+                          {q.options.map((o: string, i: number) => (
+                              <div key={i} className="flex min-w-0 gap-1.5 items-start">
+                                  <span className="shrink-0 text-black">({i + 1})</span>
+                                  <span className="min-w-0" dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(o) }} />
+                              </div>
+                          ))}
+                      </div>
+                  ) : (
+                      <div className="ml-5 mt-1.5 space-y-0 font-medium text-black">
+                          {q.options.map((o: string, i: number) => (
+                              <div key={i} className="flex gap-1.5 items-start leading-tight">
+                                  <span className="shrink-0 text-black">({i + 1})</span>
+                                  <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(o) }} />
+                              </div>
+                          ))}
+                      </div>
+                  )
               )}
           </div>
       );
@@ -1343,6 +1699,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
             <NumberControl label="Margin (V)" value={paperConfig.marginY} onChange={(v) => setPaperConfig({ ...paperConfig, marginY: v })} min={5} max={30} unit="mm" />
             <NumberControl label="Column Gap" value={paperConfig.gap} onChange={(v) => setPaperConfig({ ...paperConfig, gap: v })} min={2} max={20} unit="mm" />
           </div>
+        </div>
+
+        <div>
+          <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">Packing</h4>
+          <p className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-[9px] leading-snug text-zinc-600">
+            Question spacing (~20px) is chosen automatically from a small range so pages pack tightly with minimal bottom gap. Typography changes reflow on the next animation frame.
+          </p>
         </div>
 
         <div>
@@ -1532,7 +1895,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                   style={{
                                     padding: p.isCover ? `1.5mm` : `${paperConfig.marginY}mm ${paperConfig.marginX}mm`,
                                     fontSize: `${paperConfig.fontSize}pt`,
-                                    lineHeight: `${paperConfig.lineHeight}`
+                                    lineHeight: `${paperConfig.lineHeight}`,
+                                    transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
                                   }}
                                 >
                                 {isAnswerKeyPage ? (
@@ -1611,10 +1975,36 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                         <div className="flex-1 relative flex" style={{ gap: `${paperConfig.gap}mm` }}>
                                             
                                             <div className="flex-1 overflow-hidden space-y-1 relative z-10 pr-1">
-                                                {p.leftCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} onFlag={handleFlagQuestion} />)}
+                                                {p.leftCol.map((b, bi) => (
+                                                  <BlockRenderer
+                                                    key={bi}
+                                                    block={b}
+                                                    nextBlock={p.leftCol[bi + 1]}
+                                                    questionGapPx={appliedQuestionGapPx}
+                                                    showChoices={showChoices}
+                                                    showSourceFigure={showSourceFigure}
+                                                    showDifficulty={showDifficulty}
+                                                    onDelete={handleDeleteQuestion}
+                                                    onReplace={handleReplaceQuestion}
+                                                    onFlag={handleFlagQuestion}
+                                                  />
+                                                ))}
                                             </div>
                                             <div className="flex-1 overflow-hidden space-y-1 relative z-10 pl-1">
-                                                {p.rightCol.map((b, bi) => <BlockRenderer key={bi} block={b} showChoices={showChoices} showSourceFigure={showSourceFigure} showDifficulty={showDifficulty} onDelete={handleDeleteQuestion} onReplace={handleReplaceQuestion} onFlag={handleFlagQuestion} />)}
+                                                {p.rightCol.map((b, bi) => (
+                                                  <BlockRenderer
+                                                    key={bi}
+                                                    block={b}
+                                                    nextBlock={p.rightCol[bi + 1]}
+                                                    questionGapPx={appliedQuestionGapPx}
+                                                    showChoices={showChoices}
+                                                    showSourceFigure={showSourceFigure}
+                                                    showDifficulty={showDifficulty}
+                                                    onDelete={handleDeleteQuestion}
+                                                    onReplace={handleReplaceQuestion}
+                                                    onFlag={handleFlagQuestion}
+                                                  />
+                                                ))}
                                             </div>
                                         </div>
 

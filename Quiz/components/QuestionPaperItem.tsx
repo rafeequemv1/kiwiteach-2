@@ -1,7 +1,8 @@
 
-import React from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Question } from '../types';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
+import { layout, prepare } from '@chenglou/pretext';
 
 export type QuestionFlagReason = 'out_of_syllabus' | 'incorrect_figure';
 
@@ -13,6 +14,14 @@ function normalizeFlagReason(raw: string | null | undefined): QuestionFlagReason
 
 export function flagReasonTooltip(raw: string | null | undefined): string {
   return normalizeFlagReason(raw) === 'incorrect_figure' ? 'Incorrect figure' : 'Out of syllabus';
+}
+
+function htmlToPlainText(htmlLike: string | null | undefined): string {
+  if (!htmlLike) return '';
+  if (typeof document === 'undefined') return htmlLike;
+  const div = document.createElement('div');
+  div.innerHTML = htmlLike;
+  return (div.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
 interface QuestionPaperItemProps {
@@ -44,6 +53,45 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   const columnB = question.columnB || question.column_b;
   const hasFigure = !!(question.figureDataUrl || question.figure_url);
   const flagTooltip = isFlaggedOutOfSyllabus ? flagReasonTooltip(flagReason) : undefined;
+  const questionTextRef = useRef<HTMLDivElement | null>(null);
+  const [questionTextMinHeight, setQuestionTextMinHeight] = useState<number | undefined>(undefined);
+  const preparedCache = useMemo(() => new Map<string, ReturnType<typeof prepare>>(), []);
+  const renderedStem = useMemo(() => parsePseudoLatexAndMath(question.text), [question.text]);
+
+  useEffect(() => {
+    const el = questionTextRef.current;
+    if (!el) return;
+
+    const recompute = () => {
+      const width = el.clientWidth;
+      if (width <= 0) return;
+      const plain = htmlToPlainText(renderedStem);
+      if (!plain) {
+        setQuestionTextMinHeight(undefined);
+        return;
+      }
+      const font = '11px Inter, system-ui, sans-serif';
+      const lineHeight = 18;
+      try {
+        const key = `${font}|${plain}`;
+        let prepared = preparedCache.get(key);
+        if (!prepared) {
+          prepared = prepare(plain, font, { whiteSpace: 'normal' });
+          preparedCache.set(key, prepared);
+        }
+        const out = layout(prepared, Math.max(20, width), lineHeight);
+        // Keep a small buffer for injected inline math markup.
+        setQuestionTextMinHeight(Math.ceil(out.height + 4));
+      } catch {
+        setQuestionTextMinHeight(undefined);
+      }
+    };
+
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [renderedStem, preparedCache]);
 
   return (
     <div 
@@ -121,8 +169,12 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
       )}
 
       {/* Content Body */}
-      <div className="math-content max-w-full min-w-0 break-words text-[11px] font-medium leading-relaxed text-zinc-900 sm:text-xs [overflow-wrap:anywhere]">
-          <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(question.text) }} />
+      <div
+          ref={questionTextRef}
+          style={questionTextMinHeight ? { minHeight: `${questionTextMinHeight}px` } : undefined}
+          className="math-content max-w-full min-w-0 break-words text-[11px] font-medium leading-relaxed text-zinc-900 sm:text-xs [overflow-wrap:anywhere]"
+      >
+          <span dangerouslySetInnerHTML={{ __html: renderedStem }} />
       </div>
 
       {/* Figures */}

@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
+import { layout, prepare } from '@chenglou/pretext';
 
 declare const mammoth: any;
 
@@ -78,6 +79,60 @@ function toPublicUrl(path: string) {
 function sanitizeFilename(name: string) {
   return name.replace(/[^\w.\- ()\[\]]+/g, '_').slice(0, 180) || 'document.docx';
 }
+
+const MeasuredSnippet: React.FC<{
+  text: string;
+  className?: string;
+  font?: string;
+  lineHeight?: number;
+}> = ({ text, className, font = '12px Inter, system-ui, sans-serif', lineHeight = 17 }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [minHeight, setMinHeight] = useState<number | undefined>(undefined);
+  const cacheRef = useRef<Map<string, ReturnType<typeof prepare>>>(new Map());
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const value = (text || '').trim();
+    if (!value) {
+      setMinHeight(undefined);
+      return;
+    }
+
+    const recompute = () => {
+      const width = el.clientWidth;
+      if (width <= 0) return;
+      try {
+        const key = `${font}|${value}`;
+        let prepared = cacheRef.current.get(key);
+        if (!prepared) {
+          prepared = prepare(value, font, { whiteSpace: 'normal' });
+          cacheRef.current.set(key, prepared);
+        }
+        const out = layout(prepared, Math.max(20, width), lineHeight);
+        setMinHeight(Math.ceil(out.height + 2));
+      } catch {
+        setMinHeight(undefined);
+      }
+    };
+
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, font, lineHeight]);
+
+  return (
+    <div
+      ref={ref}
+      style={minHeight ? { minHeight: `${minHeight}px` } : undefined}
+      className={className}
+      title={text}
+    >
+      {text}
+    </div>
+  );
+};
 
 async function parseDocxBuffer(arrayBuffer: ArrayBuffer): Promise<{
   text: string;
@@ -651,7 +706,10 @@ const ReferenceQuestionsManager: React.FC = () => {
                         )}
                       </td>
                       <td className="py-2 pr-2">
-                        <p className="line-clamp-2 text-xs font-semibold text-zinc-900">{r.question_text}</p>
+                        <MeasuredSnippet
+                          text={r.question_text}
+                          className="line-clamp-2 text-xs font-semibold text-zinc-900 break-words [overflow-wrap:anywhere]"
+                        />
                         <p className="mt-1 text-[11px] text-zinc-500">
                           {r.class_name || '—'} · {r.subject_name || '—'} · {r.chapter_name || '—'}
                         </p>
@@ -724,7 +782,10 @@ const ReferenceQuestionsManager: React.FC = () => {
                       <li key={i} className="rounded-md border border-zinc-100 bg-zinc-50/80 p-2">
                         <span className="font-semibold text-zinc-900">{p.chapter_name || 'Chapter ?'}</span> ·{' '}
                         {p.difficulty} · {p.question_type} · {p.question_format}
-                        <div className="mt-1 line-clamp-2 text-zinc-600">{p.question_text}</div>
+                        <MeasuredSnippet
+                          text={p.question_text}
+                          className="mt-1 line-clamp-2 text-zinc-600 break-words [overflow-wrap:anywhere]"
+                        />
                       </li>
                     ))}
                   </ul>

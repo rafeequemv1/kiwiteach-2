@@ -1,8 +1,10 @@
 import '../../types';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
+import { layout, prepare } from '@chenglou/pretext';
+import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 
 interface PYQRow {
   id: string;
@@ -199,6 +201,295 @@ function norm(s: string | null | undefined) {
   return (s || '').trim().toLowerCase();
 }
 
+function extractImageSrcsFromHtml(html: string): string[] {
+  if (!html) return [];
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const out = [...doc.querySelectorAll('img[src]')]
+      .map((img) => img.getAttribute('src')?.trim() || '')
+      .filter(Boolean);
+    return Array.from(new Set(out));
+  } catch {
+    return [];
+  }
+}
+
+const COMPACT_OPT_LEN = 58;
+function shouldCompactMcqOptions(opts: string[]): boolean {
+  if (opts.length !== 4) return false;
+  return opts.every((o) => o.length <= COMPACT_OPT_LEN && !/<img\b/i.test(o));
+}
+
+const PyqPaperQuestion: React.FC<{ draft: Draft; index: number }> = ({ draft, index }) => {
+  const optStrs = [draft.option_a, draft.option_b, draft.option_c, draft.option_d].map((s) => String(s || ''));
+  const opts = optStrs.map((s) => s.trim());
+  const nonempty = opts.map((s, i) => (s ? { t: s, i } : null)).filter(Boolean) as { t: string; i: number }[];
+  const compact = opts.filter((s) => s.length > 0).length === 4 && shouldCompactMcqOptions(optStrs);
+
+  return (
+    <div className="mb-4 break-inside-avoid text-black">
+      <div className="flex gap-1.5 items-start leading-tight">
+        <span className="shrink-0 font-bold">{index + 1}.</span>
+        <div className="min-w-0 flex-1">
+          <div
+            className="math-content [&_.katex]:text-[inherit]"
+            dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(draft.question_text || '') }}
+          />
+          {(draft.question_format === 'figure' || draft.image_url?.trim()) && (
+            <div className="mt-1.5">
+              {draft.image_url?.trim() ? (
+                <img
+                  src={draft.image_url.trim()}
+                  alt=""
+                  className="max-h-52 max-w-full rounded border border-zinc-200 object-contain"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              ) : (
+                <p className="text-[9px] italic text-zinc-500">Figure referenced — no image URL in row</p>
+              )}
+            </div>
+          )}
+          {nonempty.length > 0 && (
+            <div
+              className={`mt-1.5 ${compact ? 'grid grid-cols-2 gap-x-3 gap-y-0.5' : 'space-y-0'} text-[10pt] font-medium`}
+            >
+              {nonempty.map(({ t, i }) => (
+                <div key={i} className="flex min-w-0 gap-1 items-start">
+                  <span className="shrink-0">({i + 1})</span>
+                  <span
+                    className="min-w-0"
+                    dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(t) }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MeasuredSnippet: React.FC<{
+  text: string;
+  className?: string;
+  font?: string;
+  lineHeight?: number;
+}> = ({ text, className, font = '11px Inter, system-ui, sans-serif', lineHeight = 16 }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [minHeight, setMinHeight] = useState<number | undefined>(undefined);
+  const cacheRef = useRef<Map<string, ReturnType<typeof prepare>>>(new Map());
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const value = (text || '').trim();
+    if (!value) {
+      setMinHeight(undefined);
+      return;
+    }
+
+    const recompute = () => {
+      const width = el.clientWidth;
+      if (width <= 0) return;
+      try {
+        const key = `${font}|${value}`;
+        let prepared = cacheRef.current.get(key);
+        if (!prepared) {
+          prepared = prepare(value, font, { whiteSpace: 'normal' });
+          cacheRef.current.set(key, prepared);
+        }
+        const out = layout(prepared, Math.max(20, width), lineHeight);
+        setMinHeight(Math.ceil(out.height + 2));
+      } catch {
+        setMinHeight(undefined);
+      }
+    };
+
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, font, lineHeight]);
+
+  return (
+    <div
+      ref={ref}
+      style={minHeight ? { minHeight: `${minHeight}px` } : undefined}
+      className={className}
+      title={text}
+    >
+      {text}
+    </div>
+  );
+};
+
+const PyqPreviewModal: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  drafts: Draft[];
+  extractedDocImages: string[];
+  sourceLabel: string | null;
+  saving: boolean;
+  onCommit: () => void;
+}> = ({ open, onClose, drafts, extractedDocImages, sourceLabel, saving, onCommit }) => {
+  const [tab, setTab] = useState<'paper' | 'figures'>('paper');
+  useEffect(() => {
+    if (open) setTab('paper');
+  }, [open]);
+
+  const rowFigureUrls = useMemo(() => {
+    const s = new Set<string>();
+    drafts.forEach((d) => {
+      const u = d.image_url?.trim();
+      if (u) s.add(u);
+    });
+    return Array.from(s);
+  }, [drafts]);
+
+  const allFigureSrcs = useMemo(
+    () => Array.from(new Set([...extractedDocImages, ...rowFigureUrls])),
+    [extractedDocImages, rowFigureUrls]
+  );
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-stretch justify-center bg-black/50 p-2 sm:p-6"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label="PYQ import preview"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-widest text-zinc-500">Test paper preview</p>
+            <p className="truncate text-sm font-semibold text-zinc-900" title={sourceLabel || ''}>
+              {sourceLabel || 'Parsed questions'}
+            </p>
+            <p className="text-[11px] text-zinc-500">
+              {drafts.length} question{drafts.length === 1 ? '' : 's'} · {allFigureSrcs.length} image
+              {allFigureSrcs.length === 1 ? '' : 's'}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              disabled={saving || drafts.length === 0}
+              onClick={() => void onCommit()}
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save to PYQ bank'}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 gap-1 border-b border-zinc-100 bg-white px-4 pt-2">
+          {(['paper', 'figures'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`rounded-t-md px-3 py-2 text-[11px] font-semibold capitalize ${
+                tab === t ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              {t === 'paper' ? 'Paper layout' : 'Figures'}
+            </button>
+          ))}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-100/80 p-4">
+          {tab === 'paper' && (
+            <div className="mx-auto max-w-[210mm] rounded-sm border-[0.5pt] border-black bg-white shadow-md">
+              <div className="border-b-[0.5pt] border-black px-4 py-2 text-center text-[11px] font-bold uppercase tracking-widest text-black">
+                Preview — not saved
+              </div>
+              <div
+                className="p-4 sm:p-5"
+                style={{
+                  fontFamily: "'Times New Roman', Times, serif",
+                  fontSize: '10pt',
+                  lineHeight: 1.45,
+                }}
+              >
+                <div className="h-[0.5pt] w-full bg-black" />
+                <div className="mt-3 columns-1 gap-8 md:columns-2 md:gap-10">
+                  {drafts.map((d, i) => (
+                    <PyqPaperQuestion key={`${i}-${d.question_text.slice(0, 24)}`} draft={d} index={i} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === 'figures' && (
+            <div className="space-y-3">
+              {extractedDocImages.length > 0 && (
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3">
+                  <p className="text-[11px] font-bold uppercase text-indigo-900">From document (DOCX)</p>
+                  <p className="text-[10px] text-indigo-700/80">
+                    Embedded images pulled from the file. Link them to questions in your source or via Gemini output
+                    <code className="mx-0.5">image_url</code>.
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                    {extractedDocImages.map((src, idx) => (
+                      <a
+                        key={`docimg-${idx}`}
+                        href={src}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block overflow-hidden rounded border border-zinc-200 bg-white"
+                      >
+                        <img src={src} alt="" className="h-36 w-full object-contain" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="rounded-lg border border-zinc-200 bg-white p-3">
+                <p className="text-[11px] font-bold uppercase text-zinc-700">From parsed rows (image_url)</p>
+                {rowFigureUrls.length === 0 ? (
+                  <p className="mt-1 text-[11px] text-zinc-500">No image URLs on question rows.</p>
+                ) : (
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                    {rowFigureUrls.map((src, idx) => (
+                      <a
+                        key={`rowimg-${idx}`}
+                        href={src}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block overflow-hidden rounded border border-zinc-200 bg-zinc-50"
+                      >
+                        <img src={src} alt="" className="h-36 w-full object-contain" />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const PYQManager: React.FC = () => {
   const [rows, setRows] = useState<PYQRow[]>([]);
   const [uploadSets, setUploadSets] = useState<PyqUploadSet[]>([]);
@@ -207,6 +498,9 @@ const PYQManager: React.FC = () => {
   const [parsingDoc, setParsingDoc] = useState(false);
   const [previewRows, setPreviewRows] = useState<Draft[]>([]);
   const [activeUploadSetId, setActiveUploadSetId] = useState<string | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [pendingCommit, setPendingCommit] = useState<{ file: File; kind: string } | null>(null);
+  const [extractedDocImages, setExtractedDocImages] = useState<string[]>([]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterYear, setFilterYear] = useState('');
@@ -297,6 +591,9 @@ const PYQManager: React.FC = () => {
       if (activeUploadSetId === setId) {
         setActiveUploadSetId(null);
         setPreviewRows([]);
+        setPendingCommit(null);
+        setExtractedDocImages([]);
+        setPreviewModalOpen(false);
       }
       if (expandedSetId === setId) setExpandedSetId(null);
       await load();
@@ -308,8 +605,6 @@ const PYQManager: React.FC = () => {
   };
 
   const handleCsv = async (file: File) => {
-    const setId = await createUploadSet(file, 'csv');
-    if (!setId) return;
     const txt = await file.text();
     const lines = txt.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (lines.length < 2) {
@@ -327,18 +622,25 @@ const PYQManager: React.FC = () => {
       const d = applyMapped(emptyDraft, mapped);
       if (d.question_text.trim()) parsed.push(d);
     }
+    if (parsed.length === 0) {
+      alert('No questions found in CSV.');
+      return;
+    }
+    setActiveUploadSetId(null);
+    setExtractedDocImages([]);
+    setPendingCommit({ file, kind: 'csv' });
     setPreviewRows(parsed);
   };
 
   const handleDoc = async (file: File) => {
     const ext = file.name.toLowerCase();
     const kind = ext.endsWith('.txt') ? 'txt' : 'doc';
-    const setId = await createUploadSet(file, kind);
-    if (!setId) return;
 
     setParsingDoc(true);
+    setExtractedDocImages([]);
     try {
       let rawText = '';
+      let docxImages: string[] = [];
       if (ext.endsWith('.txt')) {
         rawText = await file.text();
       } else {
@@ -350,6 +652,14 @@ const PYQManager: React.FC = () => {
         const buffer = await file.arrayBuffer();
         const out = await mammoth.extractRawText({ arrayBuffer: buffer });
         rawText = out.value || '';
+        if (mammoth.convertToHtml && (ext.endsWith('.docx') || ext.endsWith('.doc'))) {
+          try {
+            const htmlOut = await mammoth.convertToHtml({ arrayBuffer: buffer });
+            docxImages = extractImageSrcsFromHtml(htmlOut.value || '');
+          } catch {
+            docxImages = [];
+          }
+        }
       }
 
       if (!rawText.trim()) {
@@ -370,6 +680,8 @@ const PYQManager: React.FC = () => {
                   'Do not paraphrase or alter factual content. Keep text verbatim wherever present. ' +
                   'If value is missing, use empty string. Output JSON only, no markdown.\n\n' +
                   'Each row must include keys: question_text, option_a, option_b, option_c, option_d, correct_index, explanation, question_type, difficulty, subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url.\n\n' +
+                  'For image_url: use a full http(s) URL if the source states one; if the question references a figure and a data URL or file path appears in the source, copy it verbatim into image_url; otherwise empty string. ' +
+                  'Set question_format to "figure" when the item depends on a diagram.\n\n' +
                   'Allowed question_format: text, figure. ' +
                   'Allowed question_type: mcq, assertion_reason, reason_based, match_list. ' +
                   'Allowed difficulty: easy, medium, hard.\n\n' +
@@ -411,6 +723,13 @@ const PYQManager: React.FC = () => {
       });
       const outText = response.text || '[]';
       const parsed = parseGeminiJson(outText).map(normalizeGeminiRow).filter((r) => r.question_text.trim());
+      if (parsed.length === 0) {
+        alert('No questions extracted from document.');
+        return;
+      }
+      setActiveUploadSetId(null);
+      setPendingCommit({ file, kind });
+      setExtractedDocImages(docxImages);
       setPreviewRows(parsed);
     } catch (e: any) {
       alert(e?.message || 'Failed to parse document with Gemini');
@@ -420,21 +739,34 @@ const PYQManager: React.FC = () => {
   };
 
   const uploadPreviewRows = async () => {
-    if (previewRows.length === 0 || !activeUploadSetId) {
-      if (!activeUploadSetId) alert('Missing upload batch — pick a file again.');
+    if (previewRows.length === 0) {
+      alert('Nothing to upload.');
       return;
     }
     setSaving(true);
     try {
+      let setId = activeUploadSetId;
+      if (!setId) {
+        if (!pendingCommit) {
+          alert('Re-import the file, then save.');
+          return;
+        }
+        const created = await createUploadSet(pendingCommit.file, pendingCommit.kind);
+        if (!created) return;
+        setId = created;
+        setPendingCommit(null);
+      }
       const user = await supabase.auth.getUser();
       const payload = previewRows.map((d) => ({
-        ...toInsertPayload(d, activeUploadSetId),
+        ...toInsertPayload(d, setId),
         uploaded_by: user.data.user?.id || null,
       }));
       const { error } = await supabase.from('pyq_questions_neet').insert(payload);
       if (error) throw error;
       setPreviewRows([]);
       setActiveUploadSetId(null);
+      setPreviewModalOpen(false);
+      setExtractedDocImages([]);
       await load();
       alert('PYQs uploaded.');
     } catch (e: any) {
@@ -447,6 +779,9 @@ const PYQManager: React.FC = () => {
   const cancelPreview = () => {
     setPreviewRows([]);
     setActiveUploadSetId(null);
+    setPendingCommit(null);
+    setExtractedDocImages([]);
+    setPreviewModalOpen(false);
   };
 
   const rowMatchesFilters = useCallback(
@@ -592,7 +927,13 @@ const PYQManager: React.FC = () => {
 
   const filteredRows = useMemo(() => rows.filter((r) => rowMatchesFilters(r)), [rows, rowMatchesFilters]);
 
-  const previewCountText = useMemo(() => `${previewRows.length} parsed rows`, [previewRows.length]);
+  const previewSourceLabel = useMemo(
+    () =>
+      pendingCommit?.file.name ||
+      (activeUploadSetId ? setNameById.get(activeUploadSetId) || null : null) ||
+      null,
+    [pendingCommit, activeUploadSetId, setNameById]
+  );
 
   const clearFilters = () => {
     setSearchQuery('');
@@ -674,110 +1015,187 @@ const PYQManager: React.FC = () => {
 
   return (
     <div className="space-y-4 p-4 md:p-5">
-      <div className="rounded-lg border border-zinc-200 bg-white p-4">
-        <h3 className="text-sm font-semibold text-zinc-900">Upload and manage NEET PYQs</h3>
-        <p className="mt-1 text-[12px] text-zinc-500">
-          Each file upload creates a <strong>batch</strong>. Parse preview, then commit. Filter batches and questions by year,
-          subject, type, and more.
+      <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+        <h3 className="text-base font-semibold text-zinc-900">PYQ import</h3>
+        <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
+          Upload a file first. After parsing, every question appears in the table below. Use <strong>Test paper preview</strong> to
+          see print-style layout and figures, then <strong>Save to bank</strong> when ready (no batch is stored until then).
         </p>
-      </div>
 
-      <div className="space-y-3 rounded-lg border border-zinc-200 bg-white p-4">
-        <p className="text-[11px] font-black uppercase tracking-widest text-zinc-500">Bulk upload with preview</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={downloadCsvTemplate}
-            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100"
-          >
-            <iconify-icon icon="mdi:download-outline" />
-            Download CSV template
-          </button>
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">
-            <iconify-icon icon="mdi:file-delimited-outline" />
-            Import CSV
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void handleCsv(f);
-              }}
-            />
-          </label>
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">
-            <iconify-icon icon="mdi:file-document-outline" />
-            Import DOC/DOCX/TXT via Gemini
-            <input
-              type="file"
-              accept=".doc,.docx,.txt"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void handleDoc(f);
-              }}
-            />
-          </label>
-        </div>
-        {parsingDoc && <p className="text-[12px] text-indigo-600">Parsing document with Gemini...</p>}
-        <p className="text-[12px] text-zinc-500">{previewCountText}</p>
-        {activeUploadSetId && previewRows.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] text-amber-900">
-            <span>
-              Batch <span className="font-mono">{setNameById.get(activeUploadSetId) || '—'}</span> — not saved yet.
-            </span>
-            <button type="button" onClick={cancelPreview} className="font-semibold underline">
-              Discard preview
-            </button>
-          </div>
+        {previewRows.length === 0 ? (
+          <>
+            <div className="mt-6 grid gap-4 sm:grid-cols-3">
+              <div className="flex flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-zinc-50/60 p-5 transition-colors hover:border-indigo-200 hover:bg-indigo-50/40">
+                <iconify-icon icon="mdi:table-arrow-down" width="28" className="text-indigo-500" />
+                <p className="mt-2 text-sm font-semibold text-zinc-900">CSV template</p>
+                <p className="mt-1 text-[11px] leading-snug text-zinc-500">Download the column layout, fill your sheet, then import.</p>
+                <button
+                  type="button"
+                  onClick={downloadCsvTemplate}
+                  className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[12px] font-semibold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                >
+                  <iconify-icon icon="mdi:download-outline" width="18" />
+                  Download template
+                </button>
+              </div>
+
+              <label className="flex cursor-pointer flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-emerald-300 hover:bg-emerald-50/30">
+                <iconify-icon icon="mdi:file-delimited-outline" width="28" className="text-emerald-600" />
+                <p className="mt-2 text-sm font-semibold text-zinc-900">Import CSV</p>
+                <p className="mt-1 text-[11px] leading-snug text-zinc-500">Comma-separated file with PYQ columns.</p>
+                <span className="mt-4 inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-[12px] font-semibold text-white pointer-events-none">
+                  Choose CSV file
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleCsv(f);
+                  }}
+                />
+              </label>
+
+              <label className="flex cursor-pointer flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-violet-300 hover:bg-violet-50/30">
+                <iconify-icon icon="mdi:file-document-outline" width="28" className="text-violet-600" />
+                <p className="mt-2 text-sm font-semibold text-zinc-900">Import DOC · DOCX · TXT</p>
+                <p className="mt-1 text-[11px] leading-snug text-zinc-500">Text extracted locally; questions structured with Gemini.</p>
+                <span className="mt-4 inline-flex items-center justify-center rounded-lg bg-violet-600 px-3 py-2 text-[12px] font-semibold text-white pointer-events-none">
+                  Choose document
+                </span>
+                <input
+                  type="file"
+                  accept=".doc,.docx,.txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleDoc(f);
+                  }}
+                />
+              </label>
+            </div>
+            {parsingDoc && (
+              <div className="mt-5 flex items-center gap-2 text-[13px] text-violet-700">
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
+                Parsing with Gemini…
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="mt-6 flex flex-col gap-4 rounded-xl border border-zinc-200 bg-zinc-50/90 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-zinc-900" title={previewSourceLabel || ''}>
+                  {previewSourceLabel || 'Imported file'}
+                </p>
+                <p className="mt-0.5 text-[12px] text-zinc-600">
+                  <span className="font-mono font-semibold text-indigo-700">{previewRows.length}</span> questions · not saved to bank
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPreviewModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-[12px] font-semibold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                >
+                  <iconify-icon icon="mdi:book-open-page-variant-outline" width="18" />
+                  Test paper preview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void uploadPreviewRows()}
+                  disabled={saving || previewRows.length === 0 || (!pendingCommit && !activeUploadSetId)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-[12px] font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {saving ? 'Saving…' : 'Save to bank'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm('Discard this import and start over?')) cancelPreview();
+                  }}
+                  className="px-2 py-2 text-[12px] font-medium text-zinc-500 underline decoration-zinc-300 hover:text-zinc-800"
+                >
+                  New import
+                </button>
+              </div>
+            </div>
+            {parsingDoc && (
+              <div className="mt-3 flex items-center gap-2 text-[13px] text-violet-700">
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
+                Parsing…
+              </div>
+            )}
+
+            <div className="mt-5 overflow-hidden rounded-xl border border-zinc-200 bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2.5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-600">All extracted questions</p>
+                <button
+                  type="button"
+                  onClick={() => setPreviewModalOpen(true)}
+                  className="text-[11px] font-semibold text-indigo-700 hover:text-indigo-900"
+                >
+                  Open test paper view →
+                </button>
+              </div>
+              <div className="max-h-[min(70vh,600px)] overflow-auto">
+                <table className="w-full text-left text-[11px]">
+                  <thead className="sticky top-0 z-10 bg-zinc-50 text-zinc-600 shadow-sm">
+                    <tr>
+                      <th className="whitespace-nowrap px-2 py-2">#</th>
+                      <th className="min-w-[200px] px-2 py-2">Question</th>
+                      <th className="px-2 py-2">Img</th>
+                      <th className="px-2 py-2">Format</th>
+                      <th className="px-2 py-2">Type</th>
+                      <th className="px-2 py-2">Subject</th>
+                      <th className="px-2 py-2">Chapter</th>
+                      <th className="px-2 py-2">Difficulty</th>
+                      <th className="px-2 py-2">Year</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewRows.map((r, i) => (
+                      <tr key={`${i}-${r.question_text.slice(0, 12)}`} className="border-t border-zinc-100">
+                        <td className="whitespace-nowrap px-2 py-2 text-zinc-500">{i + 1}</td>
+                        <td className="px-2 py-2 text-zinc-800">
+                          <MeasuredSnippet
+                            text={r.question_text.length > 280 ? `${r.question_text.slice(0, 280)}…` : r.question_text}
+                            className="break-words [overflow-wrap:anywhere] leading-snug"
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          {r.image_url?.trim() ? (
+                            <img src={r.image_url.trim()} alt="" className="h-12 w-16 rounded border border-zinc-200 object-cover" />
+                          ) : (
+                            <span className="text-zinc-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-zinc-600">{r.question_format || 'text'}</td>
+                        <td className="px-2 py-2 text-zinc-600">{r.question_type || 'mcq'}</td>
+                        <td className="px-2 py-2 text-zinc-600">{r.subject_name || '—'}</td>
+                        <td className="px-2 py-2 text-zinc-600">{r.chapter_name || '—'}</td>
+                        <td className="px-2 py-2 text-zinc-600">{r.difficulty || '—'}</td>
+                        <td className="px-2 py-2 text-zinc-600">{r.year || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
         )}
-        <button
-          type="button"
-          onClick={() => void uploadPreviewRows()}
-          disabled={saving || previewRows.length === 0 || !activeUploadSetId}
-          className="rounded-md bg-indigo-600 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700 disabled:opacity-60"
-        >
-          Upload parsed rows
-        </button>
-
-        <div className="max-h-[280px] overflow-auto rounded-md border border-zinc-200">
-          <table className="w-full text-left text-[11px]">
-            <thead className="sticky top-0 bg-zinc-50 text-zinc-600">
-              <tr>
-                <th className="px-2 py-1.5">Question</th>
-                <th className="px-2 py-1.5">Format</th>
-                <th className="px-2 py-1.5">Type</th>
-                <th className="px-2 py-1.5">Subject</th>
-                <th className="px-2 py-1.5">Chapter</th>
-                <th className="px-2 py-1.5">Difficulty</th>
-                <th className="px-2 py-1.5">Year</th>
-              </tr>
-            </thead>
-            <tbody>
-              {previewRows.length === 0 ? (
-                <tr>
-                  <td className="px-2 py-4 text-zinc-400" colSpan={7}>
-                    No parsed rows yet.
-                  </td>
-                </tr>
-              ) : (
-                previewRows.map((r, i) => (
-                  <tr key={`${i}-${r.question_text.slice(0, 12)}`} className="border-t border-zinc-100">
-                    <td className="px-2 py-1.5 text-zinc-700">{r.question_text.slice(0, 90)}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.question_format || 'text'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.question_type || 'mcq'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.subject_name || '-'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.chapter_name || '-'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.difficulty || '-'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.year || '-'}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
       </div>
+
+      <PyqPreviewModal
+        open={previewModalOpen && previewRows.length > 0}
+        onClose={() => setPreviewModalOpen(false)}
+        drafts={previewRows}
+        extractedDocImages={extractedDocImages}
+        sourceLabel={previewSourceLabel}
+        saving={saving}
+        onCommit={uploadPreviewRows}
+      />
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4">
         <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -991,7 +1409,10 @@ const PYQManager: React.FC = () => {
                         <ul className="space-y-1.5 text-[10px] text-zinc-700">
                           {questionsForExpanded.slice(0, 40).map((q) => (
                             <li key={q.id} className="border-b border-zinc-100/80 pb-1.5 last:border-0">
-                              <span className="line-clamp-2">{q.question_text}</span>
+                              <MeasuredSnippet
+                                text={q.question_text}
+                                className="line-clamp-2 break-words [overflow-wrap:anywhere]"
+                              />
                               <span className="mt-0.5 block text-zinc-500">
                                 {q.year ?? '—'} · {q.subject_name || '—'} · {q.question_type || '—'}
                               </span>
@@ -1043,7 +1464,12 @@ const PYQManager: React.FC = () => {
                     <td className="max-w-[120px] truncate px-2 py-1.5 text-zinc-500" title={r.upload_set_id ? setNameById.get(r.upload_set_id) : ''}>
                       {r.upload_set_id ? setNameById.get(r.upload_set_id)?.slice(0, 24) || '—' : '—'}
                     </td>
-                    <td className="px-2 py-1.5 text-zinc-700">{r.question_text.slice(0, 100)}</td>
+                    <td className="px-2 py-1.5 text-zinc-700">
+                      <MeasuredSnippet
+                        text={r.question_text.slice(0, 100)}
+                        className="break-words [overflow-wrap:anywhere]"
+                      />
+                    </td>
                     <td className="px-2 py-1.5 text-zinc-600">{r.subject_name || '-'}</td>
                     <td className="px-2 py-1.5 text-zinc-600">{r.question_type || '-'}</td>
                     <td className="px-2 py-1.5 text-zinc-600">{r.year ?? '-'}</td>
