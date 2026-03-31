@@ -111,6 +111,41 @@ function sortDraftsExamOrder(rows: Draft[]): Draft[] {
 
 type DocxEmbeddedImage = { data: string; mimeType: string };
 
+/**
+ * `innerText` skips <img> nodes, so Mammoth's IMAGE_N placeholders never reached Gemini.
+ * Walk the DOM and insert newline + token at each embedded figure.
+ */
+function htmlBodyToPlainTextWithImagePlaceholders(body: HTMLElement): string {
+  const parts: string[] = [];
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parts.push(node.textContent || '');
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as Element;
+    const tag = el.tagName.toUpperCase();
+    if (tag === 'IMG') {
+      const src = (el as HTMLImageElement).getAttribute('src')?.trim() || '';
+      if (/^IMAGE_\d+$/i.test(src)) {
+        parts.push(`\n${src}\n`);
+      }
+      return;
+    }
+    if (tag === 'BR') {
+      parts.push('\n');
+      return;
+    }
+    el.childNodes.forEach(walk);
+  };
+  walk(body);
+  return parts
+    .join('')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function parsePyqDocxBuffer(arrayBuffer: ArrayBuffer): Promise<{ text: string; images: DocxEmbeddedImage[] }> {
   const mammoth = (window as any)?.mammoth;
   const images: DocxEmbeddedImage[] = [];
@@ -128,7 +163,8 @@ async function parsePyqDocxBuffer(arrayBuffer: ArrayBuffer): Promise<{ text: str
   );
   const parser = new DOMParser();
   const doc = parser.parseFromString(result.value || '', 'text/html');
-  const txt = doc.body?.innerText || '';
+  const body = doc.body;
+  const txt = body ? htmlBodyToPlainTextWithImagePlaceholders(body) : '';
   return { text: txt, images };
 }
 
@@ -150,6 +186,26 @@ function resolveDraftDocImage(d: Draft, images: DocxEmbeddedImage[]): Draft {
     image_url: explicit || dataUrl,
     question_format: nextFormat,
   };
+}
+
+/**
+ * If the model left doc_image_index unset but the DOCX has exactly one image and only one row
+ * could use it, bind IMAGE_0 so preview/upload still work.
+ */
+function attachSingleOrphanDocxImage(rows: Draft[], images: DocxEmbeddedImage[]): Draft[] {
+  if (images.length !== 1) return rows;
+  const unbound: number[] = [];
+  rows.forEach((r, i) => {
+    const hasHttp = /^https?:\/\//i.test(r.image_url?.trim() || '');
+    const hasData = r.image_url?.trim().startsWith('data:');
+    const idxOk = r.doc_image_index != null && r.doc_image_index >= 0;
+    if (!hasHttp && !hasData && !idxOk) unbound.push(i);
+  });
+  if (unbound.length !== 1) return rows;
+  const i = unbound[0];
+  return rows.map((r, j) =>
+    j === i ? resolveDraftDocImage({ ...r, doc_image_index: 0 }, images) : r
+  );
 }
 
 async function ensurePyqImagePublicUrl(
@@ -297,6 +353,71 @@ const applyMapped = (base: Draft, mapped: Record<string, string>) => ({
     '',
 });
 
+/** Printed paper index at the start of a stem (e.g. "101. Text", "102) Match…"). */
+const LEADING_STEM_QNUM = /^(\d{1,4})\s*[.)]\s+/;
+
+/**
+ * If Gemini leaves source_question_number empty but the stem begins with the printed
+ * question number (common in NEET DOCX: "101.", "102."), copy it into the field and
+ * strip the duplicate prefix from plain-text stems; for HTML stems, set field only.
+ */
+function ensureSourceQuestionNumberFromStem(d: Draft): Draft {
+  if (d.source_question_number?.trim()) return d;
+
+  const raw = (d.question_text || '').trim();
+  if (!raw) return d;
+
+  const htmlStem = /^[\s\uFEFF]*</i.test(raw);
+
+  if (!htmlStem) {
+    const m = raw.match(LEADING_STEM_QNUM);
+    if (m) {
+      const num = m[1];
+      const rest = raw.slice(m[0].length).trim();
+      if (rest.length > 0) {
+        return { ...d, source_question_number: num, question_text: rest };
+      }
+      return { ...d, source_question_number: num };
+    }
+    return d;
+  }
+
+  const plain = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const m2 = plain.match(LEADING_STEM_QNUM);
+  if (m2) {
+    return { ...d, source_question_number: m2[1] };
+  }
+  return d;
+}
+
+/**
+ * When the model drops the leading "101." from question_text but it still exists in the
+ * extracted DOCX text, find this stem in rawText and take the nearest preceding "101." line.
+ */
+function applySourceQuestionNumbersFromRawText(rows: Draft[], rawText: string): Draft[] {
+  if (!rawText.trim()) return rows;
+  let searchFrom = 0;
+  return rows.map((d) => {
+    if (d.source_question_number?.trim()) return d;
+    const plain = (d.question_text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (plain.length < 12) return d;
+    const needleLen = Math.min(56, plain.length);
+    const needle = plain.slice(0, needleLen);
+    let idx = rawText.indexOf(needle, searchFrom);
+    if (idx === -1) idx = rawText.indexOf(needle);
+    if (idx === -1) return d;
+    searchFrom = Math.max(searchFrom, idx + Math.max(needleLen, 20));
+    const before = rawText.slice(Math.max(0, idx - 600), idx);
+    const lines = before.split(/\r?\n/);
+    for (let li = lines.length - 1; li >= 0; li--) {
+      const line = lines[li].trim();
+      const m = line.match(/^(\d{1,4})\s*[.)]\s/);
+      if (m) return { ...d, source_question_number: m[1] };
+    }
+    return d;
+  });
+}
+
 const normalizeGeminiRow = (row: GeminiDocRow): Draft => ({
   ...emptyDraft,
   question_text: scrubFigurePlaceholders(String(row.question_text || '')),
@@ -394,11 +515,14 @@ function buildPyqGeminiUserPrompt(fileName: string, rawText: string): string {
     'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
     'Do not paraphrase question facts. Keep stems and options verbatim from the source when present. Use empty string for missing optional fields.\n\n' +
     'Multi-part papers (Section A/B, Part I/II, etc.): for each row set paper_part to the section label exactly as printed (e.g. "Section A", "Part II"). ' +
-    'source_question_number is mandatory: copy the question number EXACTLY as on the paper for that item (e.g. 1, 09, 15, 90, 121, 4a, 12(i)). ' +
-    'Never renumber 1,2,3… by your processing order. If the paper shows a range (e.g. Questions 121–125), use 121,122,123,124,125 in source_question_number for each row respectively. ' +
-    'If the stem still includes the printed number prefix (e.g. "121."), you may keep it in question_text when it is part of the source wording. ' +
+    'source_question_number is mandatory on EVERY row: copy the question number EXACTLY as on the paper (e.g. 1, 09, 101, 102, 121, 4a, 12(i)). ' +
+    'When a stem starts like "101. The text..." or "102) Match…", set source_question_number to 101 or 102 — never leave it empty. ' +
+    'Never renumber 1,2,3… by extraction order; papers often start at 101 or 180 — keep those values. ' +
+    'If the paper shows a range (e.g. Questions 121–125), use 121,122,123,124,125 in source_question_number for each row respectively. ' +
+    'You may omit repeating the number at the start of question_text if it is redundant, but you must still set source_question_number. ' +
     'Do not paste section headings or instruction blocks into question_text—only the item stem.\n\n' +
-    'Figures: SOURCE TEXT contains placeholders IMAGE_0, IMAGE_1, … at each embedded figure position. For a question that uses a figure, set doc_image_index to that integer (0-based). ' +
+    'Figures: SOURCE TEXT contains lines with IMAGE_0, IMAGE_1, … where the DOCX had an embedded picture — these tokens ARE visible in SOURCE TEXT (img innerText must be respected). ' +
+    'The question row that corresponds to that item must set doc_image_index to that same integer (0-based) and question_format "figure" when the item depends on the diagram. ' +
     'Do not include IMAGE_N tokens in question_text or options. If there is no figure for the item, set doc_image_index to -1. ' +
     'match_list / column matching: you may include a simple HTML <table>…</table> inside question_text for two-column list layouts; keep only table/tr/th/td text, no scripts. ' +
     'Else use standard option fields for codes / matches.\n\n' +
@@ -518,10 +642,16 @@ async function runPyqGeminiExtract(file: File, modelId: string): Promise<Draft[]
     },
   });
   const outText = response.text || '[]';
-  return parseGeminiJson(outText)
+  const base = parseGeminiJson(outText)
     .map(normalizeGeminiRow)
-    .filter((r) => r.question_text.trim())
-    .map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
+    .map(ensureSourceQuestionNumberFromStem)
+    .filter((r) => r.question_text.trim());
+  const withPaperNums = applySourceQuestionNumbersFromRawText(base, rawText);
+  let withFigures = withPaperNums.map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
+  if (docxImages.length > 0) {
+    withFigures = attachSingleOrphanDocxImage(withFigures, docxImages);
+  }
+  return withFigures;
 }
 
 function formatPendingCommitLabel(files: File[]): string {
@@ -1034,7 +1164,7 @@ const PYQManager: React.FC = () => {
       headers.forEach((h, idx) => {
         mapped[h] = cells[idx] || '';
       });
-      const d = applyMapped(emptyDraft, mapped);
+      const d = ensureSourceQuestionNumberFromStem(applyMapped(emptyDraft, mapped));
       if (d.question_text.trim()) parsed.push(d);
     }
     if (parsed.length === 0) {
