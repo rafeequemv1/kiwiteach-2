@@ -5,6 +5,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
 import { parsePseudoLatexAndMathAllowTables } from '../../utils/latexParser';
+import { parseDocxBufferWithEmbeddedImages, type DocxEmbeddedImage } from '../../utils/docxFigureExtract';
 
 interface PYQRow {
   id: string;
@@ -109,63 +110,9 @@ function sortDraftsExamOrder(rows: Draft[]): Draft[] {
   });
 }
 
-type DocxEmbeddedImage = { data: string; mimeType: string };
-
-/**
- * `innerText` skips <img> nodes, so Mammoth's IMAGE_N placeholders never reached Gemini.
- * Walk the DOM and insert newline + token at each embedded figure.
- */
-function htmlBodyToPlainTextWithImagePlaceholders(body: HTMLElement): string {
-  const parts: string[] = [];
-  const walk = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      parts.push(node.textContent || '');
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const el = node as Element;
-    const tag = el.tagName.toUpperCase();
-    if (tag === 'IMG') {
-      const src = (el as HTMLImageElement).getAttribute('src')?.trim() || '';
-      if (/^IMAGE_\d+$/i.test(src)) {
-        parts.push(`\n${src}\n`);
-      }
-      return;
-    }
-    if (tag === 'BR') {
-      parts.push('\n');
-      return;
-    }
-    el.childNodes.forEach(walk);
-  };
-  walk(body);
-  return parts
-    .join('')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 async function parsePyqDocxBuffer(arrayBuffer: ArrayBuffer): Promise<{ text: string; images: DocxEmbeddedImage[] }> {
   const mammoth = (window as any)?.mammoth;
-  const images: DocxEmbeddedImage[] = [];
-  const result = await mammoth.convertToHtml(
-    { arrayBuffer },
-    {
-      convertImage: mammoth.images.imgElement((image: any) =>
-        image.read('base64').then((b64: string) => {
-          const mimeType = image.contentType || 'image/png';
-          images.push({ data: b64, mimeType });
-          return { src: `IMAGE_${images.length - 1}` };
-        })
-      ),
-    }
-  );
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(result.value || '', 'text/html');
-  const body = doc.body;
-  const txt = body ? htmlBodyToPlainTextWithImagePlaceholders(body) : '';
-  return { text: txt, images };
+  return parseDocxBufferWithEmbeddedImages(arrayBuffer, mammoth);
 }
 
 function resolveDraftDocImage(d: Draft, images: DocxEmbeddedImage[]): Draft {

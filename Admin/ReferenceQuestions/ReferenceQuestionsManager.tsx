@@ -4,6 +4,7 @@ import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
+import { parseDocxBufferWithEmbeddedImages, type DocxEmbeddedImage } from '../../utils/docxFigureExtract';
 
 declare const mammoth: any;
 
@@ -53,9 +54,25 @@ type Draft = {
   chapter_name: string;
   topic_tag: string;
   image_index?: number | null;
+  import_file_ordinal?: number;
 };
 
 type GeminiDocRow = Partial<Draft>;
+
+function getAdditionalDocPaths(meta: Record<string, unknown> | null): string[] {
+  const raw = meta?.additional_doc_paths;
+  return Array.isArray(raw) ? raw.filter((p): p is string => typeof p === 'string' && p.length > 0) : [];
+}
+
+function allDocPaths(set: SetRow): string[] {
+  return [set.doc_path, ...getAdditionalDocPaths(set.metadata)];
+}
+
+function formatRefPendingLabel(files: File[]): string {
+  if (files.length === 0) return 'import';
+  if (files.length === 1) return files[0].name;
+  return `${files[0].name} (+${files.length - 1} more)`;
+}
 
 function cleanJson(txt: string) {
   return txt
@@ -69,6 +86,204 @@ function cleanJson(txt: string) {
 function safeInt(v: unknown, fallback = 0) {
   const n = typeof v === 'number' ? v : Number(String(v ?? ''));
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function scrubFigurePlaceholders(text: string): string {
+  return (text || '')
+    .replace(/\bIMAGE_\d+\b/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function attachSingleOrphanRefImage(rows: Draft[], images: DocxEmbeddedImage[]): Draft[] {
+  if (images.length !== 1) return rows;
+  const unbound: number[] = [];
+  rows.forEach((r, i) => {
+    const idxOk = r.image_index != null && r.image_index >= 0;
+    if (!idxOk) unbound.push(i);
+  });
+  if (unbound.length !== 1) return rows;
+  const i = unbound[0];
+  return rows.map((r, j) => (j === i ? { ...r, image_index: 0 } : r));
+}
+
+function buildRefGeminiUserPrompt(fileName: string, docText: string): string {
+  return (
+    `You are converting Mathpix-exported questions into strict JSON.\n\n` +
+    `Return ONLY valid JSON (no markdown) as an array of objects with:\n` +
+    `- question_text (string)\n` +
+    `- options (array of 4 strings if MCQ; otherwise empty array)\n` +
+    `- correct_index (0-3 for MCQ; 0 if unknown)\n` +
+    `- explanation (string; empty allowed)\n` +
+    `- question_type (mcq|reasoning|matching|statements)\n` +
+    `- question_format (text|with_figure|table|multi_part)\n` +
+    `- difficulty (Easy|Medium|Hard)\n` +
+    `- class_name, subject_name, chapter_name, topic_tag (strings; infer when possible; empty allowed)\n` +
+    `- image_index (integer or null): 0-based index matching IMAGE_N in SOURCE TEXT when the item uses that figure; otherwise null\n\n` +
+    `Figures: SOURCE TEXT contains lines IMAGE_0, IMAGE_1, … where the DOCX had an embedded picture — these tokens ARE visible in SOURCE TEXT. ` +
+    `Set image_index to that same integer when the question uses the diagram; use null if no figure. ` +
+    `Do not include IMAGE_N tokens in question_text or options.\n\n` +
+    `Rules:\n` +
+    `- Keep wording as close to source as possible.\n` +
+    `- If options are labeled A/B/C/D, map to array in that order.\n` +
+    `- Do not hallucinate missing answers; use correct_index=0 if unknown.\n\n` +
+    `Source filename: ${fileName}\n\nSOURCE TEXT:\n${docText}`
+  );
+}
+
+const REF_GEMINI_FIXED_PROMPT_CHARS = buildRefGeminiUserPrompt('', '').length;
+
+/** USD → INR for UI estimates only. */
+const REF_USD_INR = 87;
+
+const REF_MODEL_STORAGE_KEY = 'kiwiteach_reference_gemini_model';
+
+type RefGeminiModelOption = {
+  id: string;
+  label: string;
+  blurb: string;
+  inputUsdPer1M: number;
+  outputUsdPer1M: number;
+  bestValue: boolean;
+};
+
+const REF_GEMINI_MODEL_OPTIONS: RefGeminiModelOption[] = [
+  {
+    id: 'gemini-flash-lite-latest',
+    label: 'Gemini Flash Lite',
+    blurb: 'Lowest cost — best for bulk parsing',
+    inputUsdPer1M: 0.05,
+    outputUsdPer1M: 0.2,
+    bestValue: true,
+  },
+  {
+    id: 'gemini-3-flash-preview',
+    label: 'Gemini 3 Flash (preview)',
+    blurb: 'Balanced quality and speed',
+    inputUsdPer1M: 0.15,
+    outputUsdPer1M: 0.6,
+    bestValue: false,
+  },
+];
+
+function estimateSingleRefParseInr(
+  sourceChars: number,
+  fileNameLen: number,
+  model: Pick<RefGeminiModelOption, 'inputUsdPer1M' | 'outputUsdPer1M'>,
+  usdInr: number
+) {
+  const inputTok = Math.ceil((REF_GEMINI_FIXED_PROMPT_CHARS + fileNameLen + sourceChars) / 4);
+  const outputTok = Math.min(8192, Math.max(800, Math.ceil(inputTok * 0.15)));
+  const usd = (inputTok / 1e6) * model.inputUsdPer1M + (outputTok / 1e6) * model.outputUsdPer1M;
+  return { inr: usd * usdInr, inputTok, outputTok };
+}
+
+async function getDocCharCountForEstimate(file: File): Promise<number> {
+  const ext = file.name.toLowerCase();
+  if (ext.endsWith('.txt')) return (await file.text()).length;
+  const m = (window as any)?.mammoth;
+  if (!m?.extractRawText) return 0;
+  const buf = await file.arrayBuffer();
+  const out = await m.extractRawText({ arrayBuffer: buf });
+  return (out.value || '').length;
+}
+
+async function downloadRefDocPath(path: string): Promise<ArrayBuffer> {
+  const { data, error: e } = await supabase.storage.from('reference-question-docs').download(path);
+  if (e) throw e;
+  return await data.arrayBuffer();
+}
+
+function normalizeGeminiDraft(r: GeminiDocRow): Draft {
+  const opts = Array.isArray(r.options) ? r.options.map((x) => scrubFigurePlaceholders(String(x))) : [];
+  return {
+    question_text: scrubFigurePlaceholders(String(r.question_text || '').trim()),
+    options: opts,
+    correct_index: Math.max(0, Math.min(3, safeInt((r as any).correct_index, 0))),
+    explanation: String(r.explanation || '').trim(),
+    question_type: String(r.question_type || 'mcq').trim().toLowerCase(),
+    question_format: String(r.question_format || 'text').trim().toLowerCase() || 'text',
+    difficulty: String(r.difficulty || 'Medium').trim(),
+    class_name: String(r.class_name || '').trim(),
+    subject_name: String(r.subject_name || '').trim(),
+    chapter_name: String(r.chapter_name || '').trim(),
+    topic_tag: String(r.topic_tag || '').trim(),
+    image_index: (() => {
+      const v = r.image_index;
+      if (v == null || String(v) === '' || Number(v) === -1) return null;
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+    })(),
+  };
+}
+
+async function runGeminiExtract(docText: string, fileName: string, modelId: string): Promise<Draft[]> {
+  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
+  const prompt = buildRefGeminiUserPrompt(fileName, docText);
+
+  const response = await ai.models.generateContent({
+    model: modelId,
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question_text: { type: Type.STRING },
+            options: { type: Type.ARRAY, items: { type: Type.STRING } },
+            correct_index: { type: Type.NUMBER },
+            explanation: { type: Type.STRING },
+            question_type: { type: Type.STRING },
+            question_format: { type: Type.STRING },
+            difficulty: { type: Type.STRING },
+            class_name: { type: Type.STRING },
+            subject_name: { type: Type.STRING },
+            chapter_name: { type: Type.STRING },
+            topic_tag: { type: Type.STRING },
+            image_index: { type: Type.NUMBER },
+          },
+          required: ['question_text', 'options', 'correct_index', 'explanation', 'question_type', 'difficulty'],
+        },
+      },
+    },
+  });
+
+  const raw = cleanJson(response.text || '[]');
+  const parsed = JSON.parse(raw) as GeminiDocRow[];
+  return (Array.isArray(parsed) ? parsed : []).map(normalizeGeminiDraft).filter((x) => x.question_text.length > 0);
+}
+
+async function runRefGeminiOnBuffer(buf: ArrayBuffer, displayName: string, modelId: string): Promise<{ drafts: Draft[]; imageCount: number }> {
+  const { text, images } = await parseDocxBufferWithEmbeddedImages(buf, mammoth);
+  if (!text.trim()) throw new Error(`No text extracted from ${displayName}`);
+  let drafts = await runGeminiExtract(text, displayName, modelId);
+  drafts = attachSingleOrphanRefImage(drafts, images);
+  return { drafts, imageCount: images.length };
+}
+
+async function runRefGeminiOnDocPaths(paths: string[], modelId: string): Promise<Draft[]> {
+  let offset = 0;
+  const combined: Draft[] = [];
+  let fileOrd = 0;
+  for (const pth of paths) {
+    const displayName = pth.split('/').pop() || pth;
+    const buf = await downloadRefDocPath(pth);
+    const { drafts, imageCount } = await runRefGeminiOnBuffer(buf, displayName, modelId);
+    for (const d of drafts) {
+      combined.push({
+        ...d,
+        image_index: d.image_index == null ? null : d.image_index + offset,
+        import_file_ordinal: fileOrd,
+      });
+    }
+    offset += imageCount;
+    fileOrd += 1;
+  }
+  return combined;
 }
 
 function toPublicUrl(path: string) {
@@ -134,110 +349,12 @@ const MeasuredSnippet: React.FC<{
   );
 };
 
-async function parseDocxBuffer(arrayBuffer: ArrayBuffer): Promise<{
-  text: string;
-  images: { data: string; mimeType: string }[];
-}> {
-  const images: { data: string; mimeType: string }[] = [];
-  const result = await mammoth.convertToHtml(
-    { arrayBuffer },
-    {
-      convertImage: mammoth.images.imgElement((image: any) =>
-        image.read('base64').then((b64: string) => {
-          const mimeType = image.contentType || 'image/png';
-          images.push({ data: b64, mimeType });
-          return { src: `IMAGE_${images.length - 1}` };
-        })
-      ),
-    }
-  );
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(result.value || '', 'text/html');
-  const txt = doc.body?.innerText || '';
-  return { text: txt, images };
-}
-
-async function runGeminiExtract(docText: string): Promise<Draft[]> {
-  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
-  const prompt = `You are converting Mathpix-exported questions into strict JSON.
-
-Return ONLY valid JSON (no markdown) as an array of objects with:
-- question_text (string)
-- options (array of 4 strings if MCQ; otherwise empty array)
-- correct_index (0-3 for MCQ; 0 if unknown)
-- explanation (string; empty allowed)
-- question_type (mcq|reasoning|matching|statements)
-- question_format (text|with_figure|table|multi_part) — text-only, uses figure, table layout, or multiple parts
-- difficulty (Easy|Medium|Hard)
-- class_name, subject_name, chapter_name, topic_tag (strings; infer from context when possible; empty allowed)
-- image_index (integer or null). If the question references an embedded image, set image_index to the number in the placeholder (e.g. IMAGE_3 => 3). Otherwise null.
-
-Rules:
-- Keep wording as close to source as possible.
-- If options are labeled A/B/C/D, map to array in that order.
-- If answer is given as (A)/(B)/(C)/(D), set correct_index accordingly.
-- Do not hallucinate missing answers; use correct_index=0 if unknown.
-
-SOURCE TEXT:
-${docText}`;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            question_text: { type: Type.STRING },
-            options: { type: Type.ARRAY, items: { type: Type.STRING } },
-            correct_index: { type: Type.NUMBER },
-            explanation: { type: Type.STRING },
-            question_type: { type: Type.STRING },
-            question_format: { type: Type.STRING },
-            difficulty: { type: Type.STRING },
-            class_name: { type: Type.STRING },
-            subject_name: { type: Type.STRING },
-            chapter_name: { type: Type.STRING },
-            topic_tag: { type: Type.STRING },
-            image_index: { type: Type.NUMBER },
-          },
-          required: ['question_text', 'options', 'correct_index', 'explanation', 'question_type', 'difficulty'],
-        },
-      },
-    },
-  });
-
-  const raw = cleanJson(response.text || '[]');
-  const parsed = JSON.parse(raw) as GeminiDocRow[];
-  return (Array.isArray(parsed) ? parsed : []).map((r) => ({
-    question_text: String(r.question_text || '').trim(),
-    options: Array.isArray(r.options) ? r.options.map((x) => String(x)) : [],
-    correct_index: Math.max(0, Math.min(3, safeInt((r as any).correct_index, 0))),
-    explanation: String(r.explanation || '').trim(),
-    question_type: String(r.question_type || 'mcq').trim().toLowerCase(),
-    question_format: String(r.question_format || 'text').trim().toLowerCase() || 'text',
-    difficulty: String(r.difficulty || 'Medium').trim(),
-    class_name: String(r.class_name || '').trim(),
-    subject_name: String(r.subject_name || '').trim(),
-    chapter_name: String(r.chapter_name || '').trim(),
-    topic_tag: String(r.topic_tag || '').trim(),
-    image_index:
-      r.image_index == null || String(r.image_index) === ''
-        ? null
-        : Math.max(0, safeInt(r.image_index, 0)),
-  })).filter((x) => x.question_text.length > 0);
-}
-
 const ReferenceQuestionsManager: React.FC = () => {
   const [sets, setSets] = useState<SetRow[]>([]);
   const [rows, setRows] = useState<RefRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [parsing, setParsing] = useState(false);
+  const [parsingDoc, setParsingDoc] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSet, setActiveSet] = useState<SetRow | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
@@ -245,7 +362,93 @@ const ReferenceQuestionsManager: React.FC = () => {
   const [analyzingSetId, setAnalyzingSetId] = useState<string | null>(null);
   const [committingSetId, setCommittingSetId] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [docImportQueue, setDocImportQueue] = useState<File[]>([]);
+  const [docQueueStats, setDocQueueStats] = useState<{ name: string; chars: number }[]>([]);
+  const [docQueueScanning, setDocQueueScanning] = useState(false);
+  const [stagedPreview, setStagedPreview] = useState<Draft[]>([]);
+  const [pendingPublishFiles, setPendingPublishFiles] = useState<File[] | null>(null);
+  const docFileInputRef = useRef<HTMLInputElement>(null);
+
+  const [refGeminiModel, setRefGeminiModel] = useState<string>(() => {
+    try {
+      const s = localStorage.getItem(REF_MODEL_STORAGE_KEY);
+      if (s && REF_GEMINI_MODEL_OPTIONS.some((m) => m.id === s)) return s;
+    } catch {
+      /* ignore */
+    }
+    return REF_GEMINI_MODEL_OPTIONS.find((m) => m.bestValue)!.id;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REF_MODEL_STORAGE_KEY, refGeminiModel);
+    } catch {
+      /* ignore */
+    }
+  }, [refGeminiModel]);
+
+  useEffect(() => {
+    if (docImportQueue.length === 0) {
+      setDocQueueStats([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setDocQueueScanning(true);
+      try {
+        const stats: { name: string; chars: number }[] = [];
+        for (const f of docImportQueue) {
+          try {
+            const chars = await getDocCharCountForEstimate(f);
+            if (cancelled) return;
+            stats.push({ name: f.name, chars });
+          } catch {
+            if (cancelled) return;
+            stats.push({ name: f.name, chars: 0 });
+          }
+        }
+        if (!cancelled) setDocQueueStats(stats);
+      } catch {
+        if (!cancelled) setDocQueueStats(docImportQueue.map((f) => ({ name: f.name, chars: 0 })));
+      } finally {
+        if (!cancelled) setDocQueueScanning(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docImportQueue]);
+
+  const refModelMeta = useMemo(
+    () => REF_GEMINI_MODEL_OPTIONS.find((m) => m.id === refGeminiModel) ?? REF_GEMINI_MODEL_OPTIONS[0],
+    [refGeminiModel]
+  );
+
+  const bestValueModel = useMemo(() => REF_GEMINI_MODEL_OPTIONS.find((m) => m.bestValue)!, []);
+
+  const parseCostEstimateInr = useMemo(() => {
+    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) return null;
+    let t = 0;
+    for (let i = 0; i < docQueueStats.length; i++) {
+      t += estimateSingleRefParseInr(docQueueStats[i].chars, docImportQueue[i].name.length, refModelMeta, REF_USD_INR).inr;
+    }
+    return t;
+  }, [docQueueStats, docImportQueue, refModelMeta]);
+
+  const parseCostEstimateBestInr = useMemo(() => {
+    if (docQueueStats.length !== docImportQueue.length || docQueueStats.length === 0) return null;
+    let t = 0;
+    for (let i = 0; i < docQueueStats.length; i++) {
+      t += estimateSingleRefParseInr(docQueueStats[i].chars, docImportQueue[i].name.length, bestValueModel, REF_USD_INR).inr;
+    }
+    return t;
+  }, [docQueueStats, docImportQueue, bestValueModel]);
+
+  const fmtInr = useCallback(
+    (n: number) =>
+      new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(n),
+    []
+  );
 
   const loadSets = useCallback(async () => {
     const { data, error: e } = await supabase
@@ -283,49 +486,143 @@ const ReferenceQuestionsManager: React.FC = () => {
     void loadAll();
   }, [loadAll]);
 
-  const uploadNewSet = async (f: File | null) => {
-    if (!f) return;
-    if (!/\.docx$/i.test(f.name)) {
-      setError('Please upload a .docx from Mathpix.');
+  const appendDocFiles = useCallback((list: FileList | null) => {
+    if (!list?.length) return;
+    const incoming = Array.from(list);
+    setDocImportQueue((prev) => {
+      const next = [...prev];
+      const seen = new Set(next.map((f) => `${f.name}:${f.size}:${f.lastModified}`));
+      for (const f of incoming) {
+        const k = `${f.name}:${f.size}:${f.lastModified}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        next.push(f);
+      }
+      return next;
+    });
+    const input = docFileInputRef.current;
+    if (input) input.value = '';
+  }, []);
+
+  const removeDocFromQueue = useCallback((index: number) => {
+    setDocImportQueue((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const cancelStagedImport = useCallback(() => {
+    setStagedPreview([]);
+    setPendingPublishFiles(null);
+    setDocImportQueue([]);
+    setDocQueueStats([]);
+  }, []);
+
+  const parseAllQueuedDocs = useCallback(async () => {
+    if (docImportQueue.length === 0) {
+      setError('Add at least one .docx file.');
       return;
     }
-    setParsing(true);
+    const invalid = docImportQueue.filter((f) => !/\.docx$/i.test(f.name));
+    if (invalid.length) {
+      setError('Reference import accepts .docx only (Mathpix export).');
+      return;
+    }
+    setParsingDoc(true);
+    setError(null);
+    const combined: Draft[] = [];
+    try {
+      let offset = 0;
+      let fileOrd = 0;
+      for (const file of docImportQueue) {
+        const buf = await file.arrayBuffer();
+        const { drafts, imageCount } = await runRefGeminiOnBuffer(buf, file.name, refGeminiModel);
+        if (drafts.length === 0) {
+          setError(`No questions extracted from ${file.name}.`);
+          return;
+        }
+        for (const d of drafts) {
+          combined.push({
+            ...d,
+            image_index: d.image_index == null ? null : d.image_index + offset,
+            import_file_ordinal: fileOrd,
+          });
+        }
+        offset += imageCount;
+        fileOrd += 1;
+      }
+      setPendingPublishFiles([...docImportQueue]);
+      setDocImportQueue([]);
+      setDocQueueStats([]);
+      setStagedPreview(combined);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to parse documents with Gemini');
+    } finally {
+      setParsingDoc(false);
+    }
+  }, [docImportQueue, refGeminiModel]);
+
+  const publishStagedBatch = useCallback(async () => {
+    const files = pendingPublishFiles;
+    const drafts = stagedPreview;
+    if (!files?.length || drafts.length === 0) return;
+    setSaving(true);
     setError(null);
     try {
       const {
         data: { user },
       } = await supabase.auth.getUser();
       const setId = crypto.randomUUID();
-      const path = `${setId}/${sanitizeFilename(f.name)}`;
-      const { error: upErr } = await supabase.storage.from('reference-question-docs').upload(path, f, {
+      const primaryPath = `${setId}/${sanitizeFilename(files[0].name)}`;
+      let up = await supabase.storage.from('reference-question-docs').upload(primaryPath, files[0], {
         contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         upsert: false,
       });
-      if (upErr) throw upErr;
+      if (up.error) throw up.error;
+
+      const additionalPaths: string[] = [];
+      for (let i = 1; i < files.length; i++) {
+        const p = `${setId}/${sanitizeFilename(files[i].name)}`;
+        const r = await supabase.storage.from('reference-question-docs').upload(p, files[i], {
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          upsert: false,
+        });
+        if (r.error) throw r.error;
+        additionalPaths.push(p);
+      }
 
       const { error: insErr } = await supabase.from('reference_question_sets').insert({
         id: setId,
-        doc_path: path,
-        original_filename: f.name,
+        doc_path: primaryPath,
+        original_filename: formatRefPendingLabel(files),
         uploaded_by: user?.id ?? null,
-        ai_status: 'pending',
-        preview_questions: null,
+        ai_status: 'complete',
+        preview_questions: drafts as unknown as Record<string, unknown>,
         ai_error: null,
+        metadata: additionalPaths.length > 0 ? { additional_doc_paths: additionalPaths } : {},
       });
       if (insErr) throw insErr;
+
+      cancelStagedImport();
       await loadSets();
     } catch (e: any) {
-      setError(e?.message || 'Upload failed');
+      setError(e?.message || 'Publish failed');
     } finally {
-      setParsing(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      setSaving(false);
     }
-  };
+  }, [pendingPublishFiles, stagedPreview, cancelStagedImport, loadSets]);
 
-  const downloadSetFile = async (set: SetRow): Promise<ArrayBuffer> => {
-    const { data, error: e } = await supabase.storage.from('reference-question-docs').download(set.doc_path);
-    if (e) throw e;
-    return await data.arrayBuffer();
+  const openPreviewModal = async (set: SetRow) => {
+    setActiveSet(set);
+    setPreviewHtml(null);
+    setPreviewLoading(true);
+    setError(null);
+    try {
+      const buf = await downloadRefDocPath(set.doc_path);
+      const result = await mammoth.convertToHtml({ arrayBuffer: buf });
+      setPreviewHtml(result.value || '<p>(empty)</p>');
+    } catch (e: any) {
+      setPreviewHtml(`<p class="text-rose-600">Preview failed: ${e?.message || 'unknown'}</p>`);
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   const runAiAnalysis = async (set: SetRow) => {
@@ -338,11 +635,10 @@ const ReferenceQuestionsManager: React.FC = () => {
         .eq('id', set.id);
       setSets((prev) => prev.map((s) => (s.id === set.id ? { ...s, ai_status: 'analyzing' } : s)));
 
-      const buf = await downloadSetFile(set);
-      const { text } = await parseDocxBuffer(buf);
-      if (!text.trim()) throw new Error('No text extracted from document');
+      const paths = allDocPaths(set);
+      const drafts = await runRefGeminiOnDocPaths(paths, refGeminiModel);
+      if (drafts.length === 0) throw new Error('No questions extracted from document(s)');
 
-      const drafts = await runGeminiExtract(text);
       const { error: uErr } = await supabase
         .from('reference_question_sets')
         .update({
@@ -367,22 +663,6 @@ const ReferenceQuestionsManager: React.FC = () => {
     }
   };
 
-  const openPreviewModal = async (set: SetRow) => {
-    setActiveSet(set);
-    setPreviewHtml(null);
-    setPreviewLoading(true);
-    setError(null);
-    try {
-      const buf = await downloadSetFile(set);
-      const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-      setPreviewHtml(result.value || '<p>(empty)</p>');
-    } catch (e: any) {
-      setPreviewHtml(`<p class="text-rose-600">Preview failed: ${e?.message || 'unknown'}</p>`);
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
   const commitSetToLibrary = async (set: SetRow) => {
     const preview = (set.preview_questions || []) as Draft[];
     if (preview.length === 0) {
@@ -396,8 +676,13 @@ const ReferenceQuestionsManager: React.FC = () => {
     setCommittingSetId(set.id);
     setError(null);
     try {
-      const buf = await downloadSetFile(set);
-      const { images: docImages } = await parseDocxBuffer(buf);
+      const paths = allDocPaths(set);
+      const globalImages: DocxEmbeddedImage[] = [];
+      for (const pth of paths) {
+        const buf = await downloadRefDocPath(pth);
+        const { images } = await parseDocxBufferWithEmbeddedImages(buf, mammoth);
+        globalImages.push(...images);
+      }
 
       const needed = new Set<number>();
       preview.forEach((p) => {
@@ -405,7 +690,7 @@ const ReferenceQuestionsManager: React.FC = () => {
       });
       const imgUrlByIndex = new Map<number, string>();
       for (const idx of needed) {
-        const img = docImages[idx];
+        const img = globalImages[idx];
         if (!img?.data) continue;
         const ext = img.mimeType.includes('jpeg') || img.mimeType.includes('jpg') ? 'jpg' : 'png';
         const path = `${set.id}-${Date.now()}-${idx}.${ext}`;
@@ -460,11 +745,12 @@ const ReferenceQuestionsManager: React.FC = () => {
   };
 
   const deleteSet = async (set: SetRow) => {
-    if (!confirm(`Delete upload "${set.original_filename}" and its stored file?`)) return;
+    if (!confirm(`Delete upload "${set.original_filename}" and its stored file(s)?`)) return;
     setSaving(true);
     setError(null);
     try {
-      await supabase.storage.from('reference-question-docs').remove([set.doc_path]);
+      const paths = allDocPaths(set);
+      await supabase.storage.from('reference-question-docs').remove(paths);
       const { error } = await supabase.from('reference_question_sets').delete().eq('id', set.id);
       if (error) throw error;
       if (activeSet?.id === set.id) {
@@ -495,6 +781,11 @@ const ReferenceQuestionsManager: React.FC = () => {
   };
 
   const previewCount = (s: SetRow) => (Array.isArray(s.preview_questions) ? s.preview_questions.length : 0);
+
+  const multiDocHint = (s: SetRow) => {
+    const extra = getAdditionalDocPaths(s.metadata).length;
+    return extra > 0 ? ` · ${extra + 1} files` : '';
+  };
 
   const statusBadge = (s: SetRow) => {
     if (s.ai_status === 'complete') {
@@ -539,31 +830,20 @@ const ReferenceQuestionsManager: React.FC = () => {
     return (activeSet.preview_questions as Draft[]).slice(0, 8);
   }, [activeSet]);
 
+  const stagedSourceLabel = pendingPublishFiles?.length ? formatRefPendingLabel(pendingPublishFiles) : '';
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white p-4 shadow-sm">
-        <div>
-          <h3 className="text-sm font-semibold text-zinc-900">Reference Questions</h3>
-          <p className="mt-0.5 text-[11px] text-zinc-500">
-            Upload Mathpix <span className="font-mono">.docx</span> sets → store in bucket → run AI → save parsed rows to the library.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".docx"
-            className="hidden"
-            onChange={(e) => void uploadNewSet(e.target.files?.[0] || null)}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={parsing}
-            className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
-          >
-            {parsing ? 'Uploading…' : 'Upload .docx'}
-          </button>
+      <div className="mt-0 shrink-0 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm md:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-zinc-900">Reference questions import</h3>
+            <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
+              Add one or more Mathpix <span className="font-mono">.docx</span> files, choose a Gemini model, then{' '}
+              <strong>Parse all with Gemini</strong>. Review the preview, <strong>Publish to server</strong> to store the set, then{' '}
+              <strong>Save to library</strong> on the card to insert rows into <span className="font-mono">reference_questions</span>.
+            </p>
+          </div>
           <button
             type="button"
             onClick={() => void loadAll()}
@@ -572,15 +852,194 @@ const ReferenceQuestionsManager: React.FC = () => {
             Refresh
           </button>
         </div>
+
+        {stagedPreview.length === 0 ? (
+          <div className="mt-5">
+            <div className="flex flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-violet-300 hover:bg-violet-50/30">
+              <iconify-icon icon="mdi:file-document-multiple-outline" width="28" className="text-violet-600" />
+              <p className="mt-2 text-sm font-semibold text-zinc-900">DOCX (multi)</p>
+              <p className="mt-1 text-[11px] leading-snug text-zinc-500">
+                One Gemini request per file; figure placeholders stay aligned per document, then indices are merged for save.
+              </p>
+              <input
+                ref={docFileInputRef}
+                type="file"
+                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                multiple
+                className="hidden"
+                onChange={(e) => appendDocFiles(e.target.files)}
+              />
+              <button
+                type="button"
+                onClick={() => docFileInputRef.current?.click()}
+                className="mt-3 inline-flex items-center justify-center gap-2 rounded-lg border border-violet-200 bg-white px-3 py-2 text-[12px] font-semibold text-violet-800 shadow-sm hover:bg-violet-50"
+              >
+                <iconify-icon icon="mdi:folder-open-outline" width="18" />
+                Add documents
+              </button>
+              {docImportQueue.length > 0 ? (
+                <ul className="mt-3 max-h-28 space-y-1 overflow-y-auto text-[11px] text-zinc-700">
+                  {docImportQueue.map((f, i) => (
+                    <li
+                      key={`${f.name}-${f.size}-${i}`}
+                      className="flex items-center justify-between gap-2 rounded border border-zinc-100 bg-zinc-50/80 px-2 py-1"
+                    >
+                      <span className="min-w-0 truncate" title={f.name}>
+                        {f.name}
+                      </span>
+                      <button
+                        type="button"
+                        className="shrink-0 text-[10px] font-semibold text-rose-600 hover:underline"
+                        onClick={() => removeDocFromQueue(i)}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="mt-3 space-y-1">
+                <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Gemini model</label>
+                <select
+                  value={refGeminiModel}
+                  onChange={(e) => setRefGeminiModel(e.target.value)}
+                  className="w-full max-w-md rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[11px] font-medium text-zinc-900 outline-none focus:border-violet-400"
+                >
+                  {REF_GEMINI_MODEL_OPTIONS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                      {m.bestValue ? ' — best ₹ efficiency' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] leading-snug text-zinc-500">
+                  <span className="font-semibold text-zinc-700">{refModelMeta.label}:</span> {refModelMeta.blurb}
+                  {refModelMeta.id !== bestValueModel.id && parseCostEstimateBestInr != null && parseCostEstimateInr != null ? (
+                    <span className="mt-1 block text-emerald-800">
+                      Most cost-efficient here: {bestValueModel.label} — about {fmtInr(parseCostEstimateBestInr)} for this queue (vs{' '}
+                      {fmtInr(parseCostEstimateInr)} with current selection).
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
+                {docQueueScanning ? (
+                  <span className="flex items-center gap-2 text-violet-700">
+                    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" />
+                    Scanning files for estimate…
+                  </span>
+                ) : docImportQueue.length === 0 ? (
+                  'Estimated Gemini cost (INR) appears after you add documents.'
+                ) : parseCostEstimateInr == null ? (
+                  'Working on estimate…'
+                ) : (
+                  <>
+                    <span className="font-semibold text-zinc-800">Est. cost — {docImportQueue.length} API call(s):</span>{' '}
+                    <span className="font-mono text-indigo-700">{fmtInr(parseCostEstimateInr)}</span>
+                    <span className="mt-1 block text-zinc-500">
+                      Approximate only (FX ~₹{REF_USD_INR}/USD). Actual charges follow your Google AI billing.
+                    </span>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={parsingDoc || docImportQueue.length === 0 || docQueueScanning}
+                onClick={() => void parseAllQueuedDocs()}
+                className="mt-3 inline-flex w-full max-w-md items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-2.5 text-[12px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
+              >
+                {parsingDoc ? (
+                  <>
+                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-white" />
+                    Parsing with Gemini…
+                  </>
+                ) : (
+                  <>
+                    <iconify-icon icon="mdi:robot-outline" width="18" />
+                    Parse all with Gemini
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-5 flex flex-col gap-4 rounded-xl border border-zinc-200 bg-zinc-50/90 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-zinc-900" title={stagedSourceLabel}>
+                {stagedSourceLabel}
+              </p>
+              <p className="mt-0.5 text-[12px] text-zinc-600">
+                <span className="font-mono font-semibold text-indigo-700">{stagedPreview.length}</span> questions · not on server yet
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void publishStagedBatch()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-[12px] font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? 'Publishing…' : 'Publish to server'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm('Discard this import and start over?')) cancelStagedImport();
+                }}
+                className="px-2 py-2 text-[12px] font-medium text-zinc-500 underline decoration-zinc-300 hover:text-zinc-800"
+              >
+                New import
+              </button>
+            </div>
+          </div>
+        )}
+
+        {stagedPreview.length > 0 && (
+          <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-200 bg-white">
+            <table className="w-full min-w-[560px] table-fixed border-collapse text-left text-[11px]">
+              <thead>
+                <tr className="border-b border-zinc-100 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  <th className="w-8 py-2 pl-3">#</th>
+                  <th className="py-2">Question</th>
+                  <th className="w-28 py-2">Meta</th>
+                  <th className="w-16 py-2 pr-3">Fig</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stagedPreview.slice(0, 40).map((p, i) => (
+                  <tr key={i} className="border-t border-zinc-100 align-top">
+                    <td className="py-2 pl-3 text-zinc-400">{i + 1}</td>
+                    <td className="py-2 pr-2">
+                      <MeasuredSnippet
+                        text={p.question_text}
+                        className="line-clamp-2 font-medium text-zinc-900 break-words [overflow-wrap:anywhere]"
+                      />
+                    </td>
+                    <td className="py-2 text-zinc-600">
+                      {p.class_name || '—'} · {p.subject_name || '—'}
+                      <div className="text-zinc-400">{p.difficulty}</div>
+                    </td>
+                    <td className="py-2 pr-3 text-zinc-500">{p.image_index != null ? `I${p.image_index}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {stagedPreview.length > 40 && (
+              <p className="border-t border-zinc-100 px-3 py-2 text-center text-[11px] text-zinc-500">
+                Showing first 40 of {stagedPreview.length} — full list is saved when you publish.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
-      {(error || parsing) && (
+      {(error || parsingDoc || saving) && (
         <div
-          className={`mt-3 rounded-md border p-3 text-sm ${
+          className={`mt-3 shrink-0 rounded-md border p-3 text-sm ${
             error ? 'border-rose-200 bg-rose-50 text-rose-900' : 'border-zinc-200 bg-white text-zinc-700'
           }`}
         >
-          {error ? error : 'Uploading document…'}
+          {error ? error : parsingDoc ? 'Parsing with Gemini…' : 'Working…'}
         </div>
       )}
 
@@ -590,7 +1049,8 @@ const ReferenceQuestionsManager: React.FC = () => {
           <p className="py-8 text-center text-sm text-zinc-400">Loading…</p>
         ) : sets.length === 0 ? (
           <div className="rounded-xl border border-dashed border-zinc-200 bg-zinc-50/80 py-16 text-center text-sm text-zinc-500">
-            No documents yet. Use <strong>Upload .docx</strong> to add a set.
+            No documents on the server yet. Parse above, then <strong>Publish to server</strong>, or run AI on a set below after upload
+            from another flow.
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -606,6 +1066,7 @@ const ReferenceQuestionsManager: React.FC = () => {
                     </p>
                     <p className="mt-0.5 text-[10px] text-zinc-400">
                       {new Date(s.created_at).toLocaleString()}
+                      {multiDocHint(s)}
                     </p>
                   </div>
                   {s.ai_status === 'complete' && (
@@ -630,7 +1091,7 @@ const ReferenceQuestionsManager: React.FC = () => {
                       <span className="font-semibold text-emerald-700">{previewCount(s)}</span> questions parsed
                     </>
                   ) : (
-                    'Run AI to extract questions, chapter, difficulty, and types.'
+                    'Run AI to extract questions, or use the import panel to parse before publish.'
                   )}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -752,7 +1213,10 @@ const ReferenceQuestionsManager: React.FC = () => {
             <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
               <div>
                 <h4 className="text-sm font-semibold text-zinc-900">{activeSet.original_filename}</h4>
-                <p className="text-[11px] text-zinc-500">Document preview · {statusBadge(activeSet)}</p>
+                <p className="text-[11px] text-zinc-500">
+                  Primary document preview · {statusBadge(activeSet)}
+                  {getAdditionalDocPaths(activeSet.metadata).length > 0 ? ' · additional files in set' : ''}
+                </p>
               </div>
               <button
                 type="button"
