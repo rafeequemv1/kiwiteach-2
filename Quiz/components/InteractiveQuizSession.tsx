@@ -14,6 +14,8 @@ interface InteractiveQuizSessionProps {
   testId?: string | null;
   /** Total time for the exam in seconds (default: 60s per question). */
   examDurationSeconds?: number;
+  /** Label for the primary button after submit (default: Return to Dashboard). */
+  exitButtonLabel?: string;
 }
 
 type QuestionStatus = 'not_visited' | 'not_answered' | 'answered' | 'marked' | 'marked_answered';
@@ -27,6 +29,7 @@ const InteractiveQuizSession: React.FC<InteractiveQuizSessionProps> = ({
   topic,
   testId,
   examDurationSeconds,
+  exitButtonLabel = 'Return to Dashboard',
 }) => {
   const initialSeconds = Math.max(
     60,
@@ -310,7 +313,7 @@ const InteractiveQuizSession: React.FC<InteractiveQuizSessionProps> = ({
                   )}
               </div>
               <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-center">
-                  <button onClick={onExit} className="bg-slate-900 text-white px-8 py-4 rounded-xl font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-colors shadow-lg shadow-slate-900/10 text-xs">Return to Dashboard</button>
+                  <button onClick={onExit} className="bg-slate-900 text-white px-8 py-4 rounded-xl font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-colors shadow-lg shadow-slate-900/10 text-xs">{exitButtonLabel}</button>
               </div>
            </div>
         </div>

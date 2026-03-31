@@ -1100,7 +1100,7 @@ const PYQManager: React.FC = () => {
   const [filterDifficulty, setFilterDifficulty] = useState('');
   const [filterFormat, setFilterFormat] = useState('');
   const [filterExam, setFilterExam] = useState('');
-  const [expandedSetId, setExpandedSetId] = useState<string | null>(null);
+  const [batchQuestionsModalSetId, setBatchQuestionsModalSetId] = useState<string | null>(null);
   const [batchPaperPreview, setBatchPaperPreview] = useState<{ setId: string; label: string } | null>(null);
   const [difficultyFillBusySetId, setDifficultyFillBusySetId] = useState<string | null>(null);
   const [syllabusFillBusySetId, setSyllabusFillBusySetId] = useState<string | null>(null);
@@ -1388,16 +1388,6 @@ const PYQManager: React.FC = () => {
     [loadUploadSets]
   );
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this PYQ?')) return;
-    const { error } = await supabase.from('pyq_questions_neet').delete().eq('id', id);
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    await load();
-  };
-
   const handleDeleteSet = async (setId: string) => {
     if (!confirm('Delete this upload batch and all its questions?')) return;
     setSaving(true);
@@ -1411,7 +1401,7 @@ const PYQManager: React.FC = () => {
         setPendingCommit(null);
         setPreviewModalOpen(false);
       }
-      if (expandedSetId === setId) setExpandedSetId(null);
+      if (batchQuestionsModalSetId === setId) setBatchQuestionsModalSetId(null);
       await load();
     } catch (e: any) {
       alert(e?.message || 'Delete failed');
@@ -1682,8 +1672,6 @@ const PYQManager: React.FC = () => {
     [rows, rowMatchesFilters]
   );
 
-  const filteredRows = useMemo(() => rows.filter((r) => rowMatchesFilters(r)), [rows, rowMatchesFilters]);
-
   const previewSourceLabel = useMemo(
     () =>
       (pendingCommit?.files?.length ? formatPendingCommitLabel(pendingCommit.files) : null) ||
@@ -1785,10 +1773,38 @@ const PYQManager: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const questionsForExpanded = useMemo(() => {
-    if (!expandedSetId) return [];
-    return rows.filter((r) => r.upload_set_id === expandedSetId).filter(rowMatchesFilters);
-  }, [expandedSetId, rows, rowMatchesFilters]);
+  const questionsForBatchModal = useMemo(() => {
+    if (!batchQuestionsModalSetId) return [];
+    return rows.filter((r) => r.upload_set_id === batchQuestionsModalSetId).filter(rowMatchesFilters);
+  }, [batchQuestionsModalSetId, rows, rowMatchesFilters]);
+
+  const batchModalSet = useMemo(
+    () => (batchQuestionsModalSetId ? uploadSets.find((s) => s.id === batchQuestionsModalSetId) : undefined),
+    [batchQuestionsModalSetId, uploadSets]
+  );
+
+  const modalBatchAiCounts = useMemo(() => {
+    if (!batchQuestionsModalSetId) return { blankDifficulty: 0, blankSyllabus: 0 };
+    const id = batchQuestionsModalSetId;
+    const blankDifficulty = rows.filter(
+      (r) => r.upload_set_id === id && !(r.difficulty && String(r.difficulty).trim())
+    ).length;
+    const blankSyllabus = rows.filter(
+      (r) =>
+        r.upload_set_id === id &&
+        (!(r.subject_name && String(r.subject_name).trim()) || !(r.chapter_name && String(r.chapter_name).trim()))
+    ).length;
+    return { blankDifficulty, blankSyllabus };
+  }, [batchQuestionsModalSetId, rows]);
+
+  useEffect(() => {
+    if (!batchQuestionsModalSetId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setBatchQuestionsModalSetId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [batchQuestionsModalSetId]);
 
   return (
     <div className="space-y-4 p-4 md:p-5">
@@ -2285,16 +2301,6 @@ const PYQManager: React.FC = () => {
             )}
             {filteredSets.map((s) => {
               const agg = aggregateForSet(s.id);
-              const expanded = expandedSetId === s.id;
-              const blankDifficultyCount = rows.filter(
-                (r) => r.upload_set_id === s.id && !(r.difficulty && String(r.difficulty).trim())
-              ).length;
-              const blankSyllabusSlotCount = rows.filter(
-                (r) =>
-                  r.upload_set_id === s.id &&
-                  (!(r.subject_name && String(r.subject_name).trim()) || !(r.chapter_name && String(r.chapter_name).trim()))
-              ).length;
-              const batchAiBusy = difficultyFillBusySetId === s.id || syllabusFillBusySetId === s.id;
               return (
                 <div
                   key={s.id}
@@ -2367,10 +2373,10 @@ const PYQManager: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setExpandedSetId(expanded ? null : s.id)}
+                      onClick={() => setBatchQuestionsModalSetId(s.id)}
                       className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold text-zinc-700 hover:bg-zinc-50"
                     >
-                      {expanded ? 'Hide questions' : 'View questions'}
+                      View questions
                     </button>
                     <button
                       type="button"
@@ -2381,101 +2387,6 @@ const PYQManager: React.FC = () => {
                       Delete batch
                     </button>
                   </div>
-                  {expanded && (
-                    <>
-                      <div className="mt-3 flex flex-col gap-2 rounded-md border border-violet-100 bg-violet-50/40 p-2.5 sm:flex-row sm:flex-wrap sm:items-end">
-                        <label className="flex flex-col gap-0.5">
-                          <span className="text-[9px] font-bold uppercase tracking-wide text-zinc-500">Gemini model</span>
-                          <select
-                            value={pyqGeminiModel}
-                            onChange={(e) => setPyqGeminiModel(e.target.value)}
-                            disabled={batchAiBusy}
-                            className="min-w-[10rem] rounded-md border border-zinc-200 bg-white px-2 py-1 text-[10px] font-medium text-zinc-900 outline-none focus:border-violet-400 disabled:opacity-60"
-                          >
-                            {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <button
-                          type="button"
-                          disabled={batchAiBusy || blankDifficultyCount === 0}
-                          onClick={() => void fillBlankDifficultiesForBatch(s.id)}
-                          className="rounded-lg border border-violet-300 bg-violet-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
-                        >
-                          {difficultyFillBusySetId === s.id
-                            ? 'Filling…'
-                            : `Fill blank difficulties${blankDifficultyCount ? ` (${blankDifficultyCount})` : ''}`}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={batchAiBusy || blankSyllabusSlotCount === 0}
-                          onClick={() => void fillBlankChapterSubjectForBatch(s.id)}
-                          className="rounded-lg border border-emerald-300 bg-emerald-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
-                        >
-                          {syllabusFillBusySetId === s.id
-                            ? 'Matching syllabus…'
-                            : `Fill subject & chapter${blankSyllabusSlotCount ? ` (${blankSyllabusSlotCount})` : ''}`}
-                        </button>
-                        <p className="w-full text-[10px] leading-snug text-zinc-600">
-                          <strong>Difficulty:</strong> easy / medium / hard for empty difficulty rows.{' '}
-                          <strong>Subject & chapter:</strong> picks from your NEET <strong>chapters</strong> and <strong>syllabus_entries</strong> catalog
-                          (exact strings). Requires Gemini API key.
-                        </p>
-                      </div>
-                    <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-100 bg-white">
-                      {questionsForExpanded.length === 0 ? (
-                        <p className="p-2 text-[10px] text-zinc-500">No matching questions (adjust filters).</p>
-                      ) : (
-                        <table className="w-full text-left text-[10px] text-zinc-700">
-                          <thead className="sticky top-0 z-[1] bg-zinc-100/95 text-zinc-600 shadow-sm">
-                            <tr>
-                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Paper Q#</th>
-                              <th className="min-w-[140px] px-2 py-1.5 font-semibold">Question</th>
-                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Subject</th>
-                              <th className="min-w-[88px] px-2 py-1.5 font-semibold">Chapter</th>
-                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Difficulty</th>
-                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Year</th>
-                              <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Type</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {questionsForExpanded.slice(0, 40).map((q) => {
-                              const pq = paperQuestionLabelFromMetadata(q.metadata);
-                              return (
-                                <tr key={q.id} className="border-t border-zinc-100 align-top">
-                                  <td className="whitespace-nowrap px-2 py-1.5 font-mono font-semibold text-zinc-800">
-                                    {pq || '—'}
-                                  </td>
-                                  <td className="px-2 py-1.5">
-                                    <MeasuredSnippet
-                                      text={q.question_text.length > 160 ? `${q.question_text.slice(0, 160)}…` : q.question_text}
-                                      className="line-clamp-2 break-words [overflow-wrap:anywhere] leading-snug"
-                                    />
-                                  </td>
-                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.subject_name || '—'}</td>
-                                  <td className="max-w-[120px] truncate px-2 py-1.5 text-zinc-600" title={q.chapter_name || ''}>
-                                    {q.chapter_name || '—'}
-                                  </td>
-                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.difficulty?.trim() || '—'}</td>
-                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.year ?? '—'}</td>
-                                  <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.question_type || '—'}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                      {questionsForExpanded.length > 40 ? (
-                        <p className="border-t border-zinc-100 bg-zinc-50/80 px-2 py-1 text-[9px] text-zinc-500">
-                          +{questionsForExpanded.length - 40} more (adjust filters or use All PYQs below)
-                        </p>
-                      ) : null}
-                    </div>
-                    </>
-                  )}
                 </div>
               );
             })}
@@ -2488,69 +2399,142 @@ const PYQManager: React.FC = () => {
         )}
       </div>
 
-      <div className="rounded-lg border border-zinc-200 bg-white p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <p className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
-            All PYQs <span className="font-normal text-zinc-400">({filteredRows.length} shown)</span>
-          </p>
-        </div>
-        {loading ? (
-          <p className="text-[12px] text-zinc-500">Loading...</p>
-        ) : (
-          <div className="max-h-[480px] overflow-auto rounded-md border border-zinc-200">
-            <table className="w-full text-left text-[11px]">
-              <thead className="sticky top-0 bg-zinc-50 text-zinc-600">
-                <tr>
-                  <th className="px-2 py-1.5">Batch</th>
-                  <th className="whitespace-nowrap px-2 py-1.5">Paper Q#</th>
-                  <th className="px-2 py-1.5">Question</th>
-                  <th className="px-2 py-1.5">Subject</th>
-                  <th className="px-2 py-1.5">Type</th>
-                  <th className="px-2 py-1.5">Year</th>
-                  <th className="px-2 py-1.5">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map((r) => (
-                  <tr key={r.id} className="border-t border-zinc-100">
-                    <td className="max-w-[120px] truncate px-2 py-1.5 text-zinc-500" title={r.upload_set_id ? setNameById.get(r.upload_set_id) : ''}>
-                      {r.upload_set_id ? setNameById.get(r.upload_set_id)?.slice(0, 24) || '—' : '—'}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[10px] font-semibold text-zinc-800">
-                      {paperQuestionLabelFromMetadata(r.metadata) || '—'}
-                    </td>
-                    <td className="px-2 py-1.5 text-zinc-700">
-                      <MeasuredSnippet
-                        text={r.question_text.slice(0, 100)}
-                        className="break-words [overflow-wrap:anywhere]"
-                      />
-                    </td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.subject_name || '-'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.question_type || '-'}</td>
-                    <td className="px-2 py-1.5 text-zinc-600">{r.year ?? '-'}</td>
-                    <td className="px-2 py-1.5">
-                      <button
-                        type="button"
-                        onClick={() => void handleDelete(r.id)}
-                        className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-100"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {filteredRows.length === 0 && (
-                  <tr>
-                    <td className="px-2 py-4 text-zinc-400" colSpan={7}>
-                      No PYQs match filters.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+      {batchQuestionsModalSetId && batchModalSet ? (
+        <div
+          className="fixed inset-0 z-[580] flex items-center justify-center bg-zinc-950/70 p-3 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pyq-batch-questions-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setBatchQuestionsModalSetId(null);
+          }}
+        >
+          <div
+            className="flex max-h-[min(90vh,900px)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-100 px-4 py-3 sm:px-5">
+              <div className="min-w-0">
+                <p id="pyq-batch-questions-modal-title" className="text-sm font-bold text-zinc-900">
+                  Questions in batch
+                </p>
+                <p className="mt-0.5 truncate text-[11px] text-zinc-500" title={batchModalSet.original_filename || ''}>
+                  {batchModalSet.ingestion_year != null ? `Year ${batchModalSet.ingestion_year}` : batchModalSet.original_filename || 'Upload'}
+                  {batchModalSet.ingestion_year != null && batchModalSet.original_filename
+                    ? ` · ${batchModalSet.original_filename}`
+                    : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBatchQuestionsModalSetId(null)}
+                className="shrink-0 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-700 hover:bg-zinc-50"
+              >
+                Close
+              </button>
+            </div>
+            <div className="shrink-0 border-b border-zinc-100 px-4 py-3 sm:px-5">
+              <div className="flex flex-col gap-2 rounded-lg border border-violet-100 bg-violet-50/40 p-2.5 sm:flex-row sm:flex-wrap sm:items-end">
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-zinc-500">Gemini model</span>
+                  <select
+                    value={pyqGeminiModel}
+                    onChange={(e) => setPyqGeminiModel(e.target.value)}
+                    disabled={
+                      difficultyFillBusySetId === batchQuestionsModalSetId ||
+                      syllabusFillBusySetId === batchQuestionsModalSetId
+                    }
+                    className="min-w-[10rem] rounded-md border border-zinc-200 bg-white px-2 py-1 text-[10px] font-medium text-zinc-900 outline-none focus:border-violet-400 disabled:opacity-60"
+                  >
+                    {PYQ_GEMINI_MODEL_OPTIONS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  disabled={
+                    difficultyFillBusySetId === batchQuestionsModalSetId ||
+                    syllabusFillBusySetId === batchQuestionsModalSetId ||
+                    modalBatchAiCounts.blankDifficulty === 0
+                  }
+                  onClick={() => void fillBlankDifficultiesForBatch(batchQuestionsModalSetId)}
+                  className="rounded-lg border border-violet-300 bg-violet-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50"
+                >
+                  {difficultyFillBusySetId === batchQuestionsModalSetId
+                    ? 'Filling…'
+                    : `Fill blank difficulties${modalBatchAiCounts.blankDifficulty ? ` (${modalBatchAiCounts.blankDifficulty})` : ''}`}
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    difficultyFillBusySetId === batchQuestionsModalSetId ||
+                    syllabusFillBusySetId === batchQuestionsModalSetId ||
+                    modalBatchAiCounts.blankSyllabus === 0
+                  }
+                  onClick={() => void fillBlankChapterSubjectForBatch(batchQuestionsModalSetId)}
+                  className="rounded-lg border border-emerald-300 bg-emerald-600 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {syllabusFillBusySetId === batchQuestionsModalSetId
+                    ? 'Matching syllabus…'
+                    : `Fill subject & chapter${modalBatchAiCounts.blankSyllabus ? ` (${modalBatchAiCounts.blankSyllabus})` : ''}`}
+                </button>
+                <p className="w-full text-[10px] leading-snug text-zinc-600">
+                  <strong>Difficulty:</strong> easy / medium / hard for empty difficulty rows.{' '}
+                  <strong>Subject & chapter:</strong> picks from your NEET <strong>chapters</strong> and{' '}
+                  <strong>syllabus_entries</strong> catalog (exact strings). Requires Gemini API key.
+                </p>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto px-2 pb-4 pt-2 sm:px-4">
+              {questionsForBatchModal.length === 0 ? (
+                <p className="p-3 text-[11px] text-zinc-500">No matching questions for this batch (adjust filters above).</p>
+              ) : (
+                <table className="w-full text-left text-[10px] text-zinc-700">
+                  <thead className="sticky top-0 z-[1] bg-zinc-100/95 text-zinc-600 shadow-sm">
+                    <tr>
+                      <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Paper Q#</th>
+                      <th className="min-w-[140px] px-2 py-1.5 font-semibold">Question</th>
+                      <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Subject</th>
+                      <th className="min-w-[88px] px-2 py-1.5 font-semibold">Chapter</th>
+                      <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Difficulty</th>
+                      <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Year</th>
+                      <th className="whitespace-nowrap px-2 py-1.5 font-semibold">Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {questionsForBatchModal.map((q) => {
+                      const pq = paperQuestionLabelFromMetadata(q.metadata);
+                      return (
+                        <tr key={q.id} className="border-t border-zinc-100 align-top">
+                          <td className="whitespace-nowrap px-2 py-1.5 font-mono font-semibold text-zinc-800">
+                            {pq || '—'}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <MeasuredSnippet
+                              text={q.question_text.length > 160 ? `${q.question_text.slice(0, 160)}…` : q.question_text}
+                              className="line-clamp-2 break-words [overflow-wrap:anywhere] leading-snug"
+                            />
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.subject_name || '—'}</td>
+                          <td className="max-w-[120px] truncate px-2 py-1.5 text-zinc-600" title={q.chapter_name || ''}>
+                            {q.chapter_name || '—'}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.difficulty?.trim() || '—'}</td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.year ?? '—'}</td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-zinc-600">{q.question_type || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
 
       {parsingDoc ? (
         <div

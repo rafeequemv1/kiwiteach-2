@@ -5,8 +5,9 @@ import { ArrowRight, Bird, CheckCircle2, Layout, Menu, Sparkles, X } from 'lucid
 import { BlogArticlePage, BlogIndexPage } from '../Blog';
 import { supabase } from '../supabase/client';
 import { footerColumns, homePills, landingNavLinks, landingTheme } from './theme';
+import NeetPyqSection from './NeetPyqSection';
 
-type LandingTab = 'home' | 'test-prep' | 'pricing' | 'blog' | 'blog-post';
+type LandingTab = 'home' | 'neet' | 'test-prep' | 'pricing' | 'blog' | 'blog-post';
 type PricingAudience = 'b2b' | 'b2c';
 
 interface SubscriptionTier {
@@ -38,6 +39,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
     if (tabId === 'test-prep') setActiveTab('test-prep');
     else if (tabId === 'blog') setActiveTab('blog');
     else if (tabId === 'pricing') setActiveTab('pricing');
+    else if (tabId === 'neet') setActiveTab('neet');
     else setActiveTab('home');
   };
 
@@ -349,6 +351,40 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
     </motion.div>
   );
 
+  const renderNeet = () => (
+    <motion.div
+      key="neet"
+      initial="hidden"
+      animate="visible"
+      exit={{ opacity: 0, y: -20 }}
+      variants={containerVariants}
+      className="w-full"
+    >
+      <section
+        className="relative overflow-hidden border-b border-zinc-200 pt-24 pb-14 md:pt-28 md:pb-20"
+        style={{ background: landingTheme.gradients.testPrepHero }}
+      >
+        <div className="absolute top-1/2 left-0 h-[40vw] max-h-[420px] w-[40vw] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/20 blur-[100px]" />
+        <div className="relative z-10 mx-auto max-w-4xl px-4 text-center md:px-6">
+          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-indigo-200">NEET</p>
+          <h1 className="mt-4 text-4xl font-black tracking-tight text-white md:text-6xl">
+            National Eligibility cum Entrance Test
+          </h1>
+          <p className="mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-zinc-300">
+            Focused prep for NEET aspirants: practice previous-year questions from the same PYQ bank your institute curates in KiwiTeach.
+          </p>
+          <a
+            href="#pyqs"
+            className="mt-10 inline-flex items-center justify-center rounded-xl border border-white/20 bg-white/10 px-8 py-3 text-xs font-black uppercase tracking-widest text-white backdrop-blur-sm transition hover:bg-white/20"
+          >
+            Jump to PYQs
+          </a>
+        </div>
+      </section>
+      <NeetPyqSection isLoggedIn={!!isLoggedIn} onLoginClick={onLoginClick} />
+    </motion.div>
+  );
+
   const renderPricing = () => (
     <motion.div
       key="pricing"
@@ -524,6 +560,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
               {landingNavLinks.map((link) => {
                 const isActive =
                   (link.id === 'home' && activeTab === 'home') ||
+                  (link.id === 'neet' && activeTab === 'neet') ||
                   (link.id === 'test-prep' && activeTab === 'test-prep') ||
                   (link.id === 'pricing' && activeTab === 'pricing') ||
                   (link.id === 'blog' && (activeTab === 'blog' || activeTab === 'blog-post'));
@@ -614,6 +651,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       <main>
         <AnimatePresence mode="wait">
           {activeTab === 'home' && renderHome()}
+          {activeTab === 'neet' && renderNeet()}
           {activeTab === 'test-prep' && renderTestPrep()}
           {activeTab === 'pricing' && renderPricing()}
           {activeTab === 'blog' && (

@@ -1,6 +1,7 @@
 /** Top nav on marketing site */
 export const landingNavLinks = [
   { id: 'home', label: 'Home' },
+  { id: 'neet', label: 'NEET' },
   { id: 'test-prep', label: 'Test Prep' },
   { id: 'pricing', label: 'Pricing' },
   { id: 'blog', label: 'Blog' },
