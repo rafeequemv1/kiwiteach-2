@@ -850,13 +850,18 @@ const PYQManager: React.FC = () => {
       try {
         const stats: { name: string; chars: number }[] = [];
         for (const f of docImportQueue) {
-          const chars = await getDocCharCountForEstimate(f);
-          if (cancelled) return;
-          stats.push({ name: f.name, chars });
+          try {
+            const chars = await getDocCharCountForEstimate(f);
+            if (cancelled) return;
+            stats.push({ name: f.name, chars });
+          } catch {
+            if (cancelled) return;
+            stats.push({ name: f.name, chars: 0 });
+          }
         }
         if (!cancelled) setDocQueueStats(stats);
       } catch {
-        if (!cancelled) setDocQueueStats([]);
+        if (!cancelled) setDocQueueStats(docImportQueue.map((f) => ({ name: f.name, chars: 0 })));
       } finally {
         if (!cancelled) setDocQueueScanning(false);
       }
@@ -909,11 +914,12 @@ const PYQManager: React.FC = () => {
 
   const appendDocFiles = useCallback((list: FileList | null) => {
     if (!list?.length) return;
+    /** Snapshot immediately — clearing the input below can empty the live FileList before setState runs. */
+    const incoming = Array.from(list);
     setDocImportQueue((prev) => {
       const next = [...prev];
       const seen = new Set(next.map((f) => `${f.name}:${f.size}:${f.lastModified}`));
-      for (let i = 0; i < list.length; i++) {
-        const f = list[i];
+      for (const f of incoming) {
         const k = `${f.name}:${f.size}:${f.lastModified}`;
         if (seen.has(k)) continue;
         seen.add(k);
@@ -921,7 +927,8 @@ const PYQManager: React.FC = () => {
       }
       return next;
     });
-    if (docFileInputRef.current) docFileInputRef.current.value = '';
+    const input = docFileInputRef.current;
+    if (input) input.value = '';
   }, []);
 
   const removeDocFromQueue = useCallback((index: number) => {
