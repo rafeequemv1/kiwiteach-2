@@ -4,7 +4,7 @@ import { supabase } from '../../supabase/client';
 import { GoogleGenAI, Type } from '@google/genai';
 import { assertGeminiApiKey } from '../../config/env';
 import { layout, prepare } from '@chenglou/pretext';
-import { parsePseudoLatexAndMath } from '../../utils/latexParser';
+import { parsePseudoLatexAndMathAllowTables } from '../../utils/latexParser';
 
 interface PYQRow {
   id: string;
@@ -56,6 +56,12 @@ type Draft = {
   source_exam: string;
   paper_code: string;
   image_url: string;
+  /** 0-based index into DOCX embedded images (IMAGE_N placeholders). Resolved to data URL then uploaded. */
+  doc_image_index: number | null;
+  /** Section / part label from the paper, e.g. "Section A", "Part II". */
+  paper_part: string;
+  /** Original question number as printed (per section). Stored in DB metadata. */
+  source_question_number: string;
 };
 
 type GeminiDocRow = Partial<Draft>;
@@ -80,7 +86,116 @@ const emptyDraft: Draft = {
   source_exam: 'NEET',
   paper_code: '',
   image_url: '',
+  doc_image_index: null,
+  paper_part: '',
+  source_question_number: '',
 };
+
+/** Stable order: part label → source Q number → original index fallback. */
+function sortDraftsExamOrder(rows: Draft[]): Draft[] {
+  return [...rows].sort((a, b) => {
+    const pa = (a.paper_part || '').trim();
+    const pb = (b.paper_part || '').trim();
+    if (pa !== pb) return pa.localeCompare(pb, undefined, { numeric: true, sensitivity: 'base' });
+    const na = Number.parseInt(String(a.source_question_number || '').trim(), 10);
+    const nb = Number.parseInt(String(b.source_question_number || '').trim(), 10);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+    if (Number.isFinite(na) && !Number.isFinite(nb)) return -1;
+    if (!Number.isFinite(na) && Number.isFinite(nb)) return 1;
+    return 0;
+  });
+}
+
+type DocxEmbeddedImage = { data: string; mimeType: string };
+
+async function parsePyqDocxBuffer(arrayBuffer: ArrayBuffer): Promise<{ text: string; images: DocxEmbeddedImage[] }> {
+  const mammoth = (window as any)?.mammoth;
+  const images: DocxEmbeddedImage[] = [];
+  const result = await mammoth.convertToHtml(
+    { arrayBuffer },
+    {
+      convertImage: mammoth.images.imgElement((image: any) =>
+        image.read('base64').then((b64: string) => {
+          const mimeType = image.contentType || 'image/png';
+          images.push({ data: b64, mimeType });
+          return { src: `IMAGE_${images.length - 1}` };
+        })
+      ),
+    }
+  );
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(result.value || '', 'text/html');
+  const txt = doc.body?.innerText || '';
+  return { text: txt, images };
+}
+
+function resolveDraftDocImage(d: Draft, images: DocxEmbeddedImage[]): Draft {
+  const idx = d.doc_image_index;
+  if (idx == null || idx < 0 || idx >= images.length) return d;
+  const explicit = d.image_url?.trim();
+  if (explicit && /^https?:\/\//i.test(explicit)) return d;
+  const im = images[idx];
+  const dataUrl = `data:${im.mimeType};base64,${im.data}`;
+  const nextFormat =
+    d.question_format === 'figure' || /diagram|figure|graph|image/i.test(d.question_text)
+      ? d.question_format
+      : d.question_format === 'text' && !explicit
+        ? 'figure'
+        : d.question_format;
+  return {
+    ...d,
+    image_url: explicit || dataUrl,
+    question_format: nextFormat,
+  };
+}
+
+async function ensurePyqImagePublicUrl(
+  imageUrl: string | null | undefined,
+  uploadSetId: string,
+  slug: string
+): Promise<string | null> {
+  const u = (imageUrl || '').trim();
+  if (!u) return null;
+  if (u.startsWith('http://') || u.startsWith('https://')) return u;
+  if (!u.startsWith('data:')) return u;
+
+  const m = u.match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
+  if (!m) return u;
+
+  const mimeRaw = m[1].toLowerCase();
+  const b64 = m[2].replace(/\s+/g, '');
+  const mime =
+    mimeRaw === 'image/jpg'
+      ? 'image/jpeg'
+      : mimeRaw === 'image/pjpeg'
+        ? 'image/jpeg'
+        : mimeRaw;
+
+  const ext =
+    mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png';
+
+  const path = `${uploadSetId}/${slug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const { error } = await supabase.storage.from('pyq-images').upload(path, bytes, {
+    contentType: mime,
+    upsert: false,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from('pyq-images').getPublicUrl(path);
+  return data.publicUrl;
+}
+
+function buildPyqMetadata(d: Draft): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  const part = d.paper_part?.trim();
+  if (part) meta.paper_part = part;
+  const sq = d.source_question_number?.trim();
+  if (sq) {
+    const n = Number.parseInt(sq, 10);
+    meta.source_question_number = Number.isFinite(n) ? n : sq;
+  }
+  return meta;
+}
 
 const csvSplit = (line: string): string[] => {
   const out: string[] = [];
@@ -133,7 +248,7 @@ const toInsertPayload = (d: Draft, uploadSetId: string | null) => ({
   source_exam: d.source_exam.trim() || null,
   paper_code: d.paper_code.trim() || null,
   image_url: d.image_url.trim() || null,
-  metadata: {},
+  metadata: buildPyqMetadata(d),
   upload_set_id: uploadSetId,
 });
 
@@ -160,16 +275,35 @@ const applyMapped = (base: Draft, mapped: Record<string, string>) => ({
   source_exam: mapped.source_exam || mapped.exam || 'NEET',
   paper_code: mapped.paper_code || mapped.paper || '',
   image_url: mapped.image_url || mapped.figure_url || '',
+  doc_image_index: (() => {
+    const raw = mapped.doc_image_index ?? mapped.image_index ?? '';
+    if (raw === '' || raw == null) return null;
+    const n = Number(String(raw));
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+  })(),
+  paper_part:
+    mapped.paper_part ||
+    mapped.section ||
+    mapped.part ||
+    mapped.paper_section ||
+    '',
+  source_question_number:
+    mapped.source_question_number ||
+    mapped.exam_question_number ||
+    mapped.question_no ||
+    mapped.q_no ||
+    mapped.question_number ||
+    '',
 });
 
 const normalizeGeminiRow = (row: GeminiDocRow): Draft => ({
   ...emptyDraft,
-  question_text: String(row.question_text || ''),
+  question_text: scrubFigurePlaceholders(String(row.question_text || '')),
   question_format: String((row as any).question_format || 'text').toLowerCase(),
-  option_a: String(row.option_a || ''),
-  option_b: String(row.option_b || ''),
-  option_c: String(row.option_c || ''),
-  option_d: String(row.option_d || ''),
+  option_a: scrubFigurePlaceholders(String(row.option_a || '')),
+  option_b: scrubFigurePlaceholders(String(row.option_b || '')),
+  option_c: scrubFigurePlaceholders(String(row.option_c || '')),
+  option_d: scrubFigurePlaceholders(String(row.option_d || '')),
   correct_answer: String((row as any).correct_answer || 'A').toUpperCase(),
   correct_index: Number(row.correct_index ?? 0) || 0,
   explanation: String(row.explanation || ''),
@@ -183,6 +317,17 @@ const normalizeGeminiRow = (row: GeminiDocRow): Draft => ({
   source_exam: String(row.source_exam || 'NEET'),
   paper_code: String(row.paper_code || ''),
   image_url: String(row.image_url || ''),
+  doc_image_index: (() => {
+    const v = (row as any).doc_image_index;
+    if (v == null || v === '' || Number(v) === -1) return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+  })(),
+  paper_part: String((row as any).paper_part || ''),
+  source_question_number:
+    (row as any).source_question_number == null || (row as any).source_question_number === ''
+      ? ''
+      : String((row as any).source_question_number),
 });
 
 const parseGeminiJson = (txt: string): GeminiDocRow[] => {
@@ -201,17 +346,13 @@ function norm(s: string | null | undefined) {
   return (s || '').trim().toLowerCase();
 }
 
-function extractImageSrcsFromHtml(html: string): string[] {
-  if (!html) return [];
-  try {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const out = [...doc.querySelectorAll('img[src]')]
-      .map((img) => img.getAttribute('src')?.trim() || '')
-      .filter(Boolean);
-    return Array.from(new Set(out));
-  } catch {
-    return [];
-  }
+/** Remove DOCX figure placeholders if the model echoed them into text fields. */
+function scrubFigurePlaceholders(text: string): string {
+  return (text || '')
+    .replace(/\bIMAGE_\d+\b/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 const COMPACT_OPT_LEN = 58;
@@ -225,15 +366,25 @@ const PyqPaperQuestion: React.FC<{ draft: Draft; index: number }> = ({ draft, in
   const opts = optStrs.map((s) => s.trim());
   const nonempty = opts.map((s, i) => (s ? { t: s, i } : null)).filter(Boolean) as { t: string; i: number }[];
   const compact = opts.filter((s) => s.length > 0).length === 4 && shouldCompactMcqOptions(optStrs);
+  const isMatch = (draft.question_type || '').toLowerCase() === 'match_list';
+
+  const partLine = [draft.paper_part?.trim(), draft.source_question_number?.trim() ? `Q${draft.source_question_number.trim()}` : '']
+    .filter(Boolean)
+    .join(' · ');
+
+  const stemHtml = parsePseudoLatexAndMathAllowTables(draft.question_text || '');
 
   return (
     <div className="mb-4 break-inside-avoid text-black">
       <div className="flex gap-1.5 items-start leading-tight">
         <span className="shrink-0 font-bold">{index + 1}.</span>
         <div className="min-w-0 flex-1">
+          {partLine ? (
+            <p className="mb-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-500">{partLine}</p>
+          ) : null}
           <div
-            className="math-content [&_.katex]:text-[inherit]"
-            dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(draft.question_text || '') }}
+            className="math-content pyq-rich [&_.katex]:text-[inherit]"
+            dangerouslySetInnerHTML={{ __html: stemHtml }}
           />
           {(draft.question_format === 'figure' || draft.image_url?.trim()) && (
             <div className="mt-1.5">
@@ -253,14 +404,18 @@ const PyqPaperQuestion: React.FC<{ draft: Draft; index: number }> = ({ draft, in
           )}
           {nonempty.length > 0 && (
             <div
-              className={`mt-1.5 ${compact ? 'grid grid-cols-2 gap-x-3 gap-y-0.5' : 'space-y-0'} text-[10pt] font-medium`}
+              className={`mt-1.5 ${
+                isMatch
+                  ? 'rounded border border-zinc-300 bg-zinc-50/80 p-2'
+                  : ''
+              } ${compact && !isMatch ? 'grid grid-cols-2 gap-x-3 gap-y-0.5' : 'space-y-0'} text-[10pt] font-medium`}
             >
               {nonempty.map(({ t, i }) => (
                 <div key={i} className="flex min-w-0 gap-1 items-start">
                   <span className="shrink-0">({i + 1})</span>
                   <span
-                    className="min-w-0"
-                    dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(t) }}
+                    className="min-w-0 math-content [&_.katex]:text-[inherit]"
+                    dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMathAllowTables(t) }}
                   />
                 </div>
               ))}
@@ -330,29 +485,11 @@ const PyqPreviewModal: React.FC<{
   open: boolean;
   onClose: () => void;
   drafts: Draft[];
-  extractedDocImages: string[];
   sourceLabel: string | null;
   saving: boolean;
   onCommit: () => void;
-}> = ({ open, onClose, drafts, extractedDocImages, sourceLabel, saving, onCommit }) => {
-  const [tab, setTab] = useState<'paper' | 'figures'>('paper');
-  useEffect(() => {
-    if (open) setTab('paper');
-  }, [open]);
-
-  const rowFigureUrls = useMemo(() => {
-    const s = new Set<string>();
-    drafts.forEach((d) => {
-      const u = d.image_url?.trim();
-      if (u) s.add(u);
-    });
-    return Array.from(s);
-  }, [drafts]);
-
-  const allFigureSrcs = useMemo(
-    () => Array.from(new Set([...extractedDocImages, ...rowFigureUrls])),
-    [extractedDocImages, rowFigureUrls]
-  );
+}> = ({ open, onClose, drafts, sourceLabel, saving, onCommit }) => {
+  const figureCount = useMemo(() => drafts.reduce((n, d) => n + (d.image_url?.trim() ? 1 : 0), 0), [drafts]);
 
   if (!open) return null;
 
@@ -376,8 +513,8 @@ const PyqPreviewModal: React.FC<{
               {sourceLabel || 'Parsed questions'}
             </p>
             <p className="text-[11px] text-zinc-500">
-              {drafts.length} question{drafts.length === 1 ? '' : 's'} · {allFigureSrcs.length} image
-              {allFigureSrcs.length === 1 ? '' : 's'}
+              {drafts.length} question{drafts.length === 1 ? '' : 's'} · {figureCount} with figure{figureCount === 1 ? '' : 's'}{' '}
+              (LaTeX + tables inline)
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -399,91 +536,27 @@ const PyqPreviewModal: React.FC<{
           </div>
         </div>
 
-        <div className="flex shrink-0 gap-1 border-b border-zinc-100 bg-white px-4 pt-2">
-          {(['paper', 'figures'] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={`rounded-t-md px-3 py-2 text-[11px] font-semibold capitalize ${
-                tab === t ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-500 hover:text-zinc-800'
-              }`}
-            >
-              {t === 'paper' ? 'Paper layout' : 'Figures'}
-            </button>
-          ))}
-        </div>
-
         <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-100/80 p-4">
-          {tab === 'paper' && (
-            <div className="mx-auto max-w-[210mm] rounded-sm border-[0.5pt] border-black bg-white shadow-md">
-              <div className="border-b-[0.5pt] border-black px-4 py-2 text-center text-[11px] font-bold uppercase tracking-widest text-black">
-                Preview — not saved
-              </div>
-              <div
-                className="p-4 sm:p-5"
-                style={{
-                  fontFamily: "'Times New Roman', Times, serif",
-                  fontSize: '10pt',
-                  lineHeight: 1.45,
-                }}
-              >
-                <div className="h-[0.5pt] w-full bg-black" />
-                <div className="mt-3 columns-1 gap-8 md:columns-2 md:gap-10">
-                  {drafts.map((d, i) => (
-                    <PyqPaperQuestion key={`${i}-${d.question_text.slice(0, 24)}`} draft={d} index={i} />
-                  ))}
-                </div>
+          <div className="mx-auto max-w-[210mm] rounded-sm border-[0.5pt] border-black bg-white shadow-md">
+            <div className="border-b-[0.5pt] border-black px-4 py-2 text-center text-[11px] font-bold uppercase tracking-widest text-black">
+              Preview — not saved
+            </div>
+            <div
+              className="p-4 sm:p-5"
+              style={{
+                fontFamily: "'Times New Roman', Times, serif",
+                fontSize: '10pt',
+                lineHeight: 1.45,
+              }}
+            >
+              <div className="h-[0.5pt] w-full bg-black" />
+              <div className="mt-3 columns-1 gap-8 md:columns-2 md:gap-10">
+                {drafts.map((d, i) => (
+                  <PyqPaperQuestion key={`${i}-${d.question_text.slice(0, 24)}`} draft={d} index={i} />
+                ))}
               </div>
             </div>
-          )}
-
-          {tab === 'figures' && (
-            <div className="space-y-3">
-              {extractedDocImages.length > 0 && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3">
-                  <p className="text-[11px] font-bold uppercase text-indigo-900">From document (DOCX)</p>
-                  <p className="text-[10px] text-indigo-700/80">
-                    Embedded images pulled from the file. Link them to questions in your source or via Gemini output
-                    <code className="mx-0.5">image_url</code>.
-                  </p>
-                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-                    {extractedDocImages.map((src, idx) => (
-                      <a
-                        key={`docimg-${idx}`}
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block overflow-hidden rounded border border-zinc-200 bg-white"
-                      >
-                        <img src={src} alt="" className="h-36 w-full object-contain" />
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div className="rounded-lg border border-zinc-200 bg-white p-3">
-                <p className="text-[11px] font-bold uppercase text-zinc-700">From parsed rows (image_url)</p>
-                {rowFigureUrls.length === 0 ? (
-                  <p className="mt-1 text-[11px] text-zinc-500">No image URLs on question rows.</p>
-                ) : (
-                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-                    {rowFigureUrls.map((src, idx) => (
-                      <a
-                        key={`rowimg-${idx}`}
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block overflow-hidden rounded border border-zinc-200 bg-zinc-50"
-                      >
-                        <img src={src} alt="" className="h-36 w-full object-contain" />
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          </div>
         </div>
       </div>
     </div>
@@ -500,7 +573,6 @@ const PYQManager: React.FC = () => {
   const [activeUploadSetId, setActiveUploadSetId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [pendingCommit, setPendingCommit] = useState<{ file: File; kind: string } | null>(null);
-  const [extractedDocImages, setExtractedDocImages] = useState<string[]>([]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterYear, setFilterYear] = useState('');
@@ -592,7 +664,6 @@ const PYQManager: React.FC = () => {
         setActiveUploadSetId(null);
         setPreviewRows([]);
         setPendingCommit(null);
-        setExtractedDocImages([]);
         setPreviewModalOpen(false);
       }
       if (expandedSetId === setId) setExpandedSetId(null);
@@ -627,9 +698,8 @@ const PYQManager: React.FC = () => {
       return;
     }
     setActiveUploadSetId(null);
-    setExtractedDocImages([]);
     setPendingCommit({ file, kind: 'csv' });
-    setPreviewRows(parsed);
+    setPreviewRows(sortDraftsExamOrder(parsed));
   };
 
   const handleDoc = async (file: File) => {
@@ -637,10 +707,9 @@ const PYQManager: React.FC = () => {
     const kind = ext.endsWith('.txt') ? 'txt' : 'doc';
 
     setParsingDoc(true);
-    setExtractedDocImages([]);
     try {
       let rawText = '';
-      let docxImages: string[] = [];
+      let docxImages: DocxEmbeddedImage[] = [];
       if (ext.endsWith('.txt')) {
         rawText = await file.text();
       } else {
@@ -650,15 +719,19 @@ const PYQManager: React.FC = () => {
           return;
         }
         const buffer = await file.arrayBuffer();
-        const out = await mammoth.extractRawText({ arrayBuffer: buffer });
-        rawText = out.value || '';
-        if (mammoth.convertToHtml && (ext.endsWith('.docx') || ext.endsWith('.doc'))) {
+        if (ext.endsWith('.docx') && mammoth.convertToHtml && mammoth.images?.imgElement) {
           try {
-            const htmlOut = await mammoth.convertToHtml({ arrayBuffer: buffer });
-            docxImages = extractImageSrcsFromHtml(htmlOut.value || '');
+            const parsedDoc = await parsePyqDocxBuffer(buffer);
+            rawText = parsedDoc.text;
+            docxImages = parsedDoc.images;
           } catch {
+            const out = await mammoth.extractRawText({ arrayBuffer: buffer });
+            rawText = out.value || '';
             docxImages = [];
           }
+        } else {
+          const out = await mammoth.extractRawText({ arrayBuffer: buffer });
+          rawText = out.value || '';
         }
       }
 
@@ -676,15 +749,23 @@ const PYQManager: React.FC = () => {
             parts: [
               {
                 text:
-                  'Convert the following NEET PYQ source text into a strictly structured JSON array. ' +
-                  'Do not paraphrase or alter factual content. Keep text verbatim wherever present. ' +
-                  'If value is missing, use empty string. Output JSON only, no markdown.\n\n' +
-                  'Each row must include keys: question_text, option_a, option_b, option_c, option_d, correct_index, explanation, question_type, difficulty, subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url.\n\n' +
-                  'For image_url: use a full http(s) URL if the source states one; if the question references a figure and a data URL or file path appears in the source, copy it verbatim into image_url; otherwise empty string. ' +
-                  'Set question_format to "figure" when the item depends on a diagram.\n\n' +
-                  'Allowed question_format: text, figure. ' +
-                  'Allowed question_type: mcq, assertion_reason, reason_based, match_list. ' +
-                  'Allowed difficulty: easy, medium, hard.\n\n' +
+                  'Convert the following exam/PYQ source into a JSON array of scored questions only. Output JSON only, no markdown.\n\n' +
+                  'IGNORE (do not output as questions): cover pages; logos and branding; watermarks; coaching or publisher headers/footers; decorative or banner images; hall-ticket / OMR instructions; ' +
+                  'generic "Read carefully", duration, maximum marks, or syllabus tables unless they are the sole content of a scored item. ' +
+                  'Only extract real question stems with answer choices (or match-list / assertion types as appropriate).\n\n' +
+                  'Do not paraphrase question facts. Keep stems and options verbatim from the source when present. Use empty string for missing optional fields.\n\n' +
+                  'Multi-part papers (Section A/B, Part I/II, etc.): for each row set paper_part to the section label exactly as printed (e.g. "Section A", "Part II"). ' +
+                  'Set source_question_number to the integer printed for that item in that section (restart numbering per section if the source does). ' +
+                  'Do not paste section headings or instruction blocks into question_text—only the item stem.\n\n' +
+                  'Figures: SOURCE TEXT contains placeholders IMAGE_0, IMAGE_1, … at each embedded figure position. For a question that uses a figure, set doc_image_index to that integer (0-based). ' +
+                  'Do not include IMAGE_N tokens in question_text or options. If there is no figure for the item, set doc_image_index to -1. ' +
+                  'match_list / column matching: you may include a simple HTML <table>…</table> inside question_text for two-column list layouts; keep only table/tr/th/td text, no scripts. ' +
+                  'Else use standard option fields for codes / matches.\n\n' +
+                  'Required keys per row: question_text, option_a, option_b, option_c, option_d, correct_answer, correct_index, explanation, question_type, question_format, difficulty, ' +
+                  'subject_name, chapter_name, topic_tag, class_name, year, source_exam, paper_code, image_url, doc_image_index, paper_part, source_question_number.\n\n' +
+                  'image_url: full http(s) URL only if the source already has a public URL; otherwise leave empty and use doc_image_index from IMAGE_N. ' +
+                  'question_format "figure" when the item needs a diagram or uses doc_image_index >= 0. ' +
+                  'Allowed question_format: text, figure. Allowed question_type: mcq, assertion_reason, reason_based, match_list. Allowed difficulty: easy, medium, hard.\n\n' +
                   `Source filename: ${file.name}\n\nSOURCE TEXT:\n${rawText}`,
               },
             ],
@@ -716,21 +797,26 @@ const PYQManager: React.FC = () => {
                 source_exam: { type: Type.STRING },
                 paper_code: { type: Type.STRING },
                 image_url: { type: Type.STRING },
+                doc_image_index: { type: Type.NUMBER },
+                paper_part: { type: Type.STRING },
+                source_question_number: { type: Type.STRING },
               },
             },
           },
         },
       });
       const outText = response.text || '[]';
-      const parsed = parseGeminiJson(outText).map(normalizeGeminiRow).filter((r) => r.question_text.trim());
+      const parsed = parseGeminiJson(outText)
+        .map(normalizeGeminiRow)
+        .filter((r) => r.question_text.trim())
+        .map((r) => (docxImages.length > 0 ? resolveDraftDocImage(r, docxImages) : r));
       if (parsed.length === 0) {
         alert('No questions extracted from document.');
         return;
       }
       setActiveUploadSetId(null);
       setPendingCommit({ file, kind });
-      setExtractedDocImages(docxImages);
-      setPreviewRows(parsed);
+      setPreviewRows(sortDraftsExamOrder(parsed));
     } catch (e: any) {
       alert(e?.message || 'Failed to parse document with Gemini');
     } finally {
@@ -745,6 +831,12 @@ const PYQManager: React.FC = () => {
     }
     setSaving(true);
     try {
+      const importLabel =
+        pendingCommit?.file?.name ||
+        (activeUploadSetId ? setNameById.get(activeUploadSetId) : null) ||
+        'pyq-import';
+      const slugBase = importLabel.replace(/[^\w.\-]+/g, '_').slice(0, 60);
+
       let setId = activeUploadSetId;
       if (!setId) {
         if (!pendingCommit) {
@@ -757,7 +849,14 @@ const PYQManager: React.FC = () => {
         setPendingCommit(null);
       }
       const user = await supabase.auth.getUser();
-      const payload = previewRows.map((d) => ({
+      const ordered = sortDraftsExamOrder(previewRows);
+      const withUploadedImages = await Promise.all(
+        ordered.map(async (d, i) => {
+          const url = await ensurePyqImagePublicUrl(d.image_url, setId!, `${slugBase}-q${i + 1}`);
+          return { ...d, image_url: url ?? d.image_url };
+        })
+      );
+      const payload = withUploadedImages.map((d) => ({
         ...toInsertPayload(d, setId),
         uploaded_by: user.data.user?.id || null,
       }));
@@ -766,7 +865,6 @@ const PYQManager: React.FC = () => {
       setPreviewRows([]);
       setActiveUploadSetId(null);
       setPreviewModalOpen(false);
-      setExtractedDocImages([]);
       await load();
       alert('PYQs uploaded.');
     } catch (e: any) {
@@ -780,7 +878,6 @@ const PYQManager: React.FC = () => {
     setPreviewRows([]);
     setActiveUploadSetId(null);
     setPendingCommit(null);
-    setExtractedDocImages([]);
     setPreviewModalOpen(false);
   };
 
@@ -974,6 +1071,8 @@ const PYQManager: React.FC = () => {
       'year',
       'source_exam',
       'paper_code',
+      'paper_part',
+      'source_question_number',
       'image_url',
     ];
     const sample = [
@@ -992,9 +1091,11 @@ const PYQManager: React.FC = () => {
       'Genetics',
       'Mendelian inheritance',
       'NEET',
-      '2023',
+      '2025',
       'NEET',
       'SET-A',
+      'Section A',
+      '1',
       'https://example.com/image.png',
     ];
     const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
@@ -1018,8 +1119,9 @@ const PYQManager: React.FC = () => {
       <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-base font-semibold text-zinc-900">PYQ import</h3>
         <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
-          Upload a file first. After parsing, every question appears in the table below. Use <strong>Test paper preview</strong> to
-          see print-style layout and figures, then <strong>Save to bank</strong> when ready (no batch is stored until then).
+          Upload a file first. Set <strong>year</strong> (e.g. 2025) per row or in the doc; multi-part papers get{' '}
+          <strong>paper_part</strong> and <strong>source_question_number</strong> stored in metadata and sorted before save. DOC
+          parsing skips logos, cover pages, and generic instructions. Then <strong>Save to bank</strong>.
         </p>
 
         {previewRows.length === 0 ? (
@@ -1144,6 +1246,8 @@ const PYQManager: React.FC = () => {
                   <thead className="sticky top-0 z-10 bg-zinc-50 text-zinc-600 shadow-sm">
                     <tr>
                       <th className="whitespace-nowrap px-2 py-2">#</th>
+                      <th className="px-2 py-2">Part</th>
+                      <th className="whitespace-nowrap px-2 py-2">Paper Q</th>
                       <th className="min-w-[200px] px-2 py-2">Question</th>
                       <th className="px-2 py-2">Img</th>
                       <th className="px-2 py-2">Format</th>
@@ -1158,6 +1262,12 @@ const PYQManager: React.FC = () => {
                     {previewRows.map((r, i) => (
                       <tr key={`${i}-${r.question_text.slice(0, 12)}`} className="border-t border-zinc-100">
                         <td className="whitespace-nowrap px-2 py-2 text-zinc-500">{i + 1}</td>
+                        <td className="max-w-[100px] truncate px-2 py-2 text-zinc-600" title={r.paper_part || ''}>
+                          {r.paper_part?.trim() || '—'}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-2 text-zinc-600">
+                          {r.source_question_number?.trim() || '—'}
+                        </td>
                         <td className="px-2 py-2 text-zinc-800">
                           <MeasuredSnippet
                             text={r.question_text.length > 280 ? `${r.question_text.slice(0, 280)}…` : r.question_text}
@@ -1191,7 +1301,6 @@ const PYQManager: React.FC = () => {
         open={previewModalOpen && previewRows.length > 0}
         onClose={() => setPreviewModalOpen(false)}
         drafts={previewRows}
-        extractedDocImages={extractedDocImages}
         sourceLabel={previewSourceLabel}
         saving={saving}
         onCommit={uploadPreviewRows}

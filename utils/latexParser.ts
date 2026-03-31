@@ -221,6 +221,94 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   return processedText;
 };
 
+/** Find byte index just after the matching `</table>` for a fragment that starts with `<table`. Handles nested tables. */
+function findClosingTableTagEnd(html: string): number {
+  const lower = html.toLowerCase();
+  if (!lower.startsWith('<table')) return -1;
+  let depth = 1;
+  let pos = lower.indexOf('>', 0) + 1;
+  while (pos < html.length && depth > 0) {
+    const openAt = lower.indexOf('<table', pos);
+    const closeAt = lower.indexOf('</table>', pos);
+    if (closeAt === -1) return -1;
+    if (openAt !== -1 && openAt < closeAt) {
+      depth++;
+      pos = openAt + 6;
+    } else {
+      depth--;
+      pos = closeAt + '</table>'.length;
+      if (depth === 0) return pos;
+    }
+  }
+  return -1;
+}
+
+function sanitizeInlineTableHtml(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html.trim(), 'text/html');
+    const table = doc.querySelector('table');
+    if (!table) return '';
+    table.querySelectorAll('*').forEach((el) => {
+      const tag = el.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE') {
+        el.remove();
+        return;
+      }
+      [...el.attributes].forEach((attr) => {
+        const n = attr.name.toLowerCase();
+        if (tag === 'TD' || tag === 'TH') {
+          if (n !== 'colspan' && n !== 'rowspan') el.removeAttribute(attr.name);
+        } else if (tag === 'IMG') {
+          if (n !== 'src' && n !== 'alt') el.removeAttribute(attr.name);
+        } else {
+          el.removeAttribute(attr.name);
+        }
+      });
+      if (tag === 'IMG') {
+        const src = el.getAttribute('src') || '';
+        if (!/^https?:\/\//i.test(src) && !src.startsWith('data:image/')) {
+          el.removeAttribute('src');
+        }
+        (el as HTMLImageElement).className = 'max-h-44 max-w-full object-contain mx-auto';
+      }
+    });
+    table.className =
+      'pyq-inline-table border-collapse w-full my-1 text-[9pt] [&_td]:border [&_td]:border-zinc-400 [&_th]:border [&_th]:border-zinc-400 [&_td]:px-1.5 [&_th]:px-1.5 [&_th]:bg-zinc-50';
+    return table.outerHTML;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Like {@link parsePseudoLatexAndMath} but leaves `<table>…</table>` regions as sanitized HTML (for match lists / column layouts).
+ * Other segments still go through KaTeX / pseudo-LaTeX.
+ */
+export const parsePseudoLatexAndMathAllowTables = (text: string): string => {
+  if (!text) return text;
+  let result = '';
+  let rest = text;
+  while (rest.length > 0) {
+    const idx = rest.search(/<table\b/i);
+    if (idx === -1) {
+      result += parsePseudoLatexAndMath(rest);
+      break;
+    }
+    if (idx > 0) result += parsePseudoLatexAndMath(rest.slice(0, idx));
+    const slice = rest.slice(idx);
+    const end = findClosingTableTagEnd(slice);
+    if (end === -1) {
+      result += parsePseudoLatexAndMath(slice);
+      break;
+    }
+    const tableHtml = slice.slice(0, end);
+    const sanitized = sanitizeInlineTableHtml(tableHtml);
+    result += sanitized || parsePseudoLatexAndMath(tableHtml.replace(/<[^>]+>/g, ' '));
+    rest = slice.slice(end);
+  }
+  return result;
+};
+
 export const stripLatexAndMarkup = (text: string): string => {
   if (!text) return text;
   let strippedText = text;
