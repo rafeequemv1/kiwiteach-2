@@ -117,6 +117,39 @@ function parseTestDragPayload(e: React.DragEvent): { type: string; id: string } 
   return null;
 }
 
+function computeTestStatus(t: Test): TestStatus {
+  if (t.status === 'draft') return 'draft';
+  if (t.evaluationPending) return 'pending_evaluation';
+  if (t.scheduledAt) {
+    const scheduleDate = new Date(t.scheduledAt);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    scheduleDate.setHours(0, 0, 0, 0);
+    return scheduleDate < today ? 'completed' : 'scheduled';
+  }
+  return 'generated';
+}
+
+type BoardOptimisticEntry = { patch: Partial<Test>; targetColumn: TestStatus };
+
+function buildKanbanPatch(test: Test, target: TestStatus): Partial<Test> {
+  if (target === 'draft') return { status: 'draft', scheduledAt: null, evaluationPending: false };
+  if (target === 'pending_evaluation') return { evaluationPending: true };
+  if (target === 'scheduled') {
+    const date = test.scheduledAt ? new Date(test.scheduledAt) : new Date();
+    const iso = date.toISOString().split('T')[0];
+    return { status: 'scheduled', scheduledAt: new Date(iso).toISOString(), evaluationPending: false };
+  }
+  if (target === 'completed') {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const iso = d.toISOString().split('T')[0];
+    return { status: 'scheduled', scheduledAt: new Date(iso).toISOString(), evaluationPending: false };
+  }
+  if (target === 'generated') return { status: 'generated', scheduledAt: null, evaluationPending: false };
+  return {};
+}
+
 function setTestDragPayload(e: React.DragEvent, testId: string) {
   const payload = JSON.stringify({ type: 'test', id: testId });
   e.dataTransfer.setData('text/plain', payload);
@@ -458,6 +491,8 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   const [newFolderName, setNewFolderName] = useState('');
 
   const [optimisticOverrides, setOptimisticOverrides] = useState<Record<string, string | null>>({});
+  /** Instant kanban column moves; cleared when server copy matches target column. */
+  const [boardOptimistic, setBoardOptimistic] = useState<Record<string, BoardOptimisticEntry>>({});
   const [schedulingTest, setSchedulingTest] = useState<Test | null>(null);
   const [assigningTest, setAssigningTest] = useState<Test | null>(null);
   const [selectedAssignmentIds, setSelectedAssignmentIds] = useState<string[]>([]);
@@ -520,12 +555,41 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     }
 
     return filtered
-      .map((t) => (optimisticOverrides[t.id] !== undefined ? { ...t, scheduledAt: optimisticOverrides[t.id] } : t))
+      .map((t) => {
+        let m = t;
+        if (optimisticOverrides[t.id] !== undefined) {
+          m = { ...m, scheduledAt: optimisticOverrides[t.id] };
+        }
+        const bo = boardOptimistic[t.id];
+        if (bo) m = { ...m, ...bo.patch };
+        return m;
+      })
       .sort(
         (a, b) =>
           new Date(b.scheduledAt || b.generatedAt || 0).getTime() - new Date(a.scheduledAt || a.generatedAt || 0).getTime()
       );
-  }, [allTests, selectedInstituteId, selectedClassId, currentFolderId, classesList, optimisticOverrides]);
+  }, [allTests, selectedInstituteId, selectedClassId, currentFolderId, classesList, optimisticOverrides, boardOptimistic]);
+
+  useEffect(() => {
+    setBoardOptimistic((prev) => {
+      if (!Object.keys(prev).length) return prev;
+      const next = { ...prev };
+      let changed = false;
+      for (const id of Object.keys(prev)) {
+        const raw = allTests.find((t) => t.id === id);
+        if (!raw) {
+          delete next[id];
+          changed = true;
+          continue;
+        }
+        if (computeTestStatus(raw) === prev[id].targetColumn) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [allTests]);
 
   const allFoldersFlat = useMemo(() => flattenFolderTree(folders), [folders]);
 
@@ -589,52 +653,94 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     setDragOverParent(false);
   };
 
-  const applyStatusMove = async (test: Test, target: TestStatus) => {
-    if (target === 'draft') {
-      if (!onRevertTestToDraft) {
-        alert('Move to draft is not configured.');
-        return;
-      }
-      setOptimisticOverrides((o) => {
+  const persistKanbanMove = async (test: Test, target: TestStatus) => {
+    const rollback = () => {
+      setBoardOptimistic((o) => {
+        if (!(test.id in o)) return o;
         const n = { ...o };
         delete n[test.id];
         return n;
       });
-      await onRevertTestToDraft(test.id);
-      return;
-    }
+    };
+    try {
+      if (target === 'draft') {
+        if (!onRevertTestToDraft) {
+          alert('Move to draft is not configured.');
+          rollback();
+          return;
+        }
+        setOptimisticOverrides((o) => {
+          const n = { ...o };
+          delete n[test.id];
+          return n;
+        });
+        await onRevertTestToDraft(test.id);
+        return;
+      }
 
-    if (target === 'pending_evaluation') {
-      if (onSetEvaluationPending && !test.evaluationPending) await onSetEvaluationPending(test.id, true);
-      return;
-    }
+      if (target === 'pending_evaluation') {
+        if (onSetEvaluationPending && !test.evaluationPending) await onSetEvaluationPending(test.id, true);
+        return;
+      }
 
-    if (onSetEvaluationPending && test.evaluationPending) {
-      await onSetEvaluationPending(test.id, false);
-    }
+      if (onSetEvaluationPending && test.evaluationPending) {
+        await onSetEvaluationPending(test.id, false);
+      }
 
-    if (target === 'scheduled') {
-      const date = test.scheduledAt ? new Date(test.scheduledAt) : new Date();
+      if (target === 'scheduled') {
+        const date = test.scheduledAt ? new Date(test.scheduledAt) : new Date();
+        const iso = date.toISOString().split('T')[0];
+        setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
+        onScheduleTest(test.id, iso);
+        return;
+      }
+
+      if (target === 'completed') {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        const iso = d.toISOString().split('T')[0];
+        setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
+        onScheduleTest(test.id, iso);
+        return;
+      }
+
+      if (target === 'generated') {
+        setOptimisticOverrides((o) => ({ ...o, [test.id]: null }));
+        onScheduleTest(test.id, null);
+      }
+    } catch {
+      rollback();
+    }
+  };
+
+  const applyKanbanDrop = (testId: string, target: TestStatus) => {
+    const display = testsToDisplay.find((t) => t.id === testId);
+    const canonical = allTests.find((t) => t.id === testId);
+    if (!display || !canonical) return;
+
+    const patch = buildKanbanPatch(display, target);
+    setBoardOptimistic((o) => ({ ...o, [testId]: { patch, targetColumn: target } }));
+
+    if (target === 'draft') {
+      setOptimisticOverrides((o) => {
+        const n = { ...o };
+        delete n[testId];
+        return n;
+      });
+    } else if (target === 'scheduled') {
+      const date = display.scheduledAt ? new Date(display.scheduledAt) : new Date();
       const iso = date.toISOString().split('T')[0];
-      setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
-      onScheduleTest(test.id, iso);
-      return;
-    }
-
-    if (target === 'completed') {
+      setOptimisticOverrides((o) => ({ ...o, [testId]: new Date(iso).toISOString() }));
+    } else if (target === 'completed') {
       const d = new Date();
       d.setDate(d.getDate() - 1);
       const iso = d.toISOString().split('T')[0];
-      setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
-      onScheduleTest(test.id, iso);
-      return;
+      setOptimisticOverrides((o) => ({ ...o, [testId]: new Date(iso).toISOString() }));
+    } else if (target === 'generated') {
+      setOptimisticOverrides((o) => ({ ...o, [testId]: null }));
     }
 
-    if (target === 'generated') {
-      setOptimisticOverrides((o) => ({ ...o, [test.id]: null }));
-      onScheduleTest(test.id, null);
-      return;
-    }
+    void persistKanbanMove(canonical, target);
   };
 
   const saveEditModal = async () => {
@@ -657,19 +763,6 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
     await onAssignClasses(assigningTest.id, selectedAssignmentIds);
     setIsAssigningSaving(false);
     setAssigningTest(null);
-  };
-
-  const getTestStatus = (t: Test): TestStatus => {
-    if (t.status === 'draft') return 'draft';
-    if (t.evaluationPending) return 'pending_evaluation';
-    if (t.scheduledAt) {
-      const scheduleDate = new Date(t.scheduledAt);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      scheduleDate.setHours(0, 0, 0, 0);
-      return scheduleDate < today ? 'completed' : 'scheduled';
-    }
-    return 'generated';
   };
 
   const testKebabItems = (test: Test, status: TestStatus, setIsRenaming: (v: boolean) => void): MenuItem[] => {
@@ -709,7 +802,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   };
 
   const ExplorerFileRow: React.FC<{ test: Test }> = ({ test }) => {
-    const status = getTestStatus(test);
+    const status = computeTestStatus(test);
     const [isRenaming, setIsRenaming] = useState(false);
     const [tempName, setTempName] = useState(test.name);
 
@@ -758,7 +851,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   };
 
   const ExplorerTestIconGrid: React.FC<{ test: Test }> = ({ test }) => {
-    const status = getTestStatus(test);
+    const status = computeTestStatus(test);
     const [isRenaming, setIsRenaming] = useState(false);
     const [tempName, setTempName] = useState(test.name);
     const handleRenameSubmit = () => {
@@ -805,7 +898,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   };
 
   const kanbanCardMenuItems = (test: Test): MenuItem[] => {
-    const status = getTestStatus(test);
+    const status = computeTestStatus(test);
     const items: MenuItem[] = [
       { label: 'Edit details', icon: Pencil, onClick: () => setEditingTest(test) },
       { label: 'Duplicate', icon: Copy, onClick: () => onDuplicateTest(test) },
@@ -841,7 +934,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
   };
 
   const KanbanMiniCard: React.FC<{ test: Test }> = ({ test }) => {
-    const status = getTestStatus(test);
+    const status = computeTestStatus(test);
     return (
       <div
         draggable
@@ -849,7 +942,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
           setTestDragPayload(e, test.id);
           (e.currentTarget as HTMLDivElement).setAttribute('data-dragging', '1');
         }}
-        className="group cursor-grab rounded-lg border border-zinc-200/90 bg-white px-2 py-2 shadow-sm ring-zinc-300/0 transition-[box-shadow,border-color,ring,opacity] active:cursor-grabbing hover:border-zinc-300 hover:shadow-md data-[dragging=1]:opacity-55"
+        className="group cursor-grab rounded-lg border border-zinc-200/90 bg-white px-2 py-2 shadow-sm ring-zinc-300/0 transition-[box-shadow,border-color,ring,opacity] [touch-action:none] active:cursor-grabbing hover:border-zinc-300 hover:shadow-md data-[dragging=1]:opacity-90"
         onDragEnd={(e) => (e.currentTarget as HTMLDivElement).removeAttribute('data-dragging')}
       >
         <div className="flex items-start gap-1.5">
@@ -1208,12 +1301,10 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 md:p-3">
             <KanbanBoard
               tests={testsToDisplay}
-              getTestStatus={getTestStatus}
+              getTestStatus={computeTestStatus}
               Card={KanbanMiniCard}
               onDropToStatus={(testId, targetStatus) => {
-                const test = testsToDisplay.find((t) => t.id === testId);
-                if (!test) return;
-                void applyStatusMove(test, targetStatus);
+                applyKanbanDrop(testId, targetStatus);
               }}
             />
           </div>

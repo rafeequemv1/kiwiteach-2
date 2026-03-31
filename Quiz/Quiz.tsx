@@ -625,7 +625,18 @@ const Quiz: React.FC = () => {
   };
 
   const handleRenameTest = async (testId: string, newName: string) => { try { await supabase.from('tests').update({ name: newName }).eq('id', testId); await fetchWorkspace(); } catch (err: any) { alert("Rename failed: " + err.message); } };
-  const handleScheduleTest = async (testId: string, dateStr: string | null) => { try { const updates = dateStr ? { scheduled_at: new Date(dateStr).toISOString(), status: 'scheduled' } : { scheduled_at: null, status: 'generated' }; await supabase.from('tests').update(updates).eq('id', testId); await fetchWorkspace(); } catch (e) { console.error("Scheduling Error:", e); } };
+  const handleScheduleTest = async (testId: string, dateStr: string | null) => {
+    try {
+      const updates = dateStr
+        ? { scheduled_at: new Date(dateStr).toISOString(), status: 'scheduled' }
+        : { scheduled_at: null, status: 'generated' };
+      const { error } = await supabase.from('tests').update(updates).eq('id', testId);
+      if (error) throw error;
+      void fetchWorkspace();
+    } catch (e) {
+      console.error('Scheduling Error:', e);
+    }
+  };
 
   const handleRevertTestToDraft = async (testId: string) => {
     try {
@@ -639,7 +650,7 @@ const Quiz: React.FC = () => {
       }
       if (error) throw error;
       lastFetchTime.current = 0;
-      await fetchWorkspace(session?.user ?? undefined);
+      void fetchWorkspace(session?.user ?? undefined);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Could not move test to draft';
       alert(msg);
@@ -652,7 +663,7 @@ const Quiz: React.FC = () => {
       const { error } = await supabase.from('tests').update({ folder_id: folderId }).eq('id', testId);
       if (error) throw error;
       lastFetchTime.current = 0;
-      await fetchWorkspace(session?.user ?? undefined);
+      void fetchWorkspace(session?.user ?? undefined);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Could not move test';
       alert(msg);
@@ -672,7 +683,7 @@ const Quiz: React.FC = () => {
         throw error;
       }
       lastFetchTime.current = 0;
-      await fetchWorkspace(session?.user ?? undefined);
+      void fetchWorkspace(session?.user ?? undefined);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Could not update test';
       alert(msg);

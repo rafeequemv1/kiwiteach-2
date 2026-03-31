@@ -42,6 +42,8 @@ interface PyqUploadSet {
   original_filename: string | null;
   source_kind: string;
   uploaded_by: string | null;
+  ingestion_year?: number | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 type Draft = {
@@ -72,6 +74,8 @@ type Draft = {
   source_question_number: string;
   /** Multi-doc import only: file order for stable sort when Q numbers repeat across files. Not saved to DB. */
   import_file_ordinal?: number;
+  /** DB row id for React keys in saved-batch paper preview only. */
+  previewKey?: string;
 };
 
 type GeminiDocRow = Partial<Draft>;
@@ -812,6 +816,73 @@ function paperQuestionLabelFromMetadata(meta: Record<string, unknown> | null | u
   return s || null;
 }
 
+/** Dominant exam year from parsed rows for yearly batch merge; rejects strong multi-year mixes. */
+function deriveIngestionYearFromDrafts(drafts: Draft[]): { year: number | null; error?: string } {
+  if (!drafts.length) return { year: null, error: 'No questions to upload.' };
+  const counts = new Map<number, number>();
+  for (const d of drafts) {
+    const y = Number(String(d.year || '').trim());
+    if (!Number.isFinite(y) || y < 1980 || y > 2100) continue;
+    counts.set(y, (counts.get(y) || 0) + 1);
+  }
+  if (counts.size === 0) {
+    return {
+      year: null,
+      error:
+        'Could not determine exam year from these rows. Set the year on each question (or in your CSV) so uploads merge into the correct yearly batch.',
+    };
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const [topYear, topN] = sorted[0];
+  if (sorted.length > 1) {
+    const [, secondN] = sorted[1];
+    if (secondN / drafts.length >= 0.15) {
+      return {
+        year: null,
+        error: `This import mixes multiple years (${sorted
+          .slice(0, 3)
+          .map(([y]) => y)
+          .join(', ')}). Use one year per upload or fix the year field before saving.`,
+      };
+    }
+  }
+  return { year: topYear };
+}
+
+function pyqRowToDraft(r: PYQRow): Draft {
+  const opts = Array.isArray(r.options) ? r.options : [];
+  const get = (i: number) => (opts[i] != null ? String(opts[i]) : '');
+  const idx = r.correct_index != null ? Math.max(0, Math.min(3, r.correct_index)) : 0;
+  const letter = (['A', 'B', 'C', 'D'] as const)[idx];
+  const meta = r.metadata && typeof r.metadata === 'object' ? (r.metadata as Record<string, unknown>) : {};
+  return {
+    ...emptyDraft,
+    question_text: r.question_text || '',
+    question_format: r.question_format || 'text',
+    option_a: get(0),
+    option_b: get(1),
+    option_c: get(2),
+    option_d: get(3),
+    correct_answer: letter,
+    correct_index: idx,
+    explanation: r.explanation || '',
+    question_type: r.question_type || 'mcq',
+    difficulty: r.difficulty || 'Medium',
+    subject_name: r.subject_name || '',
+    chapter_name: r.chapter_name || '',
+    topic_tag: r.topic_tag || '',
+    class_name: r.class_name || 'NEET',
+    year: r.year != null ? String(r.year) : '',
+    source_exam: r.source_exam || 'NEET',
+    paper_code: r.paper_code || '',
+    image_url: r.image_url || '',
+    doc_image_index: null,
+    paper_part: String(meta.paper_part ?? ''),
+    source_question_number: String(meta.source_question_number ?? ''),
+    previewKey: r.id,
+  };
+}
+
 const COMPACT_OPT_LEN = 58;
 function shouldCompactMcqOptions(opts: string[]): boolean {
   if (opts.length !== 4) return false;
@@ -945,7 +1016,9 @@ const PyqPreviewModal: React.FC<{
   sourceLabel: string | null;
   saving: boolean;
   onCommit: () => void;
-}> = ({ open, onClose, drafts, sourceLabel, saving, onCommit }) => {
+  /** Saved batch preview — hide save, adjust header. */
+  readOnly?: boolean;
+}> = ({ open, onClose, drafts, sourceLabel, saving, onCommit, readOnly = false }) => {
   const figureCount = useMemo(() => drafts.reduce((n, d) => n + (d.image_url?.trim() ? 1 : 0), 0), [drafts]);
 
   if (!open) return null;
@@ -965,13 +1038,16 @@ const PyqPreviewModal: React.FC<{
       >
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3">
           <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-widest text-zinc-500">Test paper preview</p>
+            <p className="text-xs font-black uppercase tracking-widest text-zinc-500">
+              {readOnly ? 'Batch paper view' : 'Test paper preview'}
+            </p>
             <p className="truncate text-sm font-semibold text-zinc-900" title={sourceLabel || ''}>
               {sourceLabel || 'Parsed questions'}
             </p>
             <p className="text-[11px] text-zinc-500">
               {drafts.length} question{drafts.length === 1 ? '' : 's'} · {figureCount} with figure{figureCount === 1 ? '' : 's'}{' '}
               (LaTeX + tables inline)
+              {readOnly ? ' · read-only' : ''}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -982,21 +1058,23 @@ const PyqPreviewModal: React.FC<{
             >
               Close
             </button>
-            <button
-              type="button"
-              disabled={saving || drafts.length === 0}
-              onClick={() => void onCommit()}
-              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {saving ? 'Saving…' : 'Save to PYQ bank'}
-            </button>
+            {!readOnly ? (
+              <button
+                type="button"
+                disabled={saving || drafts.length === 0}
+                onClick={() => void onCommit()}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Save to PYQ bank'}
+              </button>
+            ) : null}
           </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-100/80 p-4">
           <div className="mx-auto max-w-[210mm] rounded-sm border-[0.5pt] border-black bg-white shadow-md">
             <div className="border-b-[0.5pt] border-black px-4 py-2 text-center text-[11px] font-bold uppercase tracking-widest text-black">
-              Preview — not saved
+              {readOnly ? 'Saved batch (preview)' : 'Preview — not saved'}
             </div>
             <div
               className="p-4 sm:p-5"
@@ -1007,11 +1085,17 @@ const PyqPreviewModal: React.FC<{
               }}
             >
               <div className="h-[0.5pt] w-full bg-black" />
-              <div className="mt-3 columns-1 gap-8 md:columns-2 md:gap-10">
-                {drafts.map((d, i) => (
-                  <PyqPaperQuestion key={`${i}-${d.question_text.slice(0, 24)}`} draft={d} index={i} />
-                ))}
-              </div>
+              {drafts.length === 0 ? (
+                <p className="py-12 text-center text-[11px] text-zinc-500">
+                  {readOnly ? 'No questions in this batch yet.' : 'Nothing to preview.'}
+                </p>
+              ) : (
+                <div className="mt-3 columns-1 gap-8 md:columns-2 md:gap-10">
+                  {drafts.map((d, i) => (
+                    <PyqPaperQuestion key={d.previewKey || `${i}-${d.question_text.slice(0, 24)}`} draft={d} index={i} />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1031,6 +1115,8 @@ const PYQManager: React.FC = () => {
   const [previewRows, setPreviewRows] = useState<Draft[]>([]);
   const [activeUploadSetId, setActiveUploadSetId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewBulkYear, setPreviewBulkYear] = useState('');
+  const [previewBulkSubject, setPreviewBulkSubject] = useState('');
   const [pendingCommit, setPendingCommit] = useState<{ files: File[]; kind: string } | null>(null);
   const [docImportQueue, setDocImportQueue] = useState<File[]>([]);
   const [docQueueStats, setDocQueueStats] = useState<{ name: string; chars: number }[]>([]);
@@ -1055,6 +1141,7 @@ const PYQManager: React.FC = () => {
   const [filterFormat, setFilterFormat] = useState('');
   const [filterExam, setFilterExam] = useState('');
   const [expandedSetId, setExpandedSetId] = useState<string | null>(null);
+  const [batchPaperPreview, setBatchPaperPreview] = useState<{ setId: string; label: string } | null>(null);
 
   const setNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1065,7 +1152,7 @@ const PYQManager: React.FC = () => {
   const loadUploadSets = useCallback(async () => {
     const { data, error } = await supabase
       .from('pyq_upload_sets')
-      .select('id, created_at, original_filename, source_kind, uploaded_by')
+      .select('id, created_at, original_filename, source_kind, uploaded_by, ingestion_year, metadata')
       .order('created_at', { ascending: false })
       .limit(200);
     if (error) throw error;
@@ -1264,28 +1351,58 @@ const PYQManager: React.FC = () => {
     }
   }, [docImportQueue, pyqGeminiModel, pyqImportParser]);
 
-  const createUploadSet = async (originalFilename: string, kind: string): Promise<string | null> => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { data, error } = await supabase
-      .from('pyq_upload_sets')
-      .insert({
-        original_filename: originalFilename.slice(0, 500),
-        source_kind: kind,
-        uploaded_by: user?.id ?? null,
-      })
-      .select('id')
-      .single();
-    if (error) {
-      alert(error.message);
-      return null;
-    }
-    const id = data.id as string;
-    setActiveUploadSetId(id);
-    await loadUploadSets();
-    return id;
-  };
+  /** One Supabase row per exam year; reuses existing row so separate uploads merge into the same batch. */
+  const resolveYearUploadSet = useCallback(
+    async (year: number, sourceKind: string, sourceLabel: string): Promise<string | null> => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const userId = user?.id ?? null;
+      const { data: hit, error: selErr } = await supabase
+        .from('pyq_upload_sets')
+        .select('id')
+        .eq('ingestion_year', year)
+        .maybeSingle();
+      if (selErr) {
+        alert(selErr.message);
+        return null;
+      }
+      if (hit?.id) {
+        await loadUploadSets();
+        return hit.id as string;
+      }
+      const displayName = `NEET PYQ ${year}`;
+      const { data: inserted, error } = await supabase
+        .from('pyq_upload_sets')
+        .insert({
+          original_filename: displayName.slice(0, 500),
+          source_kind: sourceKind,
+          uploaded_by: userId,
+          ingestion_year: year,
+          metadata: { last_import_label: sourceLabel.slice(0, 500) },
+        })
+        .select('id')
+        .single();
+      if (error) {
+        if ((error as { code?: string }).code === '23505') {
+          const { data: retry } = await supabase
+            .from('pyq_upload_sets')
+            .select('id')
+            .eq('ingestion_year', year)
+            .maybeSingle();
+          if (retry?.id) {
+            await loadUploadSets();
+            return retry.id as string;
+          }
+        }
+        alert(error.message);
+        return null;
+      }
+      await loadUploadSets();
+      return inserted!.id as string;
+    },
+    [loadUploadSets]
+  );
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this PYQ?')) return;
@@ -1354,28 +1471,24 @@ const PYQManager: React.FC = () => {
     }
     setSaving(true);
     try {
+      const derived = deriveIngestionYearFromDrafts(previewRows);
+      if (derived.error) {
+        alert(derived.error);
+        return;
+      }
+      const year = derived.year!;
+      const sourceKind = pendingCommit?.kind || 'doc';
       const importLabelForSlug =
         pendingCommit?.files?.length
           ? formatPendingCommitLabel(pendingCommit.files)
-          : activeUploadSetId
-            ? setNameById.get(activeUploadSetId) || null
-            : null;
-      const slugBase = (importLabelForSlug || 'pyq-import').replace(/[^\w.\-]+/g, '_').slice(0, 60);
+          : previewSourceLabel || `PYQ ${year}`;
+      const slugBase = (`${year}-${importLabelForSlug}` || 'pyq-import').replace(/[^\w.\-]+/g, '_').slice(0, 60);
 
-      let setId = activeUploadSetId;
-      if (!setId) {
-        if (!pendingCommit?.files?.length) {
-          alert('Re-import the file, then save.');
-          return;
-        }
-        const created = await createUploadSet(
-          formatPendingCommitLabel(pendingCommit.files),
-          pendingCommit.kind
-        );
-        if (!created) return;
-        setId = created;
-        setPendingCommit(null);
-      }
+      const setId = await resolveYearUploadSet(year, sourceKind, importLabelForSlug);
+      if (!setId) return;
+      setPendingCommit(null);
+      setActiveUploadSetId(null);
+
       const user = await supabase.auth.getUser();
       const ordered = sortDraftsExamOrder(previewRows);
       const withUploadedImages = await Promise.all(
@@ -1391,6 +1504,8 @@ const PYQManager: React.FC = () => {
       const { error } = await supabase.from('pyq_questions_neet').insert(payload);
       if (error) throw error;
       setPreviewRows([]);
+      setPreviewBulkYear('');
+      setPreviewBulkSubject('');
       setPyqParseSanityWarnings([]);
       setActiveUploadSetId(null);
       setPreviewModalOpen(false);
@@ -1405,6 +1520,8 @@ const PYQManager: React.FC = () => {
 
   const cancelPreview = () => {
     setPreviewRows([]);
+    setPreviewBulkYear('');
+    setPreviewBulkSubject('');
     setPyqParseSanityWarnings([]);
     setActiveUploadSetId(null);
     setPendingCommit(null);
@@ -1412,6 +1529,21 @@ const PYQManager: React.FC = () => {
     setDocQueueStats([]);
     setPreviewModalOpen(false);
   };
+
+  const applyPreviewBulkMeta = useCallback(() => {
+    setPreviewRows((prev) =>
+      prev.map((r) => ({
+        ...r,
+        ...(previewBulkYear.trim() ? { year: previewBulkYear.trim() } : {}),
+        ...(previewBulkSubject.trim() ? { subject_name: previewBulkSubject.trim() } : {}),
+      }))
+    );
+  }, [previewBulkYear, previewBulkSubject]);
+
+  const previewIngestionDerive = useMemo(
+    () => (previewRows.length === 0 ? { year: null as number | null, error: undefined as string | undefined } : deriveIngestionYearFromDrafts(previewRows)),
+    [previewRows]
+  );
 
   const rowMatchesFilters = useCallback(
     (r: {
@@ -1467,6 +1599,9 @@ const PYQManager: React.FC = () => {
       if (r.source_exam?.trim()) exams.add(r.source_exam.trim());
     };
     rows.forEach(addRow);
+    uploadSets.forEach((s) => {
+      if (s.ingestion_year != null) years.add(s.ingestion_year);
+    });
     previewRows.forEach((p) => {
       const y = Number(p.year);
       if (Number.isFinite(y)) years.add(y);
@@ -1484,7 +1619,7 @@ const PYQManager: React.FC = () => {
       formats: Array.from(formats).sort(),
       exams: Array.from(exams).sort(),
     };
-  }, [rows, previewRows]);
+  }, [rows, uploadSets, previewRows]);
 
   const countsBySet = useMemo(() => {
     const m = new Map<string, number>();
@@ -1496,6 +1631,8 @@ const PYQManager: React.FC = () => {
 
   const aggregateForSet = useCallback(
     (setId: string) => {
+      const uploadSet = uploadSets.find((s) => s.id === setId);
+      const bucketYear = uploadSet?.ingestion_year;
       const qs = rows.filter((r) => r.upload_set_id === setId);
       const fromPreview = setId === activeUploadSetId ? previewRows : [];
       const years: number[] = [];
@@ -1513,8 +1650,9 @@ const PYQManager: React.FC = () => {
         if (p.question_type) types.add(p.question_type);
       });
       years.sort((a, b) => a - b);
-      const yLabel =
+      const yLabelFromRows =
         years.length === 0 ? '—' : years[0] === years[years.length - 1] ? String(years[0]) : `${years[0]}–${years[years.length - 1]}`;
+      const yLabel = bucketYear != null ? String(bucketYear) : yLabelFromRows;
       return {
         count: setId === activeUploadSetId && previewRows.length > 0 ? previewRows.length : countsBySet.get(setId) || 0,
         yearLabel: yLabel,
@@ -1523,21 +1661,28 @@ const PYQManager: React.FC = () => {
         pending: setId === activeUploadSetId && previewRows.length > 0 && countsBySet.get(setId) === 0,
       };
     },
-    [rows, activeUploadSetId, previewRows, countsBySet]
+    [rows, uploadSets, activeUploadSetId, previewRows, countsBySet]
   );
 
   const setMatchesFilters = useCallback(
     (setId: string) => {
       const qs = rows.filter((r) => r.upload_set_id === setId);
       const prev = setId === activeUploadSetId ? previewRows : [];
+      const uploadSet = uploadSets.find((s) => s.id === setId);
+      const ingestY = uploadSet?.ingestion_year;
       if (qs.length === 0 && prev.length === 0) return !searchQuery && !filterYear && !filterSubject && !filterType && !filterDifficulty && !filterFormat && !filterExam;
       const anyRow =
-        qs.some((r) => rowMatchesFilters(r)) || prev.some((d) => draftMatchesFilters(d));
+        qs.some((r) => rowMatchesFilters(r)) ||
+        prev.some((d) => draftMatchesFilters(d)) ||
+        (filterYear &&
+          ingestY != null &&
+          String(ingestY) === filterYear &&
+          qs.some((r) => rowMatchesFilters({ ...r, year: r.year ?? ingestY })));
       const name = (setNameById.get(setId) || '').toLowerCase();
       const searchOk = !searchQuery.trim() || name.includes(searchQuery.trim().toLowerCase()) || anyRow;
       return searchOk && (qs.length + prev.length === 0 || anyRow);
     },
-    [rows, activeUploadSetId, previewRows, rowMatchesFilters, draftMatchesFilters, searchQuery, filterYear, filterSubject, filterType, filterDifficulty, filterFormat, filterExam, setNameById]
+    [rows, uploadSets, activeUploadSetId, previewRows, rowMatchesFilters, draftMatchesFilters, searchQuery, filterYear, filterSubject, filterType, filterDifficulty, filterFormat, filterExam, setNameById]
   );
 
   const filteredSets = useMemo(() => uploadSets.filter((s) => setMatchesFilters(s.id)), [uploadSets, setMatchesFilters]);
@@ -1563,6 +1708,12 @@ const PYQManager: React.FC = () => {
       null,
     [pendingCommit, activeUploadSetId, setNameById]
   );
+
+  const batchPreviewDrafts = useMemo(() => {
+    if (!batchPaperPreview) return [];
+    const list = rows.filter((r) => r.upload_set_id === batchPaperPreview.setId);
+    return sortDraftsExamOrder(list.map(pyqRowToDraft));
+  }, [rows, batchPaperPreview]);
 
   const clearFilters = () => {
     setSearchQuery('');
@@ -1653,7 +1804,8 @@ const PYQManager: React.FC = () => {
         <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
           For documents: add one or more files, choose a Gemini model, then click <strong>Parse all with Gemini</strong>. Set{' '}
           <strong>year</strong> (e.g. 2025) per row or in the doc; multi-part papers use <strong>paper_part</strong> and{' '}
-          <strong>source_question_number</strong> in metadata. Then <strong>Save to bank</strong>.
+          <strong>source_question_number</strong> in metadata. Then <strong>Save to bank</strong>. Imports are grouped into{' '}
+          <strong>one upload batch per exam year</strong>—parsing another file for the same year adds questions to that batch.
         </p>
 
         {previewRows.length === 0 ? (
@@ -1801,7 +1953,8 @@ const PYQManager: React.FC = () => {
                 <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50/90 px-2 py-2 text-[10px] leading-snug text-zinc-600">
                   {pyqImportParser === 'local' ? (
                     <span>
-                      <span className="font-semibold text-zinc-800">Local parse:</span> no Gemini calls and no API cost for this import.
+                      <span className="font-semibold text-zinc-800">Local parse:</span> no Gemini calls and no API cost. Year and subject are
+                      often empty—use <strong>Year & subject</strong> under the preview (or edit table cells) before <strong>Save to bank</strong>.
                     </span>
                   ) : docQueueScanning ? (
                     <span className="flex items-center gap-2 text-violet-700">
@@ -1881,6 +2034,54 @@ const PYQManager: React.FC = () => {
                   New import
                 </button>
               </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-3">
+              <p className="text-[11px] font-semibold text-indigo-900">Year & subject</p>
+              <p className="mt-0.5 text-[10px] leading-snug text-indigo-900/75">
+                Saving requires a consistent <strong>exam year</strong> on the rows (yearly batch). Set values here and apply to every row, or edit
+                the table cells below.
+              </p>
+              <div className="mt-2 flex flex-wrap items-end gap-2">
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-zinc-500">Exam year</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    placeholder="e.g. 2024"
+                    value={previewBulkYear}
+                    onChange={(e) => setPreviewBulkYear(e.target.value)}
+                    className="w-[88px] rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-indigo-400"
+                  />
+                </label>
+                <label className="flex min-w-[140px] flex-1 flex-col gap-0.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-zinc-500">Subject (optional)</span>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    placeholder="e.g. Physics"
+                    value={previewBulkSubject}
+                    onChange={(e) => setPreviewBulkSubject(e.target.value)}
+                    className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-indigo-400"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => applyPreviewBulkMeta()}
+                  disabled={
+                    !previewBulkYear.trim() && !previewBulkSubject.trim()
+                  }
+                  className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-indigo-800 shadow-sm hover:bg-indigo-50 disabled:opacity-50"
+                >
+                  Apply to all rows
+                </button>
+              </div>
+              {previewIngestionDerive.error ? (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50/90 px-2 py-1.5 text-[10px] leading-snug text-amber-950">
+                  {previewIngestionDerive.error}
+                </p>
+              ) : null}
             </div>
 
             {pyqParseSanityWarnings.length > 0 ? (
@@ -1965,10 +2166,37 @@ const PYQManager: React.FC = () => {
                         </td>
                         <td className="px-2 py-2 text-zinc-600">{r.question_format || 'text'}</td>
                         <td className="px-2 py-2 text-zinc-600">{r.question_type || 'mcq'}</td>
-                        <td className="px-2 py-2 text-zinc-600">{r.subject_name || '—'}</td>
+                        <td className="px-2 py-1 align-top">
+                          <input
+                            value={r.subject_name}
+                            onChange={(e) =>
+                              setPreviewRows((rows) => {
+                                const next = [...rows];
+                                next[i] = { ...next[i], subject_name: e.target.value };
+                                return next;
+                              })
+                            }
+                            aria-label={`Subject row ${i + 1}`}
+                            className="w-full min-w-[5rem] max-w-[7.5rem] rounded border border-zinc-200 bg-white px-1 py-1 text-[11px] text-zinc-800 outline-none focus:border-indigo-400"
+                          />
+                        </td>
                         <td className="px-2 py-2 text-zinc-600">{r.chapter_name || '—'}</td>
                         <td className="px-2 py-2 text-zinc-600">{r.difficulty || '—'}</td>
-                        <td className="px-2 py-2 text-zinc-600">{r.year || '—'}</td>
+                        <td className="px-2 py-1 align-top">
+                          <input
+                            value={r.year}
+                            onChange={(e) =>
+                              setPreviewRows((rows) => {
+                                const next = [...rows];
+                                next[i] = { ...next[i], year: e.target.value };
+                                return next;
+                              })
+                            }
+                            inputMode="numeric"
+                            aria-label={`Exam year row ${i + 1}`}
+                            className="w-[3.75rem] rounded border border-zinc-200 bg-white px-1 py-1 text-[11px] text-zinc-800 outline-none focus:border-indigo-400"
+                          />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1986,6 +2214,16 @@ const PYQManager: React.FC = () => {
         sourceLabel={previewSourceLabel}
         saving={saving}
         onCommit={uploadPreviewRows}
+      />
+
+      <PyqPreviewModal
+        open={batchPaperPreview != null}
+        onClose={() => setBatchPaperPreview(null)}
+        drafts={batchPreviewDrafts}
+        sourceLabel={batchPaperPreview?.label ?? null}
+        saving={false}
+        onCommit={() => {}}
+        readOnly
       />
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4">
@@ -2145,9 +2383,17 @@ const PYQManager: React.FC = () => {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-zinc-900" title={s.original_filename || ''}>
-                        {s.original_filename || 'Upload'}
+                      <p
+                        className="truncate text-sm font-semibold text-zinc-900"
+                        title={s.ingestion_year != null ? `Year ${s.ingestion_year}` : s.original_filename || ''}
+                      >
+                        {s.ingestion_year != null ? `Year ${s.ingestion_year}` : s.original_filename || 'Upload'}
                       </p>
+                      {s.ingestion_year != null && s.original_filename ? (
+                        <p className="mt-0.5 truncate text-[10px] text-zinc-500" title={s.original_filename}>
+                          {s.original_filename}
+                        </p>
+                      ) : null}
                       <p className="mt-0.5 text-[10px] text-zinc-400">{new Date(s.created_at).toLocaleString()}</p>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1">
@@ -2176,6 +2422,21 @@ const PYQManager: React.FC = () => {
                   </div>
                   <p className="mt-1 text-[10px] uppercase text-zinc-400">Source: {s.source_kind}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setBatchPaperPreview({
+                          setId: s.id,
+                          label:
+                            s.ingestion_year != null
+                              ? `Year ${s.ingestion_year}${s.original_filename ? ` · ${s.original_filename}` : ''}`
+                              : s.original_filename || 'PYQ batch',
+                        })
+                      }
+                      className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[10px] font-semibold text-indigo-800 hover:bg-indigo-100"
+                    >
+                      Preview paper
+                    </button>
                     <button
                       type="button"
                       onClick={() => setExpandedSetId(expanded ? null : s.id)}
