@@ -36,7 +36,7 @@ import {
   TypeDistribution,
   CreateTestOptions,
 } from './types';
-import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractImagesFromDoc } from '../services/geminiService';
+import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractChapterReferenceImages } from '../services/geminiService';
 import {
   fetchEligibleQuestions,
   isUuid,
@@ -854,11 +854,11 @@ const Quiz: React.FC = () => {
               rawText = p.text;
               allPossibleImgs = p.images;
           } else if (chap.id) { 
-              const { data } = await supabase.from('chapters').select('raw_text, doc_path').eq('id', chap.id).maybeSingle(); 
+              const { data } = await supabase.from('chapters').select('raw_text, doc_path, pdf_path').eq('id', chap.id).maybeSingle(); 
               if (data?.raw_text) rawText = data.raw_text;
-              if (data?.doc_path && chap.figureCount > 0 && chap.visualMode === 'image') {
+              if (chap.figureCount > 0 && chap.visualMode === 'image') {
                   setStatus(`Scanning source material for ${chap.name}...`);
-                  allPossibleImgs = await extractImagesFromDoc(data.doc_path);
+                  allPossibleImgs = await extractChapterReferenceImages(data?.doc_path ?? null, data?.pdf_path ?? null);
               }
           }
 

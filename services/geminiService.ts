@@ -4,8 +4,23 @@ import { Question, QuestionType, TypeDistribution } from "../Quiz/types";
 import { supabase } from "../supabase/client";
 import { assertGeminiApiKey } from "../config/env";
 import { FORGE_FORMAT_PROTOCOLS } from "./neuralStudioPromptBlueprint";
+import * as pdfjs from "pdfjs-dist";
 
 declare const mammoth: any;
+
+const PDFJS_WORKER_VER = "4.10.38";
+let pdfjsWorkerReady = false;
+
+function ensurePdfJsWorker() {
+    if (typeof window === "undefined") return;
+    if (pdfjsWorkerReady) return;
+    pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${PDFJS_WORKER_VER}/build/pdf.worker.min.mjs`;
+    pdfjsWorkerReady = true;
+}
+
+function storagePathLooksPdf(path: string) {
+    return path.toLowerCase().split("?")[0].endsWith(".pdf");
+}
 
 const retryWithBackoff = async <T>(
   operation: () => Promise<T>, 
@@ -189,13 +204,19 @@ export const downsampleImage = (base64Data: string, mimeType: string, maxDim = 1
 };
 
 export const extractImagesFromDoc = async (docPath: string): Promise<{ data: string, mimeType: string }[]> => {
+    if (storagePathLooksPdf(docPath)) return [];
     try {
+        const mammothLib = (window as any).mammoth;
+        if (!mammothLib?.convertToHtml || !mammothLib?.images?.imgElement) {
+            console.warn("mammoth is not available on window; skip DOCX image extraction");
+            return [];
+        }
         const { data: blob } = await supabase.storage.from('chapters').download(docPath);
         if (!blob) return [];
         const arrayBuffer = await blob.arrayBuffer();
         const images: { data: string, mimeType: string }[] = [];
-        await (window as any).mammoth.convertToHtml({ arrayBuffer }, {
-            convertImage: (window as any).mammoth.images.imgElement((image: any) => image.read("base64").then((imageBuffer: string) => {
+        await mammothLib.convertToHtml({ arrayBuffer }, {
+            convertImage: mammothLib.images.imgElement((image: any) => image.read("base64").then((imageBuffer: string) => {
                 images.push({ data: imageBuffer, mimeType: image.contentType || 'image/png' });
                 return { src: "" };
             }))
@@ -206,6 +227,73 @@ export const extractImagesFromDoc = async (docPath: string): Promise<{ data: str
         console.error("Extraction error", e);
         return [];
     }
+};
+
+/**
+ * Renders PDF pages to JPEG thumbnails (for chapters stored as PDF only, or when DOCX has no embedded images).
+ */
+export const extractImagesFromPdfPath = async (
+    pdfPath: string,
+    opts?: { maxPages?: number; scale?: number; maxDim?: number }
+): Promise<{ data: string; mimeType: string }[]> => {
+    ensurePdfJsWorker();
+    const maxPages = Math.min(Math.max(opts?.maxPages ?? 48, 1), 80);
+    const scale = opts?.scale ?? 1.25;
+    const maxDim = opts?.maxDim ?? 1200;
+    try {
+        const { data: blob, error } = await supabase.storage.from("chapters").download(pdfPath);
+        if (error || !blob) return [];
+        const arrayBuffer = await blob.arrayBuffer();
+        const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return [];
+        const out: { data: string; mimeType: string }[] = [];
+        const n = Math.min(pdf.numPages, maxPages);
+        for (let i = 1; i <= n; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale });
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const renderTask = page.render({ canvasContext: ctx, viewport });
+            await renderTask.promise;
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+            const parts = dataUrl.split(",");
+            const b64 = parts[1]?.trim();
+            if (b64) out.push({ data: b64, mimeType: "image/jpeg" });
+        }
+        const processed = await Promise.all(out.map((img) => downsampleImage(img.data, img.mimeType, maxDim)));
+        return processed.filter((p) => p.data);
+    } catch (e) {
+        console.error("PDF image extraction error", e);
+        return [];
+    }
+};
+
+/**
+ * Neural Studio / forge: embedded images from DOCX when present; otherwise page renders from chapter PDF.
+ */
+export const extractChapterReferenceImages = async (
+    docPath: string | null | undefined,
+    pdfPath: string | null | undefined,
+    options?: { maxPdfPages?: number; pdfScale?: number; maxDim?: number }
+): Promise<{ data: string; mimeType: string }[]> => {
+    let fromDoc: { data: string; mimeType: string }[] = [];
+    if (docPath && !storagePathLooksPdf(docPath)) {
+        fromDoc = await extractImagesFromDoc(docPath);
+    }
+    if (fromDoc.length > 0) return fromDoc;
+    const pdfRef =
+        docPath && storagePathLooksPdf(docPath) ? docPath : pdfPath && pdfPath.trim() ? pdfPath : null;
+    if (!pdfRef) return [];
+    return extractImagesFromPdfPath(pdfRef, {
+        maxPages: options?.maxPdfPages,
+        scale: options?.pdfScale,
+        maxDim: options?.maxDim,
+    });
 };
 
 export const generateQuizQuestions = async (

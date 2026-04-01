@@ -2,7 +2,7 @@
 import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
-import { generateQuizQuestions, ensureApiKey, extractImagesFromDoc, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
+import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
 import { QuestionType, Question } from '../../Quiz/types';
 import QuestionPaperItem, { QuestionFlagReason } from '../../Quiz/components/QuestionPaperItem';
@@ -275,8 +275,49 @@ const QuestionBankHome: React.FC = () => {
           if (selectedChapterIds.size > 0) fetchQuestions();
           else { setQuestions([]); setTotalCount(0); }
       }
-      else if (mode === 'studio') handleStudioChapterTransition();
   }, [selectedChapterIds, mode, currentPage, browseFilters.style, browseFilters.difficulty, browseFilters.hasFigure]);
+
+  const activeChapterVisualMode = activeEditingChapterId ? chapterConfigs[activeEditingChapterId]?.visualMode : undefined;
+
+  useEffect(() => {
+      if (mode !== 'studio') {
+          setExtractedFigures([]);
+          setIsExtracting(false);
+          return;
+      }
+      if (!activeEditingChapterId) {
+          setExtractedFigures([]);
+          setIsExtracting(false);
+          return;
+      }
+      if (activeChapterVisualMode !== 'image') {
+          setExtractedFigures([]);
+          setIsExtracting(false);
+          return;
+      }
+      let cancelled = false;
+      setIsExtracting(true);
+      (async () => {
+          try {
+              const { data: row } = await supabase
+                  .from('chapters')
+                  .select('doc_path, pdf_path')
+                  .eq('id', activeEditingChapterId)
+                  .single();
+              if (cancelled) return;
+              const imgs = await extractChapterReferenceImages(row?.doc_path ?? null, row?.pdf_path ?? null);
+              if (!cancelled) setExtractedFigures(imgs);
+          } catch (e) {
+              console.error('Reference image load failed', e);
+              if (!cancelled) setExtractedFigures([]);
+          } finally {
+              if (!cancelled) setIsExtracting(false);
+          }
+      })();
+      return () => {
+          cancelled = true;
+      };
+  }, [mode, activeEditingChapterId, activeChapterVisualMode]);
 
   // ... (Syllabus and Extraction logic remains same) ...
   useEffect(() => {
@@ -318,13 +359,6 @@ const QuestionBankHome: React.FC = () => {
             return { ...prev, [activeEditingChapterId!]: cfg as ChapterConfig };
         });
     } catch (e) { console.error("Syllabus fetch failed", e); setActiveChapterSyllabus([]); } finally { setIsFetchingSyllabus(false); }
-  };
-
-  const handleStudioChapterTransition = async () => {
-      // ... (same logic as original) ...
-      if (!activeEditingChapterId || (chapterConfigs[activeEditingChapterId] && chapterConfigs[activeEditingChapterId].visualMode !== 'image')) { setExtractedFigures([]); return; }
-      setIsExtracting(true);
-      try { const { data: chapter } = await supabase.from('chapters').select('doc_path').eq('id', activeEditingChapterId).single(); if (chapter?.doc_path) setExtractedFigures(await extractImagesFromDoc(chapter.doc_path)); else setExtractedFigures([]); } catch (e) { setExtractedFigures([]); } finally { setIsExtracting(false); }
   };
 
   const fetchBulkStats = async (chapterIds: string[]) => {
@@ -444,9 +478,10 @@ const QuestionBankHome: React.FC = () => {
                       boundariesContext = `[STRICT BOUNDARIES]: Topics: ${boundaryTopics.join(', ')}.`;
                     }
                   } catch { /* ignore */ }
-                  const contentRes = await supabase.from('chapters').select('raw_text, doc_path').eq('id', chapId).single();
+                  const contentRes = await supabase.from('chapters').select('raw_text, doc_path, pdf_path').eq('id', chapId).single();
                   const rawText = (contentRes.data?.raw_text || "") + "\n\n" + boundariesContext;
-                  const docPath = contentRes.data?.doc_path || chapter.doc_path; 
+                  const docPath = contentRes.data?.doc_path || chapter.doc_path;
+                  const pdfPath = contentRes.data?.pdf_path || chapter.pdf_path;
 
                   let chapterGeneratedQs: Question[] = [];
                   if (config.synthesisMode === 'syllabus') {
@@ -460,7 +495,7 @@ const QuestionBankHome: React.FC = () => {
                   } else {
                       config.total = Object.values(config.types).reduce((a: number, b: number) => a + b, 0);
                       let figureCount = 0; let sourceImages: {data: string, mimeType: string}[] = [];
-                      if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); if (docPath) { setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractImagesFromDoc(docPath); } } else figureCount = config.syntheticFigureCount || 0;
+                      if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null); } else figureCount = config.syntheticFigureCount || 0;
                       
                       setForgeProgress(`${progressPrefix}: Synthesizing Questions...`);
                       const gen: Question[] = await generateQuizQuestions(String(chapter.name), config.diff, config.total, { text: rawText, images: sourceImages }, config.types, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized);
@@ -1353,7 +1388,70 @@ const QuestionBankHome: React.FC = () => {
                                                     <>
                                                         <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Visual Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => updateActiveConfig('visualMode', null, 'text')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'text' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Text Only</button><button onClick={() => updateActiveConfig('visualMode', null, 'image')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'image' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Reference Image</button></div></div>
                                                         {activeConfig.visualMode === 'text' && <div className="bg-indigo-50/50 p-5 rounded-[2rem] border border-indigo-100 animate-slide-up"><div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><iconify-icon icon="mdi:auto-fix" className="text-indigo-600" /><span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Proportional Rigor Scalar</span></div><span className="bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-[10px] font-black text-indigo-700 shadow-sm">{activeConfig.total} Items</span></div><input type="range" min="1" max="100" value={activeConfig.total} onChange={(e) => handleUpdateProportionalTotal(parseInt(e.target.value))} className="w-full h-1.5 bg-indigo-200 rounded-full appearance-none cursor-pointer accent-indigo-600 mb-3" /><button onClick={() => updateActiveConfig('isProportional', null, !activeConfig.isProportional)} className="mt-4 w-full py-1.5 bg-white border border-indigo-100 rounded-xl text-[8px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600 transition-colors">{activeConfig.isProportional ? 'Switch to Manual Distribution' : 'Lock Proportional Mode'}</button></div>}
-                                                        {activeConfig.visualMode === 'image' ? <div className="grid grid-cols-2 gap-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 p-1 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">{extractedFigures.length > 0 ? extractedFigures.map((fig, idx) => { const count = activeConfig.selectedFigures?.[idx] || 0; return <div key={idx} className={`relative group aspect-square bg-white border-2 rounded-2xl overflow-hidden transition-all ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-zinc-100 opacity-60'}`}><img src={`data:${fig.mimeType};base64,${fig.data}`} className="w-full h-full object-cover mix-blend-multiply" /><div className="absolute inset-0 bg-zinc-900/0 group-hover:bg-zinc-900/40 transition-all flex items-center justify-center gap-2"><button onClick={() => handleUpdateFigureCount(idx, count - 1)} className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"><iconify-icon icon="mdi:minus" /></button><div className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center">{count}</div><button onClick={() => handleUpdateFigureCount(idx, count + 1)} className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"><iconify-icon icon="mdi:plus" /></button></div></div>; }) : <p className="col-span-2 text-[9px] text-center py-10 font-bold text-zinc-400">No figures found in chapter source.</p>}</div> : !activeConfig.isProportional && <StepNumberInput icon="mdi:molecule" label="Synthetic Visuals" subText="Circuits, Structures, Graphs" color="text-rose-600" value={activeConfig.syntheticFigureCount || 0} onChange={(v:number) => updateActiveConfig('syntheticFigureCount', null, v)} />}
+                                                        {activeConfig.visualMode === 'image' ? (
+                                                          <div className="space-y-2">
+                                                            <p className="text-[8px] font-medium text-zinc-500 px-0.5 leading-relaxed">
+                                                              From DOCX embeds, or PDF pages if the chapter has no DOCX images. Toggle Reference Image again to reload.
+                                                            </p>
+                                                            <div className="grid grid-cols-2 gap-3 max-h-[min(420px,55vh)] overflow-y-auto custom-scrollbar pr-2 p-2 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
+                                                              {isExtracting ? (
+                                                                <div className="col-span-2 flex flex-col items-center justify-center py-14 gap-3 text-zinc-400">
+                                                                  <div className="w-10 h-10 border-2 border-zinc-200 border-t-indigo-500 rounded-full animate-spin" />
+                                                                  <span className="text-[10px] font-semibold uppercase tracking-wider">Loading reference images…</span>
+                                                                </div>
+                                                              ) : extractedFigures.length > 0 ? (
+                                                                extractedFigures.map((fig, idx) => {
+                                                                  const count = activeConfig.selectedFigures?.[idx] || 0;
+                                                                  return (
+                                                                    <div
+                                                                      key={idx}
+                                                                      className={`relative group flex flex-col bg-white border-2 rounded-2xl overflow-hidden transition-all min-h-0 ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-zinc-100'}`}
+                                                                    >
+                                                                      <div className="relative w-full bg-white flex items-center justify-center min-h-[140px] max-h-[220px]">
+                                                                        <img
+                                                                          src={`data:${fig.mimeType};base64,${fig.data}`}
+                                                                          alt=""
+                                                                          className="w-full h-full max-h-[220px] object-contain"
+                                                                        />
+                                                                      </div>
+                                                                      <span className="text-[7px] font-bold text-zinc-400 uppercase tracking-wider text-center py-1 border-t border-zinc-100 bg-zinc-50/80">
+                                                                        #{idx + 1}
+                                                                      </span>
+                                                                      <div className="absolute inset-0 bg-zinc-900/0 group-hover:bg-zinc-900/30 transition-all flex items-center justify-center gap-2 pointer-events-none group-hover:pointer-events-auto">
+                                                                        <button
+                                                                          type="button"
+                                                                          onClick={() => handleUpdateFigureCount(idx, count - 1)}
+                                                                          className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"
+                                                                        >
+                                                                          <iconify-icon icon="mdi:minus" />
+                                                                        </button>
+                                                                        <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-md">
+                                                                          {count}
+                                                                        </div>
+                                                                        <button
+                                                                          type="button"
+                                                                          onClick={() => handleUpdateFigureCount(idx, count + 1)}
+                                                                          className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"
+                                                                        >
+                                                                          <iconify-icon icon="mdi:plus" />
+                                                                        </button>
+                                                                      </div>
+                                                                    </div>
+                                                                  );
+                                                                })
+                                                              ) : (
+                                                                <div className="col-span-2 text-center py-10 px-3 space-y-2">
+                                                                  <p className="text-[10px] font-bold text-zinc-500">No reference images found</p>
+                                                                  <p className="text-[8px] text-zinc-400 leading-relaxed">
+                                                                    Upload a PDF or DOCX with figures on this chapter in Knowledge Base. PDFs load as page thumbnails (first 48 pages).
+                                                                  </p>
+                                                                </div>
+                                                              )}
+                                                            </div>
+                                                          </div>
+                                                        ) : !activeConfig.isProportional ? (
+                                                          <StepNumberInput icon="mdi:molecule" label="Synthetic Visuals" subText="Circuits, Structures, Graphs" color="text-rose-600" value={activeConfig.syntheticFigureCount || 0} onChange={(v:number) => updateActiveConfig('syntheticFigureCount', null, v)} />
+                                                        ) : null}
                                                         <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
                                                         <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
                                                     </>
