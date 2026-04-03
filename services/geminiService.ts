@@ -1,8 +1,8 @@
 
-import { GoogleGenAI, Type, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
+import { Type } from "@google/genai";
 import { Question, QuestionType, TypeDistribution } from "../Quiz/types";
 import { supabase } from "../supabase/client";
-import { assertGeminiApiKey } from "../config/env";
+import { adminGeminiGenerateContent } from "./adminGeminiProxy";
 import { FORGE_FORMAT_PROTOCOLS } from "./neuralStudioPromptBlueprint";
 import * as pdfjs from "pdfjs-dist";
 
@@ -87,12 +87,8 @@ const repairMalformedJsonLatex = (jsonStr: string): string => {
         .replace(/(?<!\\)\\(rho|right)/g, '\\\\$1');
 };
 
-export const ensureApiKey = async () => {
-  if (typeof window !== 'undefined' && (window as any).aistudio) {
-    const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-    if (!hasKey) await (window as any).aistudio.openSelectKey();
-  }
-};
+/** Legacy hook: Gemini runs on the server via /api/gemini; no browser API key. */
+export const ensureApiKey = async () => {};
 
 const cleanBase64 = (base64: string): string => {
     if (!base64) return "";
@@ -314,9 +310,6 @@ export const generateQuizQuestions = async (
   isConfusingChoices?: boolean,
   excludedTopicLabels?: string[]
 ): Promise<Question[]> => {
-  await ensureApiKey();
-  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
-  
   const styleInstruction = ((): string => {
     if (typeof qType === 'string') {
       return `STRICT FORMAT: All ${count} questions MUST be of type "${qType}".`;
@@ -451,11 +444,13 @@ export const generateQuizQuestions = async (
         config.thinkingConfig = { thinkingBudget: 0 };
     }
 
-    const response = await retryWithBackoff<GenerateContentResponse>(() => ai.models.generateContent({
-      model: modelName,
-      contents,
-      config: config
-    }));
+    const response = await retryWithBackoff(() =>
+      adminGeminiGenerateContent({
+        model: modelName,
+        contents,
+        config,
+      })
+    );
     
     // Repair the raw JSON string before parsing
     const rawText = response.text || "[]";
@@ -472,8 +467,6 @@ export const generateQuizQuestions = async (
 };
 
 export const generateCompositeStyleVariants = async (sourceBase64: string, sourceMimeType: string, prompts: string[], useAsIs: boolean = false): Promise<string[]> => {
-    await ensureApiKey();
-    const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
     const results: string[] = [];
     const cleanedSource = cleanBase64(sourceBase64);
     if (!cleanedSource) return [];
@@ -506,11 +499,11 @@ EXECUTION RULES (STRICT FIDELITY & CLEANING):
 
 Prompt: ${prompt}`;
             
-            const response = await ai.models.generateContent({
+            const response = await adminGeminiGenerateContent({
                 model: 'gemini-3-pro-image-preview',
                 contents: { parts: [imagePart, { text: instruction }] },
             });
-            const outputPart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
             if (outputPart?.inlineData?.data) {
                 results.push(cleanBase64(outputPart.inlineData.data));
             } else {
@@ -526,8 +519,6 @@ Prompt: ${prompt}`;
 };
 
 export const generateCompositeFigures = async (prompts: string[]): Promise<string[]> => {
-    await ensureApiKey();
-    const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
     const results: string[] = [];
     for (const prompt of prompts) {
         if (!prompt) {
@@ -550,11 +541,11 @@ RULES:
    - **CENSORSHIP**: Do NOT write the name of the structure (e.g. "Mitochondria") in the image. Use the Label (e.g. "A") only.
 4. **CLARITY**: Ensure lines are distinct and parts are easily distinguishable.`;
             
-            const response = await ai.models.generateContent({
+            const response = await adminGeminiGenerateContent({
                 model: 'gemini-3-pro-image-preview',
                 contents: { parts: [{ text: instruction }] },
             });
-            const outputPart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
             if (outputPart?.inlineData?.data) {
                 results.push(cleanBase64(outputPart.inlineData.data));
             } else {
@@ -570,15 +561,15 @@ RULES:
 };
 
 export const refineSystemPrompt = async (currentPrompt: string, instruction: string): Promise<string> => {
-    await ensureApiKey();
-    const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
     try {
-        const response = await ai.models.generateContent({
+        const response = await adminGeminiGenerateContent({
             model: 'gemini-3-flash-preview',
-            contents: `Refine prompt: ${instruction}. Current: ${currentPrompt}`
+            contents: `Refine prompt: ${instruction}. Current: ${currentPrompt}`,
         });
         return response.text || currentPrompt;
-    } catch (e) { return currentPrompt; }
+    } catch {
+        return currentPrompt;
+    }
 };
 
 export const forgeSequentialQuestions = generateQuizQuestions;

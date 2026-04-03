@@ -1,8 +1,8 @@
 import '../../types';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../supabase/client';
-import { GoogleGenAI, Type } from '@google/genai';
-import { assertGeminiApiKey } from '../../config/env';
+import { Type } from '@google/genai';
+import { adminGeminiGenerateContent } from '../../services/adminGeminiProxy';
 import { layout, prepare } from '@chenglou/pretext';
 import {
   parseDocxBufferWithEmbeddedImages,
@@ -364,14 +364,13 @@ function getRefGeminiResponseSchema() {
 }
 
 async function runGeminiExtractOneChunk(
-  ai: GoogleGenAI,
   fileName: string,
   modelId: string,
   chunkText: string,
   segment: { index: number; total: number } | undefined
 ): Promise<Draft[]> {
   const prompt = buildRefGeminiUserPrompt(fileName, chunkText, segment);
-  const response = await ai.models.generateContent({
+  const response = await adminGeminiGenerateContent({
     model: modelId,
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
@@ -389,14 +388,13 @@ async function runGeminiExtractOneChunk(
 }
 
 async function runGeminiExtract(docText: string, fileName: string, modelId: string): Promise<Draft[]> {
-  const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
   const chunks = splitRefSourceIntoChunks(docText);
   if (chunks.length === 1) {
-    return runGeminiExtractOneChunk(ai, fileName, modelId, chunks[0], undefined);
+    return runGeminiExtractOneChunk(fileName, modelId, chunks[0], undefined);
   }
   const parts: Draft[][] = [];
   for (let i = 0; i < chunks.length; i++) {
-    const piece = await runGeminiExtractOneChunk(ai, fileName, modelId, chunks[i], {
+    const piece = await runGeminiExtractOneChunk(fileName, modelId, chunks[i], {
       index: i + 1,
       total: chunks.length,
     });

@@ -480,7 +480,7 @@ const QuestionBankHome: React.FC = () => {
                   } catch { /* ignore */ }
                   const contentRes = await supabase.from('chapters').select('raw_text, doc_path, pdf_path').eq('id', chapId).single();
                   const rawText = (contentRes.data?.raw_text || "") + "\n\n" + boundariesContext;
-                  const docPath = contentRes.data?.doc_path || chapter.doc_path;
+                  const docPath = contentRes.data?.doc_path || chapter.doc_path; 
                   const pdfPath = contentRes.data?.pdf_path || chapter.pdf_path;
 
                   let chapterGeneratedQs: Question[] = [];
@@ -742,7 +742,7 @@ const QuestionBankHome: React.FC = () => {
       return { ...prev, [activeEditingChapterId!]: cfg };
     });
   };
-
+  
   const openDocViewer = async (id: string) => {
     const chapter = chapters.find((c) => c.id === id);
     if (!chapter) {

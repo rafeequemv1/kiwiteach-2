@@ -1,9 +1,8 @@
 import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
-import { GoogleGenAI, Type } from "@google/genai";
-import { ensureApiKey } from '../../services/geminiService';
-import { assertGeminiApiKey } from '../../config/env';
+import { Type } from "@google/genai";
+import { adminGeminiGenerateContent } from '../../services/adminGeminiProxy';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import {
     createSyllabusSet,
@@ -208,9 +207,6 @@ const SyllabusManager: React.FC<SyllabusManagerProps> = ({ isDeveloper = false }
         setIsChatThinking(true);
 
         try {
-            await ensureApiKey();
-            const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
-            
             // Step 1: Identify relevant chapters via keyword or title matching
             // We search for chapters that might contain the answer
             const { data: matchedChapters } = await supabase
@@ -244,7 +240,7 @@ const SyllabusManager: React.FC<SyllabusManagerProps> = ({ isDeveloper = false }
                 4. IDENTIFICATION: If you find info in a specific chapter, mention the chapter name clearly.
             `;
 
-            const response = await ai.models.generateContent({
+            const response = await adminGeminiGenerateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{ role: 'user', parts: [{ text: `User Question: ${userMsg}` }] }],
                 config: {
@@ -266,11 +262,9 @@ const SyllabusManager: React.FC<SyllabusManagerProps> = ({ isDeveloper = false }
         if (!rawInput.trim()) return;
         setIsParsing(true);
         try {
-            await ensureApiKey();
-            const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
             const prompt = `Parse this raw NEET syllabus text into structured JSON: ${rawInput}`;
             
-            const response = await ai.models.generateContent({
+            const response = await adminGeminiGenerateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 config: {

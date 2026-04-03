@@ -1,9 +1,9 @@
 import '../../types';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../supabase/client';
-import { GoogleGenAI, Type } from '@google/genai';
+import { Type } from '@google/genai';
 import { motion } from 'motion/react';
-import { assertGeminiApiKey } from '../../config/env';
+import { adminGeminiGenerateContent } from '../../services/adminGeminiProxy';
 import { layout, prepare } from '@chenglou/pretext';
 import { parsePseudoLatexAndMathAllowTables } from '../../utils/latexParser';
 import {
@@ -573,7 +573,6 @@ function getChapterSubjectFillResponseSchema() {
 }
 
 async function runGeminiFillChapterSubject(
-  ai: GoogleGenAI,
   modelId: string,
   batch: { id: string; question_text: string; subject_name: string | null; chapter_name: string | null; class_name: string | null }[],
   syllabusJson: string,
@@ -595,7 +594,7 @@ async function runGeminiFillChapterSubject(
     'If nothing fits, use empty strings for all three fields for that question.\n\n' +
     `ALLOWED_SYLLABUS:\n${syllabusJson}\n\nQUESTIONS:\n` +
     JSON.stringify(payload);
-  const response = await ai.models.generateContent({
+  const response = await adminGeminiGenerateContent({
     model: modelId,
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     config: {
@@ -651,7 +650,6 @@ function normalizeDifficultyLabel(raw: string): string | null {
 }
 
 async function runGeminiFillDifficulties(
-  ai: GoogleGenAI,
   modelId: string,
   batch: { id: string; question_text: string; subject_name: string | null; question_type: string | null }[]
 ): Promise<Map<string, string>> {
@@ -666,7 +664,7 @@ async function runGeminiFillDifficulties(
     'Use typical NEET demand: easy = single-concept recall; medium = reasoning or multi-step; hard = lengthy, subtle, or unfamiliar framing. ' +
     'Return one object per input in the same order; question_id must match.\n\n' +
     JSON.stringify(payload);
-  const response = await ai.models.generateContent({
+  const response = await adminGeminiGenerateContent({
     model: modelId,
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     config: {
@@ -1225,22 +1223,15 @@ const PYQManager: React.FC = () => {
         alert('No questions with blank difficulty in this batch.');
         return;
       }
-      try {
-        assertGeminiApiKey();
-      } catch (e: any) {
-        alert(e?.message || 'Set your Gemini API key in environment config.');
-        return;
-      }
-      if (!confirm(`Fill difficulty for ${subset.length} question(s) using Gemini (${pyqGeminiModel})? This will use your API quota.`)) {
+      if (!confirm(`Fill difficulty for ${subset.length} question(s) using Gemini (${pyqGeminiModel})? This uses platform API quota.`)) {
         return;
       }
       setDifficultyFillBusySetId(setId);
       try {
-        const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
         let updated = 0;
         for (let i = 0; i < subset.length; i += PYQ_DIFFICULTY_BATCH) {
           const chunk = subset.slice(i, i + PYQ_DIFFICULTY_BATCH);
-          const maps = await runGeminiFillDifficulties(ai, pyqGeminiModel, chunk);
+          const maps = await runGeminiFillDifficulties(pyqGeminiModel, chunk);
           for (const r of chunk) {
             const d = maps.get(r.id);
             if (!d) continue;
@@ -1270,12 +1261,6 @@ const PYQManager: React.FC = () => {
         alert('No questions with blank subject or chapter in this batch.');
         return;
       }
-      try {
-        assertGeminiApiKey();
-      } catch (e: any) {
-        alert(e?.message || 'Set your Gemini API key in environment config.');
-        return;
-      }
       let catalog: SyllabusCatalogRow[] = [];
       let kbLabel = 'NEET';
       try {
@@ -1301,13 +1286,12 @@ const PYQManager: React.FC = () => {
       }
       setSyllabusFillBusySetId(setId);
       try {
-        const ai = new GoogleGenAI({ apiKey: assertGeminiApiKey() });
         let updated = 0;
         for (let i = 0; i < subset.length; i += PYQ_CHAPTER_BATCH) {
           const chunk = subset.slice(i, i + PYQ_CHAPTER_BATCH);
           const narrowed = filterCatalogForBatch(catalog, chunk);
           const syllabusJson = trimCatalogJson(narrowed.length > 0 ? narrowed : catalog);
-          const maps = await runGeminiFillChapterSubject(ai, pyqGeminiModel, chunk, syllabusJson, kbLabel);
+          const maps = await runGeminiFillChapterSubject(pyqGeminiModel, chunk, syllabusJson, kbLabel);
           for (const r of chunk) {
             const raw = maps.get(r.id);
             if (!raw) continue;

@@ -26,7 +26,6 @@ const DIAGRAM_DB = `flowchart TB
   end
   subgraph USAGE["Question usage no-repeat"]
     QU["question_usage"]
-    QH["question_usage_history"]
   end
   subgraph ONLINE["Online exams"]
     OA["assignments and attempts"]
@@ -54,7 +53,6 @@ const DIAGRAM_DB = `flowchart TB
   CH -.->|storage bucket| STG["Storage chapters PDFs DOCX"]
   CL --> QU
   QB --> QU
-  QU --> QH
   TE --> QU
   FO --> TE
   KB --> EP
@@ -136,7 +134,6 @@ const DIAGRAM_QUESTION_USAGE = `flowchart TB
   end
   subgraph USAGE["Postgres usage state"]
     QU["question_usage UNIQUE class_id question_id"]
-    QH["question_usage_history append-only log"]
     TE["tests class_ids JSON question_ids"]
   end
   subgraph RPC["Security definer RPCs"]
@@ -153,13 +150,11 @@ const DIAGRAM_QUESTION_USAGE = `flowchart TB
   KB --> CH --> QB
   CL --> QU
   QB --> QU
-  QU --> QH
   FE --> GQ
   GQ --> QB
   GQ --> QU
   CM --> RU
   RU --> QU
-  RU --> QH
   TE --> RU
   FE --> CM
   N1["Eligible LEFT JOIN question_usage on class_id omit used unless allowRepeats"]
@@ -176,7 +171,7 @@ const DIAGRAM_ROLES_ACCESS = `flowchart TB
   subgraph ID["Identity and app role"]
     AU["auth.users"]
     PF["profiles id role full_name business institute"]
-    AL["Developer email allowlist in roles.ts"]
+    AL["Developer email allowlist UI only roles.ts"]
   end
   subgraph REG["Fine-grained registry Admin Roles UI"]
     RR["role_registry role_slug system custom"]
@@ -184,10 +179,10 @@ const DIAGRAM_ROLES_ACCESS = `flowchart TB
     GR["role_permission_grant role_id permission_id allowed"]
   end
   subgraph ENF["App enforcement layers"]
-    RV["resolveAppRole"]
+    RV["resolveAppRole UI shell only"]
     VW["viewsAllowedForRole dashboard views"]
     ADM["AdminView section gates developer school_admin"]
-    RPCD["RPCs is_developer admin_*"]
+    RPCD["Postgres is_developer RLS RPCs admin_* can_use_platform_ai"]
   end
   B --> I --> C
   S --> C
@@ -294,7 +289,7 @@ const AppArchitectureHome: React.FC = () => {
       <MermaidBlock
         diagramKey="roles"
         title="Roles, permissions, and access hierarchy"
-        description="profiles.role drives dashboard views; businesses → institutes → classes → students is the tenant tree. role_registry / permission_registry / role_permission_grant store the admin permission matrix (seeded per role; customizable by developer)."
+        description="profiles.role in Postgres drives RLS and RPCs; the client allowlist only affects resolveAppRole for navigation chrome. Tenant tree: businesses → institutes → classes → students. role_registry / permission_registry / role_permission_grant store the admin permission matrix."
         definition={DIAGRAM_ROLES_ACCESS}
       />
       <MermaidBlock diagramKey="user" title="User flow" definition={DIAGRAM_USER} />

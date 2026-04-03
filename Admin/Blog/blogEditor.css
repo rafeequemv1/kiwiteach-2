@@ -1,0 +1,44 @@
+.blog-editor-root .ProseMirror {
+  min-height: 320px;
+  outline: none;
+  padding: 0.75rem 1rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: #18181b;
+}
+
+.blog-editor-root .ProseMirror p.is-editor-empty:first-child::before {
+  color: #a1a1aa;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.blog-editor-root .ProseMirror h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 1rem 0 0.5rem;
+}
+
+.blog-editor-root .ProseMirror h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.blog-editor-root .ProseMirror ul {
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+
+.blog-editor-root .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+}
+
+.blog-editor-root .ProseMirror a {
+  color: #4f46e5;
+  text-decoration: underline;
+}

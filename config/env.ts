@@ -34,8 +34,8 @@ function logDevSupabaseFallbackOnce(): void {
 }
 
 /**
- * Gemini API key for @google/genai in the browser.
- * Also accepts legacy `VITE_API_KEY` for older setups.
+ * Legacy: Gemini used to run in the browser via VITE_* keys.
+ * Production AI calls go through `/api/gemini` with `GEMINI_API_KEY` on the server only.
  */
 export function getGeminiApiKey(): string {
   return (
@@ -46,11 +46,12 @@ export function getGeminiApiKey(): string {
   );
 }
 
+/** @deprecated Use server `/api/gemini`; client code should not rely on a browser Gemini key. */
 export function assertGeminiApiKey(): string {
   const key = getGeminiApiKey();
   if (!key) {
     throw new Error(
-      'Missing Gemini API key. Set VITE_GEMINI_API_KEY in `.env` (see `.env.example`) or in Vercel → Project → Settings → Environment Variables, then redeploy.'
+      'No client Gemini key (expected). AI is configured on the server: set GEMINI_API_KEY in Vercel (or use vercel dev with .env).'
     );
   }
   return key;

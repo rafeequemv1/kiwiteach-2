@@ -19,6 +19,7 @@ import PYQManager from './PYQ/PYQManager';
 import ReferenceQuestionsManager from './ReferenceQuestions/ReferenceQuestionsManager';
 import KnowledgeBaseAccessManager from './KnowledgeSource/KnowledgeBaseAccessManager';
 import PlatformBrandingPanel from './PlatformBranding/PlatformBrandingPanel';
+import BlogAdminHome from './Blog/BlogAdminHome';
 import ExamPaperHome from './ExamPaper/ExamPaperHome';
 import AppArchitectureHome from './AppArchitecture/AppArchitectureHome';
 import type { AppRole } from '../auth/roles';
@@ -41,6 +42,7 @@ type AdminSection =
   | 'quality-lab'
   | 'omr-lab'
   | 'platform-branding'
+  | 'blog'
   | 'exam-paper'
   | 'app-architecture';
 
@@ -143,6 +145,11 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     subtitle: 'KiwiTeach colors, typography, and button styles',
     icon: 'mdi:palette-swatch-outline',
   },
+  blog: {
+    title: 'Blog',
+    subtitle: 'Journal posts, SEO, FAQs, and rich content',
+    icon: 'mdi:post-outline',
+  },
   'exam-paper': {
     title: 'Exam Paper',
     subtitle: 'Blueprints: totals, styles, subjects, chapters, figures — per knowledge base',
@@ -158,8 +165,8 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
 /** Full-height tools with their own chrome */
 const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab'];
 
-/** Section body uses flex column + overflow hidden (roles manager) */
-const ROLES_SECTIONS: AdminSection[] = ['roles'];
+/** Section body uses flex column + overflow hidden (roles manager, blog CMS) */
+const ROLES_SECTIONS: AdminSection[] = ['roles', 'blog'];
 
 interface AdminSectionFrameProps {
   meta: SectionMeta;
@@ -290,6 +297,12 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         ) : (
           <p className="p-6 text-sm text-zinc-600">Branding is only available to administrators.</p>
         );
+      case 'blog':
+        return canManagePlatformBranding ? (
+          <BlogAdminHome />
+        ) : (
+          <p className="p-6 text-sm text-zinc-600">Blog is only available to administrators.</p>
+        );
       case 'exam-paper':
         return canManageExamPapers ? (
           <ExamPaperHome userId={userId} />
@@ -348,6 +361,12 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
             label: 'Branding',
             icon: 'mdi:palette-swatch-outline',
             mobileLabel: 'Brand',
+            show: canManagePlatformBranding,
+          },
+          {
+            id: 'blog',
+            label: 'Blog',
+            icon: 'mdi:post-outline',
             show: canManagePlatformBranding,
           },
           {

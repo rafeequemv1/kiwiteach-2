@@ -1,8 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Helmet } from 'react-helmet-async';
 import { ArrowLeft } from 'lucide-react';
 import { landingTheme } from '../Landing/theme';
 import { fetchPostBySlug, fetchPublishedPosts } from './blogApi';
-import type { BlogPost } from './types';
+import type { BlogFaqItem, BlogPost } from './types';
+import { defaultBlogCanonicalPath, getSiteOrigin } from './siteUrl';
+
+function normalizeFaqs(raw: unknown): BlogFaqItem[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr
+    .map((x) => {
+      if (!x || typeof x !== 'object') return null;
+      const q = String((x as { question?: unknown }).question ?? '').trim();
+      const a = String((x as { answer?: unknown }).answer ?? '').trim();
+      if (!q || !a) return null;
+      return { question: q, answer: a };
+    })
+    .filter(Boolean) as BlogFaqItem[];
+}
 
 interface BlogArticlePageProps {
   slug: string;
@@ -71,6 +87,60 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
 
+  const faqs = useMemo(() => normalizeFaqs(post?.faqs), [post?.faqs]);
+
+  const seo = useMemo(() => {
+    if (!post) return null;
+    const origin = getSiteOrigin();
+    const path = (post.canonical_path || defaultBlogCanonicalPath(post.slug)).trim() || defaultBlogCanonicalPath(post.slug);
+    const canonical = origin ? `${origin}${path.startsWith('/') ? path : `/${path}`}` : '';
+    const title = (post.meta_title || post.title).trim();
+    const description = (post.meta_description || post.excerpt || '').trim() || `${post.title} — KiwiTeach journal`;
+    const image = (post.og_image_url || post.cover_image_url || '').trim() || undefined;
+    return { canonical, title, description, image, path };
+  }, [post]);
+
+  const structuredData = useMemo(() => {
+    if (!post || !seo?.canonical) return null;
+    const origin = getSiteOrigin();
+    const imageUrls = [post.og_image_url, post.cover_image_url].map((u) => (u || '').trim()).filter(Boolean);
+    const blogPosting: Record<string, unknown> = {
+      '@type': 'BlogPosting',
+      headline: post.title,
+      description: seo.description,
+      datePublished: post.published_at || undefined,
+      author: {
+        '@type': 'Organization',
+        name: post.author_name || 'KiwiTeach',
+      },
+      mainEntityOfPage: {
+        '@type': 'WebPage',
+        '@id': seo.canonical,
+      },
+    };
+    if (imageUrls.length) {
+      blogPosting.image = imageUrls.map((u) => (u.startsWith('http') ? u : origin ? `${origin}${u.startsWith('/') ? u : `/${u}`}` : u));
+    }
+    const graph: Record<string, unknown>[] = [blogPosting];
+    if (faqs.length > 0) {
+      graph.push({
+        '@type': 'FAQPage',
+        mainEntity: faqs.map((f) => ({
+          '@type': 'Question',
+          name: f.question,
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: f.answer,
+          },
+        })),
+      });
+    }
+    return JSON.stringify({
+      '@context': 'https://schema.org',
+      '@graph': graph,
+    });
+  }, [post, seo, faqs]);
+
   const toc = useMemo(() => {
     if (!post?.content) return { items: [] as { id: string; text: string; level: 2 | 3 }[], html: post?.content || '' };
     const parser = new DOMParser();
@@ -124,6 +194,26 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
 
   return (
     <article className="min-h-screen pt-20 sm:pt-24 pb-24 px-4 sm:px-6" style={{ backgroundColor: landingTheme.colors.page }}>
+      {seo && (
+        <Helmet>
+          <title>{seo.title}</title>
+          <meta name="description" content={seo.description} />
+          {post.keywords ? <meta name="keywords" content={post.keywords} /> : null}
+          <link rel="canonical" href={seo.canonical} />
+          <meta property="og:type" content="article" />
+          <meta property="og:title" content={seo.title} />
+          <meta property="og:description" content={seo.description} />
+          <meta property="og:url" content={seo.canonical} />
+          {seo.image ? <meta property="og:image" content={seo.image} /> : null}
+          <meta name="twitter:card" content="summary_large_image" />
+          <meta name="twitter:title" content={seo.title} />
+          <meta name="twitter:description" content={seo.description} />
+          {seo.image ? <meta name="twitter:image" content={seo.image} /> : null}
+        </Helmet>
+      )}
+      {structuredData ? (
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData }} />
+      ) : null}
       <div className="max-w-6xl mx-auto">
         <button
           type="button"
@@ -164,7 +254,7 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
               <div className="rounded-2xl overflow-hidden mb-10 border border-zinc-200/80" style={{ boxShadow: landingTheme.shadow.soft }}>
                 <img
                   src={post.cover_image_url}
-                  alt=""
+                  alt={post.title}
                   className="w-full max-h-[420px] object-cover"
                   referrerPolicy="no-referrer"
                 />
@@ -200,6 +290,25 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
               className="blog-prose font-serif text-[1.125rem] leading-[1.85] text-zinc-800 space-y-6"
               dangerouslySetInnerHTML={{ __html: toc.html || post.content }}
             />
+
+            {faqs.length > 0 ? (
+              <section className="mt-16 border-t border-zinc-200 pt-12" aria-labelledby="blog-faq-heading">
+                <h2
+                  id="blog-faq-heading"
+                  className={`${landingTheme.fonts.heading} text-2xl md:text-3xl text-zinc-900 tracking-tight mb-6`}
+                >
+                  Frequently asked questions
+                </h2>
+                <dl className="space-y-6">
+                  {faqs.map((f, i) => (
+                    <div key={`${i}-${f.question.slice(0, 24)}`} className="rounded-xl border border-zinc-200 bg-white/80 px-4 py-4 shadow-sm">
+                      <dt className="text-base font-semibold text-zinc-900">{f.question}</dt>
+                      <dd className="mt-2 text-[1.05rem] leading-relaxed text-zinc-700">{f.answer}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            ) : null}
           </div>
 
           <aside className="hidden lg:block w-[280px] shrink-0">

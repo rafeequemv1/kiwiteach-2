@@ -1,6 +1,5 @@
--- Class-scoped no-repeat question history and RPC helpers.
--- This migration is compatibility-safe for projects that already have
--- legacy question_usage/question_usage_history tables.
+-- Class-scoped no-repeat and RPC helpers for question_usage.
+-- This migration is compatibility-safe for projects that already have legacy question_usage tables.
 
 do $$
 begin
@@ -16,20 +15,9 @@ begin
   if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='question_usage' and column_name='used_at') then
     alter table public.question_usage add column used_at timestamp with time zone default timezone('utc'::text, now());
   end if;
-
-  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='question_usage_history' and column_name='created_at') then
-    alter table public.question_usage_history add column created_at timestamp with time zone default timezone('utc'::text, now());
-  end if;
-  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='question_usage_history' and column_name='user_id') then
-    alter table public.question_usage_history add column user_id uuid references auth.users on delete cascade;
-  end if;
-  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='question_usage_history' and column_name='class_id') then
-    alter table public.question_usage_history add column class_id uuid references public.classes on delete cascade;
-  end if;
 end $$;
 
 update public.question_usage set user_id = auth.uid() where user_id is null;
-update public.question_usage_history set user_id = auth.uid() where user_id is null;
 
 create unique index if not exists question_usage_class_question_uq
   on public.question_usage (class_id, question_id)
@@ -41,24 +29,11 @@ create index if not exists question_usage_class_used_at_idx
 create index if not exists question_usage_question_id_idx
   on public.question_usage (question_id);
 
-create index if not exists question_usage_history_class_used_at_idx
-  on public.question_usage_history (class_id, used_at desc);
-
-create index if not exists question_usage_history_question_id_idx
-  on public.question_usage_history (question_id);
-
 alter table if exists public.question_usage enable row level security;
-alter table if exists public.question_usage_history enable row level security;
 
 drop policy if exists "Users can manage own question usage" on public.question_usage;
 create policy "Users can manage own question usage"
 on public.question_usage for all
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
-
-drop policy if exists "Users can manage own question usage history" on public.question_usage_history;
-create policy "Users can manage own question usage history"
-on public.question_usage_history for all
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
@@ -165,21 +140,6 @@ begin
         test_id = excluded.test_id,
         used_at = excluded.used_at,
         updated_at = excluded.updated_at;
-
-      insert into public.question_usage_history (
-        user_id,
-        class_id,
-        question_id,
-        test_id,
-        used_at
-      )
-      values (
-        auth.uid(),
-        class_item,
-        question_item,
-        target_test_id,
-        timezone('utc'::text, now())
-      );
     end loop;
   end loop;
 end;

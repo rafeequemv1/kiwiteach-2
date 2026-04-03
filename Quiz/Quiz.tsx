@@ -22,6 +22,7 @@ import LandingPage from '../Landing/LandingPage';
 import { appShellTheme, landingTheme } from '../Landing/theme';
 import {
   resolveAppRole,
+  persistedRoleForNewProfile,
   canAccessView,
   defaultViewForRole,
   type AppRole,
@@ -36,7 +37,7 @@ import {
   TypeDistribution,
   CreateTestOptions,
 } from './types';
-import { generateQuizQuestions, generateCompositeFigures, generateCompositeStyleVariants, ensureApiKey, extractChapterReferenceImages } from '../services/geminiService';
+import { extractChapterReferenceImages } from '../services/geminiService';
 import {
   fetchEligibleQuestions,
   isUuid,
@@ -280,7 +281,11 @@ const Quiz: React.FC = () => {
   const [newTestChapterPickerOpen, setNewTestChapterPickerOpen] = useState(false);
   const [pendingNewTestKind, setPendingNewTestKind] = useState<'paper' | 'online' | null>(null);
 
-  const loadProfileAndOrg = async (user: { id: string; email?: string | null }) => {
+  const loadProfileAndOrg = async (user: {
+    id: string;
+    email?: string | null;
+    user_metadata?: Record<string, unknown>;
+  }) => {
     const email = user.email ?? '';
     type ProfileRow = { role?: string | null; class_id?: string | null; business_id?: string | null };
     let prof: ProfileRow | null = null;
@@ -304,7 +309,8 @@ const Quiz: React.FC = () => {
     }
     if (profErr) console.warn('profiles:', profErr.message);
     if (!prof) {
-      const initialRole = resolveAppRole(email, null);
+      const metaRole = (user.user_metadata?.role as string | undefined) ?? null;
+      const initialRole = persistedRoleForNewProfile(metaRole);
       await supabase.from('profiles').upsert(
         {
           id: user.id,
@@ -326,9 +332,6 @@ const Quiz: React.FC = () => {
     const role = resolveAppRole(email, prof?.role ?? null);
     setAppRole(role);
     setStudentClassId(prof?.class_id ? String(prof.class_id) : null);
-    if (role === 'developer' && prof?.role !== 'developer') {
-      await supabase.from('profiles').update({ role: 'developer' }).eq('id', user.id);
-    }
 
     const ir = await fetchInstitutesForUser(user.id);
     let instRows = ir.data as { id: string; name: string }[] | null;
@@ -813,8 +816,6 @@ const Quiz: React.FC = () => {
   };
 
   const generateQuestionsLogic = async (options: CreateTestOptions, setStatus: (s: string) => void) => {
-      await ensureApiKey();
-
       const { data: authData } = await supabase.auth.getUser();
       const uid = authData.user?.id;
       let excludedTopicLabelsNormalized: string[] = [];
@@ -973,93 +974,9 @@ const Quiz: React.FC = () => {
           }
           
           if (effectiveSource === 'ai') {
-              let diffConfig = options.useGlobalDifficulty ? options.globalDifficultyMix : chap.difficulty;
-              const breakdownJson = JSON.stringify(chap.selectedFigures || {});
-              
-              const gen = await generateQuizQuestions(
-                  chap.name, diffConfig, neededFromAi, sourceContext, options.questionType || 'mcq', 
-                  setStatus, chap.figureCount, options.useSmiles, breakdownJson, 'gemini-3-pro-preview', chap.visualMode,
-                  undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized
+              throw new Error(
+                'AI question generation is reserved for platform administrators. Use the question bank, adjust chapter counts, upload source material, or add manual questions.'
               );
-              
-              const figureQs = gen.filter(q => q.figurePrompt);
-              if (figureQs.length > 0 && chap.figureCount > 0) {
-                  setStatus(`Synthesizing Visuals for ${chap.name}...`);
-                  const useAsIs = options.useAsIsFigures;
-                  
-                  if (chap.visualMode === 'image') {
-                      figureQs.forEach(q => {
-                          const sIdx = q.sourceImageIndex !== undefined ? Number(q.sourceImageIndex) : 0;
-                          const sourceImg = filteredImgs[sIdx] || filteredImgs[0];
-                          if (sourceImg) {
-                              q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`;
-                          }
-                      });
-
-                      if (useAsIs) {
-                          for (const q of figureQs) {
-                              const sIdx = q.sourceImageIndex !== undefined ? Number(q.sourceImageIndex) : 0;
-                              const sourceImg = filteredImgs[sIdx] || filteredImgs[0];
-                              
-                              if (sourceImg) {
-                                  const cacheKey = sourceImg.data.substring(0, 100) + sourceImg.data.length;
-                                  if (!styleTransferCache[cacheKey]) {
-                                      setStatus(`Converting unique visual to Line Art...`);
-                                      const results = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, [q.figurePrompt || ""], true);
-                                      if (results[0]) {
-                                          styleTransferCache[cacheKey] = results[0];
-                                      }
-                                  }
-                                  if (styleTransferCache[cacheKey]) {
-                                      q.figureDataUrl = `data:image/png;base64,${styleTransferCache[cacheKey]}`;
-                                  }
-                              }
-                          }
-                      } else {
-                          const sourceEditGroups: Record<number, Question[]> = {};
-                          const purelySynthetic: Question[] = [];
-                          figureQs.forEach(q => {
-                              const sIdx = q.sourceImageIndex !== undefined ? Number(q.sourceImageIndex) : -1;
-                              if (sIdx !== -1 && filteredImgs[sIdx]) {
-                                  if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = [];
-                                  sourceEditGroups[sIdx].push(q);
-                              } else { purelySynthetic.push(q); }
-                          });
-                          for (const [imgIdx, groupQs] of Object.entries(sourceEditGroups)) {
-                              const sourceImg = filteredImgs[parseInt(imgIdx)];
-                              for (let i = 0; i < groupQs.length; i += 6) {
-                                  const chunk = groupQs.slice(i, i + 6);
-                                  const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, chunk.map(q => q.figurePrompt!), false);
-                                  chunk.forEach((q, cIdx) => { 
-                                      if (images[cIdx]) { 
-                                          q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; 
-                                      } 
-                                  });
-                              }
-                          }
-                          for (let i = 0; i < purelySynthetic.length; i += 6) {
-                              const chunk = purelySynthetic.slice(i, i + 6);
-                              const images = await generateCompositeFigures(chunk.map(q => q.figurePrompt!));
-                              chunk.forEach((q, cIdx) => { 
-                                  if (images[cIdx]) { 
-                                      q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; 
-                                  } 
-                              });
-                          }
-                      }
-                  } else {
-                      for (let i = 0; i < figureQs.length; i += 6) {
-                          const chunk = figureQs.slice(i, i + 6);
-                          const images = await generateCompositeFigures(chunk.map(q => q.figurePrompt!));
-                          chunk.forEach((q, cIdx) => { 
-                              if (images[cIdx]) { 
-                                  q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; 
-                              } 
-                          });
-                      }
-                  }
-              }
-              newBatch = gen;
           }
           
           const enriched = newBatch.map(q => ({ ...q, sourceChapterId: q.sourceChapterId || chap.id, sourceChapterName: q.sourceChapterName || chap.name, sourceSubjectName: q.sourceSubjectName || chap.subjectName }));

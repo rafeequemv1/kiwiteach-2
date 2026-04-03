@@ -1,15 +1,30 @@
 
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const apiProxy = env.VITE_VERCEL_DEV_API_ORIGIN?.trim();
+
+  return {
   plugins: [react()],
+  optimizeDeps: {
+    // Avoid stale pre-bundle hashes (504 Outdated Optimize Dep) after dep changes / restarts.
+    include: ['react-helmet-async'],
+  },
   server: {
     // Avoid 8080 (often IIS/proxy) — hitting the wrong listener shows ERR_CONNECTION_RESET.
     // strictPort: fail fast if busy so the URL always matches the terminal (no silent port bump).
     port: 5191,
     strictPort: true,
     host: true,
+    ...(apiProxy
+      ? {
+          proxy: {
+            '/api': { target: apiProxy, changeOrigin: true },
+          },
+        }
+      : {}),
   },
   build: {
     outDir: 'dist',
@@ -19,4 +34,5 @@ export default defineConfig({
       }
     }
   }
+  };
 });

@@ -1,11 +1,17 @@
 /**
- * App roles (stored in public.profiles.role; developer also forced by email allowlist).
+ * App roles stored in `public.profiles.role`.
+ *
+ * Authorization for data and server routes must use Postgres (`public.is_developer()`, RLS, RPCs),
+ * not the client-only allowlist below.
  */
 export type AppRole = 'developer' | 'teacher' | 'student' | 'school_admin';
 
 export const APP_ROLES: AppRole[] = ['developer', 'teacher', 'student', 'school_admin'];
 
-/** Full access — UI + optional DB checks */
+/**
+ * Optional convenience for dashboard routing / showing dev-only nav chrome.
+ * Does NOT grant database or API access — assign `profiles.role = 'developer'` via admin tools or SQL.
+ */
 export const DEVELOPER_EMAIL_ALLOWLIST = ['rafeequemavoor@gmail.com'] as const;
 
 export function normalizeDbRole(raw: string | null | undefined): AppRole | null {
@@ -16,7 +22,8 @@ export function normalizeDbRole(raw: string | null | undefined): AppRole | null 
 }
 
 /**
- * Effective role: allowlisted email → developer; else DB role; default student.
+ * Role for UI (tabs, default view): allowlisted email shows as developer in the shell even if DB is still teacher.
+ * For permission-sensitive flows, use `profiles.role` from Supabase or RPCs (e.g. `is_developer()`), not this alone.
  */
 export function resolveAppRole(email: string | null | undefined, dbRole: string | null | undefined): AppRole {
   const e = (email || '').trim().toLowerCase();
@@ -24,6 +31,13 @@ export function resolveAppRole(email: string | null | undefined, dbRole: string 
     return 'developer';
   }
   return normalizeDbRole(dbRole) ?? 'student';
+}
+
+/** First-time profile row from the client: never `developer` / `school_admin` (those are DB/admin-only). */
+export function persistedRoleForNewProfile(userMetaRole: string | null | undefined): 'student' | 'teacher' {
+  const r = (userMetaRole || '').trim().toLowerCase();
+  if (r === 'teacher') return 'teacher';
+  return 'student';
 }
 
 export type DashboardView =
