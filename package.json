@@ -22,8 +22,7 @@
     "motion": "^12.34.4",
     "pdfjs-dist": "^4.0.379",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-zoom-pan-pinch": "^3.7.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
