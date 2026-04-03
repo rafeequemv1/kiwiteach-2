@@ -33,7 +33,7 @@ interface EligibleInput {
   classId?: string | null;
   chapterId: string;
   difficulty?: string | null;
-  /** When set, only this question_type is returned (direct table query; bypasses RPC for precise typing). */
+  /** When set, only this question_type is returned (still uses class usage RPC when classId is set). */
   questionType?: string | null;
   excludeIds?: string[];
   limit?: number;
@@ -43,25 +43,29 @@ interface EligibleInput {
   excludedTopicLabelsNormalized?: string[];
 }
 
+function applyTopicExclusion(rows: Question[], excludedNormalized?: string[] | null): Question[] {
+  const ex = excludedNormalized || [];
+  return ex.length ? rows.filter((q) => !topicTagIsExcluded(q.topic_tag, ex)) : rows;
+}
+
+/** Direct bank query — no class usage filter (no class or RPC unavailable). */
+async function fetchEligibleQuestionsDirect(input: EligibleInput): Promise<Question[]> {
+  const limit = Math.max(1, input.limit ?? 20);
+  const excludeIds = (input.excludeIds || []).filter(isUuid);
+  let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', input.chapterId);
+  if (input.questionType) query = query.eq('question_type', input.questionType);
+  if (input.difficulty) query = query.eq('difficulty', input.difficulty);
+  if (excludeIds.length > 0) query = query.not('id', 'in', `(${excludeIds.join(',')})`);
+  const { data, error } = await query.limit(limit);
+  if (error) throw error;
+  return applyTopicExclusion((data || []).map(mapBankRowToQuestion), input.excludedTopicLabelsNormalized);
+}
+
 export async function fetchEligibleQuestions(input: EligibleInput): Promise<Question[]> {
   const limit = Math.max(1, input.limit ?? 20);
   const excludeIds = (input.excludeIds || []).filter(isUuid);
   const includeUsedQuestionIds = (input.includeUsedQuestionIds || []).filter(isUuid);
-
-  if (input.questionType) {
-    let query = supabase
-      .from('question_bank_neet')
-      .select('*')
-      .eq('chapter_id', input.chapterId)
-      .eq('question_type', input.questionType);
-    if (input.difficulty) query = query.eq('difficulty', input.difficulty);
-    if (excludeIds.length > 0) query = query.not('id', 'in', `(${excludeIds.join(',')})`);
-    const { data, error } = await query.limit(limit);
-    if (error) throw error;
-    const mapped = (data || []).map(mapBankRowToQuestion);
-    const ex = input.excludedTopicLabelsNormalized || [];
-    return ex.length ? mapped.filter((q) => !topicTagIsExcluded(q.topic_tag, ex)) : mapped;
-  }
+  const typeFilter = input.questionType?.trim() || null;
 
   if (input.classId && isUuid(input.classId)) {
     const { data, error } = await supabase.rpc('get_eligible_questions_for_class', {
@@ -72,23 +76,17 @@ export async function fetchEligibleQuestions(input: EligibleInput): Promise<Ques
       row_limit: limit,
       allow_repeats: !!input.allowRepeats,
       include_used_question_ids: includeUsedQuestionIds,
+      target_question_type: typeFilter,
     });
     if (!error && Array.isArray(data)) {
-      const mapped = data.map(mapBankRowToQuestion);
-      const ex = input.excludedTopicLabelsNormalized || [];
-      return ex.length ? mapped.filter((q) => !topicTagIsExcluded(q.topic_tag, ex)) : mapped;
+      return applyTopicExclusion(data.map(mapBankRowToQuestion), input.excludedTopicLabelsNormalized);
+    }
+    if (error) {
+      console.warn('get_eligible_questions_for_class failed; falling back to direct bank query', error);
     }
   }
 
-  // Fallback: chapter(+difficulty) direct query for environments without RPC migration.
-  let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', input.chapterId);
-  if (input.difficulty) query = query.eq('difficulty', input.difficulty);
-  if (excludeIds.length > 0) query = query.not('id', 'in', `(${excludeIds.join(',')})`);
-  const { data, error } = await query.limit(limit);
-  if (error) throw error;
-  const mapped = (data || []).map(mapBankRowToQuestion);
-  const ex = input.excludedTopicLabelsNormalized || [];
-  return ex.length ? mapped.filter((q) => !topicTagIsExcluded(q.topic_tag, ex)) : mapped;
+  return fetchEligibleQuestionsDirect({ ...input, questionType: typeFilter });
 }
 
 export async function fetchUsedQuestionsForClass(

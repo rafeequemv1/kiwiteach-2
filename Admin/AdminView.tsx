@@ -20,6 +20,7 @@ import ReferenceQuestionsManager from './ReferenceQuestions/ReferenceQuestionsMa
 import KnowledgeBaseAccessManager from './KnowledgeSource/KnowledgeBaseAccessManager';
 import PlatformBrandingPanel from './PlatformBranding/PlatformBrandingPanel';
 import ExamPaperHome from './ExamPaper/ExamPaperHome';
+import AppArchitectureHome from './AppArchitecture/AppArchitectureHome';
 import type { AppRole } from '../auth/roles';
 
 type AdminSection =
@@ -40,7 +41,8 @@ type AdminSection =
   | 'quality-lab'
   | 'omr-lab'
   | 'platform-branding'
-  | 'exam-paper';
+  | 'exam-paper'
+  | 'app-architecture';
 
 interface AdminViewProps {
   appRole: AppRole;
@@ -145,6 +147,11 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     title: 'Exam Paper',
     subtitle: 'Blueprints: totals, styles, subjects, chapters, figures — per knowledge base',
     icon: 'mdi:file-chart-outline',
+  },
+  'app-architecture': {
+    title: 'App architecture',
+    subtitle: 'Database map, user journeys, and system layers',
+    icon: 'mdi:sitemap-outline',
   },
 };
 
@@ -289,6 +296,12 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         ) : (
           <p className="p-6 text-sm text-zinc-600">Exam paper blueprints are only available to administrators.</p>
         );
+      case 'app-architecture':
+        return isDeveloper || isSchoolAdmin ? (
+          <AppArchitectureHome />
+        ) : (
+          <p className="p-6 text-sm text-zinc-600">App architecture maps are only available to administrators.</p>
+        );
     }
   };
 
@@ -343,6 +356,13 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
             icon: 'mdi:file-chart-outline',
             mobileLabel: 'Exam',
             show: canManageExamPapers,
+          },
+          {
+            id: 'app-architecture',
+            label: 'App architecture',
+            icon: 'mdi:sitemap-outline',
+            mobileLabel: 'Arch',
+            show: isDeveloper || isSchoolAdmin,
           },
         ],
       },

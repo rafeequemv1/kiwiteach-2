@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:3001": "vite --port 3001",
+    "dev:5174": "vite --port 5174",
     "lint": "tsc --noEmit",
     "build": "tsc && vite build",
     "preview": "vite preview"
@@ -16,10 +18,12 @@
     "jspdf": "^2.5.1",
     "katex": "^0.16.9",
     "lucide-react": "^0.576.0",
+    "mermaid": "^11.14.0",
     "motion": "^12.34.4",
     "pdfjs-dist": "^4.0.379",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-zoom-pan-pinch": "^3.7.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
