@@ -89,4 +89,4 @@ $$;
 drop trigger if exists profiles_block_self_privileged_role on public.profiles;
 create trigger profiles_block_self_privileged_role
 before insert or update on public.profiles
-for each row execute procedure public.profiles_block_self_privileged_role();
+for each row execute function public.profiles_block_self_privileged_role();

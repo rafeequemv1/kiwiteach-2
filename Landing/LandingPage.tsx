@@ -5,6 +5,7 @@ import { ArrowRight, Bird, CheckCircle2, Layout, Menu, Sparkles, X } from 'lucid
 import { BlogArticlePage, BlogIndexPage } from '../Blog';
 import { supabase } from '../supabase/client';
 import { footerColumns, homePills, landingNavLinks, landingTheme } from './theme';
+import { LandingSeoHelmet } from './LandingSeoHelmet';
 import NeetPyqSection from './NeetPyqSection';
 
 type LandingTab = 'home' | 'neet' | 'test-prep' | 'pricing' | 'blog' | 'blog-post';
@@ -543,6 +544,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       className="min-h-screen text-zinc-900 font-sans selection:bg-blue-100 selection:text-blue-900"
       style={{ backgroundColor: landingTheme.colors.page }}
     >
+      <LandingSeoHelmet activeTab={activeTab} />
       {/* Navigation */}
       <nav className="fixed top-0 w-full z-50 bg-white/80 backdrop-blur-xl border-b border-zinc-200">
         <div className="max-w-7xl mx-auto px-4 md:px-6 h-20 flex items-center justify-between">

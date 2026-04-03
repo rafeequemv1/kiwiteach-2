@@ -4,7 +4,12 @@ import { ArrowLeft } from 'lucide-react';
 import { landingTheme } from '../Landing/theme';
 import { fetchPostBySlug, fetchPublishedPosts } from './blogApi';
 import type { BlogFaqItem, BlogPost } from './types';
-import { defaultBlogCanonicalPath, getSiteOrigin } from './siteUrl';
+import {
+  defaultBlogCanonicalPath,
+  getDefaultOgImageUrl,
+  getSiteOrigin,
+  PRODUCTION_SITE_ORIGIN,
+} from './siteUrl';
 
 function normalizeFaqs(raw: unknown): BlogFaqItem[] {
   if (!raw) return [];
@@ -96,7 +101,14 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
     const canonical = origin ? `${origin}${path.startsWith('/') ? path : `/${path}`}` : '';
     const title = (post.meta_title || post.title).trim();
     const description = (post.meta_description || post.excerpt || '').trim() || `${post.title} — KiwiTeach journal`;
-    const image = (post.og_image_url || post.cover_image_url || '').trim() || undefined;
+    const rawImg = (post.og_image_url || post.cover_image_url || '').trim();
+    const image = rawImg
+      ? rawImg.startsWith('http')
+        ? rawImg
+        : origin
+          ? `${origin}${rawImg.startsWith('/') ? rawImg : `/${rawImg}`}`
+          : rawImg
+      : getDefaultOgImageUrl();
     return { canonical, title, description, image, path };
   }, [post]);
 
@@ -104,6 +116,7 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
     if (!post || !seo?.canonical) return null;
     const origin = getSiteOrigin();
     const imageUrls = [post.og_image_url, post.cover_image_url].map((u) => (u || '').trim()).filter(Boolean);
+    const site = origin || PRODUCTION_SITE_ORIGIN;
     const blogPosting: Record<string, unknown> = {
       '@type': 'BlogPosting',
       headline: post.title,
@@ -113,14 +126,19 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
         '@type': 'Organization',
         name: post.author_name || 'KiwiTeach',
       },
+      publisher: {
+        '@type': 'Organization',
+        name: 'KiwiTeach',
+        url: site,
+        logo: { '@type': 'ImageObject', url: `${site}/favicon.svg` },
+      },
       mainEntityOfPage: {
         '@type': 'WebPage',
         '@id': seo.canonical,
       },
     };
-    if (imageUrls.length) {
-      blogPosting.image = imageUrls.map((u) => (u.startsWith('http') ? u : origin ? `${origin}${u.startsWith('/') ? u : `/${u}`}` : u));
-    }
+    const resolvedImages = imageUrls.map((u) => (u.startsWith('http') ? u : origin ? `${origin}${u.startsWith('/') ? u : `/${u}`}` : u));
+    blogPosting.image = resolvedImages.length ? resolvedImages : [getDefaultOgImageUrl()];
     const graph: Record<string, unknown>[] = [blogPosting];
     if (faqs.length > 0) {
       graph.push({
@@ -204,11 +222,15 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
           <meta property="og:title" content={seo.title} />
           <meta property="og:description" content={seo.description} />
           <meta property="og:url" content={seo.canonical} />
-          {seo.image ? <meta property="og:image" content={seo.image} /> : null}
+          <meta property="og:image" content={seo.image} />
+          <meta property="og:image:width" content="1200" />
+          <meta property="og:image:height" content="630" />
+          <meta property="og:locale" content="en_IN" />
           <meta name="twitter:card" content="summary_large_image" />
           <meta name="twitter:title" content={seo.title} />
           <meta name="twitter:description" content={seo.description} />
-          {seo.image ? <meta name="twitter:image" content={seo.image} /> : null}
+          <meta name="twitter:image" content={seo.image} />
+          <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
         </Helmet>
       )}
       {structuredData ? (

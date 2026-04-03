@@ -1,4 +1,9 @@
 -- Blog CMS: SEO/FAQ columns, editor RLS (developer + school_admin), public image bucket.
+--
+-- If the app errors with "column blog_posts.meta_title does not exist", this migration was not
+-- applied to your remote database. Fix: Supabase Dashboard → SQL Editor → paste this entire
+-- file → Run. Or from the repo: `supabase link` then `supabase db push`.
+-- Apply `20260503120000_trust_model_developer_and_ai_rpc.sql` first if `is_developer()` is missing.
 
 alter table public.blog_posts
   add column if not exists meta_title text,
@@ -46,7 +51,7 @@ $$;
 drop trigger if exists blog_posts_updated_at on public.blog_posts;
 create trigger blog_posts_updated_at
 before update on public.blog_posts
-for each row execute procedure public.blog_posts_set_updated_at();
+for each row execute function public.blog_posts_set_updated_at();
 
 drop policy if exists blog_posts_editor_select on public.blog_posts;
 create policy blog_posts_editor_select

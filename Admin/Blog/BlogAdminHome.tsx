@@ -55,6 +55,7 @@ function toJsonbFaqs(items: BlogFaqItem[]): unknown {
 export default function BlogAdminHome() {
   const [rows, setRows] = useState<BlogRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState<'list' | 'edit'>('list');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -90,9 +91,10 @@ export default function BlogAdminHome() {
       .order('updated_at', { ascending: false });
     if (error) {
       console.error(error);
-      alert(error.message);
+      setLoadError(error.message);
       setRows([]);
     } else {
+      setLoadError(null);
       setRows((data || []) as BlogRow[]);
     }
     setLoading(false);
@@ -272,9 +274,34 @@ export default function BlogAdminHome() {
     }
   };
 
+  const loadErrorBanner = loadError ? (
+    /does not exist|meta_title|column .* blog_posts/i.test(loadError) ? (
+      <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+        <p className="font-semibold">Database schema is missing blog CMS columns.</p>
+        <p className="mt-1 text-amber-900/90">
+          In the Supabase Dashboard, open <strong>SQL Editor</strong>, paste the contents of{' '}
+          <code className="rounded bg-amber-100/80 px-1 font-mono text-xs">
+            supabase/migrations/20260505120000_blog_cms_seo_storage.sql
+          </code>
+          , and run it. If you see an error about <code className="font-mono text-xs">is_developer</code>, apply{' '}
+          <code className="rounded bg-amber-100/80 px-1 font-mono text-xs">
+            20260503120000_trust_model_developer_and_ai_rpc.sql
+          </code>{' '}
+          first, then run the blog migration again.
+        </p>
+      </div>
+    ) : (
+      <div className="shrink-0 border-b border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+        <p className="font-semibold">Could not load blog posts</p>
+        <p className="mt-1 font-mono text-xs opacity-90">{loadError}</p>
+      </div>
+    )
+  ) : null;
+
   if (view === 'list') {
     return (
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {loadErrorBanner}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3">
           <p className="text-sm text-zinc-600">Create and publish journal posts (SEO, FAQs, rich text).</p>
           <button
@@ -339,6 +366,7 @@ export default function BlogAdminHome() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {loadErrorBanner}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-200 bg-white px-4 py-3">
         <button type="button" onClick={() => setView('list')} className="text-sm font-semibold text-zinc-600 hover:text-zinc-900">
           ← All posts

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KiwiTeach">
+  <rect width="64" height="64" rx="14" fill="#18181b"/>
+  <path d="M18 20h28v4H35v20h-6V24H18z" fill="#ffffff"/>
+  <circle cx="49" cy="15" r="6" fill="#4f46e5"/>
+</svg>

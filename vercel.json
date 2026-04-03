@@ -4,6 +4,24 @@
       "maxDuration": 120
     }
   },
+  "headers": [
+    {
+      "source": "/robots.txt",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=86400" }]
+    },
+    {
+      "source": "/sitemap.xml",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=86400" }]
+    },
+    {
+      "source": "/og-default.png",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400, immutable" }]
+    },
+    {
+      "source": "/favicon.svg",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400, immutable" }]
+    }
+  ],
   "rewrites": [
     {
       "source": "/((?!api/).*)",
