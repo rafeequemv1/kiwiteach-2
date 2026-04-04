@@ -38,6 +38,21 @@ export const SUPABASE_TABLE_CATALOG: SupabaseTableRow[] = [
   { schema: 'public', name: 'pyq_questions_neet', purpose: 'Previous-year NEET items linked to upload sets and chapters.' },
   { schema: 'public', name: 'reference_question_sets', purpose: 'Curated reference question bundles for admin workflows.' },
   { schema: 'public', name: 'reference_questions', purpose: 'Individual reference items with storage for assets.' },
+  {
+    schema: 'public',
+    name: 'prompt_reference_layers',
+    purpose: 'Prompt Studio: uploaded reference papers (DOCX/PDF) per knowledge base for AI style analysis — not the reference_questions bank.',
+  },
+  {
+    schema: 'public',
+    name: 'kb_prompt_sets',
+    purpose: 'Prompt Studio: saved NEET system prompt bundles per knowledge base (manual or derived from a reference layer).',
+  },
+  {
+    schema: 'public',
+    name: 'kb_prompt_preferences',
+    purpose: 'Prompt Studio: which kb_prompt_sets row is active for quiz generation per knowledge base (null = browser defaults).',
+  },
   { schema: 'public', name: 'subscription_tiers', purpose: 'Named tiers used for KB and feature gating.' },
   { schema: 'public', name: 'user_knowledge_base_access', purpose: 'Direct grants from a user to a knowledge base.' },
   {

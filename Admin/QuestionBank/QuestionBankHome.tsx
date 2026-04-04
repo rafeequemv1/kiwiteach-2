@@ -489,7 +489,7 @@ const QuestionBankHome: React.FC = () => {
                       for (const [topicName, topicConfig] of enabledTopics) {
                           if (stopForgingRef.current) break;
                           setForgeProgress(`${progressPrefix}: ${topicName}`);
-                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)], undefined, undefined, undefined, excludedTopicLabelsNormalized);
+                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)], undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId);
                           chapterGeneratedQs.push(...gen);
                       }
                   } else {
@@ -498,7 +498,7 @@ const QuestionBankHome: React.FC = () => {
                       if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null); } else figureCount = config.syntheticFigureCount || 0;
                       
                       setForgeProgress(`${progressPrefix}: Synthesizing Questions...`);
-                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), config.diff, config.total, { text: rawText, images: sourceImages }, config.types, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized);
+                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), config.diff, config.total, { text: rawText, images: sourceImages }, config.types, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId);
                       const figureQs = gen.filter(q => q.figurePrompt);
                       if (figureQs.length > 0 && figureCount > 0) {
                           setForgeProgress(`${progressPrefix}: Processing Visuals...`);
@@ -612,7 +612,8 @@ const QuestionBankHome: React.FC = () => {
           undefined,
           undefined,
           undefined,
-          excludedTopicLabelsNormalized
+          excludedTopicLabelsNormalized,
+          selectedKbId
         );
 
         const rows = gen.map((q) => ({

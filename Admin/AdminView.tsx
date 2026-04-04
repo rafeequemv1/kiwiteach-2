@@ -168,19 +168,25 @@ const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab'];
 /** Section body uses flex column + overflow hidden (roles manager, blog CMS) */
 const ROLES_SECTIONS: AdminSection[] = ['roles', 'blog'];
 
+/** Prompts: fill card height; inner page manages scroll for system prompt editors */
+const PROMPTS_SECTIONS: AdminSection[] = ['prompts'];
+
 interface AdminSectionFrameProps {
   meta: SectionMeta;
   bleed?: boolean;
   rolesLayout?: boolean;
+  promptsLayout?: boolean;
   children: React.ReactNode;
 }
 
-const AdminSectionFrame: React.FC<AdminSectionFrameProps> = ({ meta, bleed, rolesLayout, children }) => (
-  <div
-    className={`flex min-h-0 flex-col overflow-hidden bg-transparent ${
-      rolesLayout || bleed ? 'min-h-0 flex-1' : ''
-    }`}
-  >
+const AdminSectionFrame: React.FC<AdminSectionFrameProps> = ({
+  meta,
+  bleed,
+  rolesLayout,
+  promptsLayout,
+  children,
+}) => (
+  <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
     <div className="shrink-0 border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white px-4 py-3 md:px-5 md:py-3.5">
       <div className="flex items-start gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 shadow-sm">
@@ -198,7 +204,9 @@ const AdminSectionFrame: React.FC<AdminSectionFrameProps> = ({ meta, bleed, role
           ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-50/40 [&>*]:min-h-0'
           : rolesLayout
             ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-50/30'
-            : 'min-h-0 flex-1 overflow-y-auto bg-transparent'
+            : promptsLayout
+              ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent'
+              : 'min-h-0 flex-1 overflow-y-auto bg-transparent'
       }
     >
       {children}
@@ -238,6 +246,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
 
   const isBleed = FULL_BLEED_SECTIONS.includes(activeSection);
   const isRolesLayout = ROLES_SECTIONS.includes(activeSection);
+  const isPromptsLayout = PROMPTS_SECTIONS.includes(activeSection);
 
   const renderContent = () => {
     switch (activeSection) {
@@ -571,7 +580,12 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
           </div>
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <AdminSectionFrame meta={activeMeta} bleed={isBleed} rolesLayout={isRolesLayout}>
+            <AdminSectionFrame
+              meta={activeMeta}
+              bleed={isBleed}
+              rolesLayout={isRolesLayout}
+              promptsLayout={isPromptsLayout}
+            >
               {renderContent()}
             </AdminSectionFrame>
           </div>

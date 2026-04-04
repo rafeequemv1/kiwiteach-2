@@ -4,6 +4,7 @@ import { Question, QuestionType, TypeDistribution } from "../Quiz/types";
 import { supabase } from "../supabase/client";
 import { adminGeminiGenerateContent } from "./adminGeminiProxy";
 import { FORGE_FORMAT_PROTOCOLS } from "./neuralStudioPromptBlueprint";
+import { getReferenceLayerBlock } from "./neetReferenceLayer";
 import * as pdfjs from "pdfjs-dist";
 
 declare const mammoth: any;
@@ -269,6 +270,45 @@ export const extractImagesFromPdfPath = async (
     }
 };
 
+/** Rasterize first pages of a PDF in memory (e.g. Prompt Studio reference uploads). */
+export const extractImagesFromPdfArrayBuffer = async (
+    arrayBuffer: ArrayBuffer,
+    opts?: { maxPages?: number; scale?: number; maxDim?: number }
+): Promise<{ data: string; mimeType: string }[]> => {
+    ensurePdfJsWorker();
+    const maxPages = Math.min(Math.max(opts?.maxPages ?? 8, 1), 24);
+    const scale = opts?.scale ?? 1.15;
+    const maxDim = opts?.maxDim ?? 1024;
+    try {
+        const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return [];
+        const out: { data: string; mimeType: string }[] = [];
+        const n = Math.min(pdf.numPages, maxPages);
+        for (let i = 1; i <= n; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale });
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const renderTask = page.render({ canvasContext: ctx, viewport });
+            await renderTask.promise;
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+            const parts = dataUrl.split(",");
+            const b64 = parts[1]?.trim();
+            if (b64) out.push({ data: b64, mimeType: "image/jpeg" });
+        }
+        const processed = await Promise.all(out.map((img) => downsampleImage(img.data, img.mimeType, maxDim)));
+        return processed.filter((p) => p.data);
+    } catch (e) {
+        console.error("PDF buffer image extraction error", e);
+        return [];
+    }
+};
+
 /**
  * Neural Studio / forge: embedded images from DOCX when present; otherwise page renders from chapter PDF.
  */
@@ -308,8 +348,23 @@ export const generateQuizQuestions = async (
   pyqContext?: string,
   isLengthy?: boolean,
   isConfusingChoices?: boolean,
-  excludedTopicLabels?: string[]
+  excludedTopicLabels?: string[],
+  knowledgeBaseId?: string | null
 ): Promise<Question[]> => {
+  const { fetchMergedPromptsForKbGeneration } = await import("./kbPromptService");
+  const kbPromptMap =
+    knowledgeBaseId && typeof knowledgeBaseId === "string" && knowledgeBaseId.trim()
+      ? await fetchMergedPromptsForKbGeneration(knowledgeBaseId.trim())
+      : null;
+
+  const resolvePrompt = (key: string): string => {
+    if (kbPromptMap && Object.prototype.hasOwnProperty.call(kbPromptMap, key)) {
+      const v = kbPromptMap[key];
+      if (typeof v === "string" && v.trim() !== "") return v;
+    }
+    return getSystemPrompt(key);
+  };
+
   const styleInstruction = ((): string => {
     if (typeof qType === 'string') {
       return `STRICT FORMAT: All ${count} questions MUST be of type "${qType}".`;
@@ -375,12 +430,14 @@ export const generateQuizQuestions = async (
 
   try {
     const mainPrompt = `
-    ${getSystemPrompt('General')}
-    ${getSystemPrompt('Difficulty')}
-    ${getSystemPrompt('Explanation')}
-    ${getSystemPrompt('Chemistry')}
-    ${getSystemPrompt('Latex')}
-    ${figureCount > 0 ? getSystemPrompt('Figure') : ''}
+    ${resolvePrompt('General')}
+    ${kbPromptMap ? '' : getReferenceLayerBlock()}
+    ${resolvePrompt('Difficulty')}
+    ${resolvePrompt('Explanation')}
+    ${resolvePrompt('Distractors')}
+    ${resolvePrompt('Chemistry')}
+    ${resolvePrompt('Latex')}
+    ${figureCount > 0 ? resolvePrompt('Figure') : ''}
     
     ${styleInstruction}
     ${difficultyInstruction}

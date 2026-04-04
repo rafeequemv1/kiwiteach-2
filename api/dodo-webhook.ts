@@ -6,8 +6,8 @@ import type { UnwrapWebhookEvent } from 'dodopayments/resources/webhooks';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 /** Disable Vercel body helpers so the raw JSON string matches Dodo signature verification. */
-export const config = {
-  helpers: false as const,
+export const config: { helpers: false } = {
+  helpers: false,
 };
 
 const MAX_BODY_BYTES = 1024 * 1024;
