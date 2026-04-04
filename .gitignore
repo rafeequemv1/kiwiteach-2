@@ -17,3 +17,6 @@ Thumbs.db
 
 # Optional local artifacts (keep out of repo unless needed)
 artifacts/
+
+# Supabase CLI
+supabase/.temp/
