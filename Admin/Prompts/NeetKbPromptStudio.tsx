@@ -47,6 +47,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
   const [refModalOpen, setRefModalOpen] = useState(false);
   const [refModalTitle, setRefModalTitle] = useState('');
   const [refModalFile, setRefModalFile] = useState<File | null>(null);
+  const [refUploadError, setRefUploadError] = useState<string | null>(null);
 
   const syncLists = useCallback(async (id: string) => {
     try {
@@ -112,6 +113,11 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUserId(session?.user?.id ?? null);
     });
+    const {
+      data: { subscription: authSub },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserId(session?.user?.id ?? null);
+    });
     supabase
       .from('knowledge_bases')
       .select('id, name')
@@ -120,6 +126,9 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
         setKbList(data || []);
         if (data?.length && !kbId) setKbId(data[0].id);
       });
+    return () => {
+      authSub.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -133,6 +142,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
         setRefModalOpen(false);
         setRefModalTitle('');
         setRefModalFile(null);
+        setRefUploadError(null);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -217,6 +227,15 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
 
   const uploadReferenceLayer = async (file: File, displayTitle?: string) => {
     if (!kbId) return;
+    setRefUploadError(null);
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const uid = session?.user?.id ?? null;
+    if (!uid) {
+      setRefUploadError('You are not signed in. Refresh the page and sign in again.');
+      return;
+    }
     const layerId = crypto.randomUUID();
     const safeName = file.name.replace(/[^\w.\-()+ ]+/g, '_').slice(0, 180);
     const path = `${kbId}/${layerId}/${safeName}`;
@@ -236,14 +255,20 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
         originalFilename: file.name,
         mimeType: file.type || null,
         title,
-        userId,
+        userId: uid,
       });
       await syncLists(kbId);
       setRefModalOpen(false);
       setRefModalTitle('');
       setRefModalFile(null);
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : 'Upload failed');
+      const msg =
+        e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string'
+          ? (e as { message: string }).message
+          : e instanceof Error
+            ? e.message
+            : 'Upload failed';
+      setRefUploadError(msg);
     } finally {
       setBusy(null);
     }
@@ -252,6 +277,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
   const openRefUploadModal = () => {
     setRefModalTitle('');
     setRefModalFile(null);
+    setRefUploadError(null);
     setRefModalOpen(true);
   };
 
@@ -559,6 +585,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
               setRefModalOpen(false);
               setRefModalTitle('');
               setRefModalFile(null);
+              setRefUploadError(null);
             }
           }}
           role="presentation"
@@ -576,6 +603,14 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
             <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
               Upload a DOCX (Mathpix / embedded figures) or PDF. Stored in bucket <code className="text-zinc-700">prompt-reference-docs</code>.
             </p>
+            {refUploadError && (
+              <p
+                className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-relaxed text-red-800"
+                role="alert"
+              >
+                {refUploadError}
+              </p>
+            )}
             <label className="mt-4 block text-[11px] font-medium text-zinc-600">Label (optional)</label>
             <input
               type="text"
@@ -598,6 +633,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
                   setRefModalOpen(false);
                   setRefModalTitle('');
                   setRefModalFile(null);
+                  setRefUploadError(null);
                 }}
                 className="flex-1 rounded-lg border border-zinc-200 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50"
               >
