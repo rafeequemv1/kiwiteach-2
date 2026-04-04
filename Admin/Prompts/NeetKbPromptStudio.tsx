@@ -43,11 +43,23 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
   const [activeSource, setActiveSource] = useState<string>(LOCAL_SOURCE);
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [refModalOpen, setRefModalOpen] = useState(false);
+  const [refModalTitle, setRefModalTitle] = useState('');
+  const [refModalFile, setRefModalFile] = useState<File | null>(null);
 
   const syncLists = useCallback(async (id: string) => {
-    const [sets, lays] = await Promise.all([listKbPromptSets(id), listPromptReferenceLayers(id)]);
-    setPromptSets(sets);
-    setLayers(lays);
+    try {
+      const [sets, lays] = await Promise.all([listKbPromptSets(id), listPromptReferenceLayers(id)]);
+      setPromptSets(sets);
+      setLayers(lays);
+      setListError(null);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setListError(msg);
+      setPromptSets([]);
+      setLayers([]);
+    }
   }, []);
 
   const loadEditorForActive = useCallback(
@@ -113,6 +125,19 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
   useEffect(() => {
     if (kbId) void bootstrapKb(kbId);
   }, [kbId, bootstrapKb]);
+
+  useEffect(() => {
+    if (!refModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) {
+        setRefModalOpen(false);
+        setRefModalTitle('');
+        setRefModalFile(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [refModalOpen, busy]);
 
   const handleActiveSourceChange = async (value: string) => {
     if (!kbId) return;
@@ -190,11 +215,13 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
     }
   };
 
-  const uploadReferenceLayer = async (file: File | null) => {
-    if (!file || !kbId) return;
+  const uploadReferenceLayer = async (file: File, displayTitle?: string) => {
+    if (!kbId) return;
     const layerId = crypto.randomUUID();
     const safeName = file.name.replace(/[^\w.\-()+ ]+/g, '_').slice(0, 180);
     const path = `${kbId}/${layerId}/${safeName}`;
+    const fallbackTitle = safeName.replace(/\.[^.]+$/, '');
+    const title = (displayTitle && displayTitle.trim()) || fallbackTitle;
     setBusy('upload');
     try {
       const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
@@ -208,15 +235,32 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
         storagePath: path,
         originalFilename: file.name,
         mimeType: file.type || null,
-        title: safeName.replace(/\.[^.]+$/, ''),
+        title,
         userId,
       });
       await syncLists(kbId);
-    } catch (e: any) {
-      alert(e?.message || 'Upload failed');
+      setRefModalOpen(false);
+      setRefModalTitle('');
+      setRefModalFile(null);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Upload failed');
     } finally {
       setBusy(null);
     }
+  };
+
+  const openRefUploadModal = () => {
+    setRefModalTitle('');
+    setRefModalFile(null);
+    setRefModalOpen(true);
+  };
+
+  const submitRefUploadModal = () => {
+    if (!refModalFile) {
+      alert('Choose a DOCX or PDF file.');
+      return;
+    }
+    void uploadReferenceLayer(refModalFile, refModalTitle);
   };
 
   const runAnalyze = async (layer: PromptReferenceLayerRow) => {
@@ -320,6 +364,30 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
         </div>
       </div>
 
+      {listError && (
+        <div className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
+          <p className="min-w-0 flex-1">
+            <span className="font-semibold">Could not load Prompt Studio data.</span>{' '}
+            <span className="text-amber-900/90">{listError}</span>
+            {/schema cache|not find the table|42P01/i.test(listError) ? (
+              <span className="mt-1 block text-amber-800">
+                Run the migration{' '}
+                <code className="rounded bg-white/80 px-1">supabase/migrations/20260508120000_prompt_studio_kb_prompts.sql</code>{' '}
+                on your Supabase project (SQL Editor or <code className="rounded bg-white/80 px-1">supabase db push</code>
+                ), then refresh.
+              </span>
+            ) : null}
+          </p>
+          <button
+            type="button"
+            className="shrink-0 text-[11px] font-medium text-amber-900 underline hover:no-underline"
+            onClick={() => setListError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
         <label className="flex min-w-[200px] flex-1 flex-col gap-1 text-[11px] font-medium text-zinc-600">
           Knowledge base
@@ -376,9 +444,22 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white">
-        <div className="border-b border-zinc-100 bg-zinc-50 px-3 py-2">
-          <p className="text-[11px] font-semibold text-zinc-800">Reference layers (uploaded papers)</p>
-          <p className="text-[10px] text-zinc-500">DOCX with embedded figures or PDF. Analyze → generate prompts in the editor → save a prompt set.</p>
+        <div className="flex flex-wrap items-start justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-zinc-800">Reference layers (uploaded papers)</p>
+            <p className="text-[10px] text-zinc-500">
+              DOCX with embedded figures or PDF. Analyze → generate prompts → save a prompt set.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => openRefUploadModal()}
+            disabled={!kbId || !!busy}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:opacity-40"
+          >
+            <iconify-icon icon="mdi:plus" width="16" />
+            Add reference paper
+          </button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-[11px]">
@@ -393,7 +474,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
               {layers.length === 0 && (
                 <tr>
                   <td colSpan={3} className="px-3 py-6 text-center text-zinc-500">
-                    No reference layers yet. Upload a paper below.
+                    No reference layers yet. Use <strong>Add reference paper</strong>.
                   </td>
                 </tr>
               )}
@@ -468,24 +549,77 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
             </tbody>
           </table>
         </div>
-        <div className="flex items-center gap-2 border-t border-zinc-100 px-3 py-2">
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-3 py-2 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100">
-            <iconify-icon icon="mdi:file-upload-outline" width="16" />
-            Upload reference paper
+      </div>
+
+      {refModalOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-sm"
+          onClick={() => {
+            if (!busy) {
+              setRefModalOpen(false);
+              setRefModalTitle('');
+              setRefModalFile(null);
+            }
+          }}
+          role="presentation"
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-xl"
+            role="dialog"
+            aria-labelledby="ref-upload-title"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h4 id="ref-upload-title" className="text-sm font-semibold text-zinc-900">
+              Add reference paper
+            </h4>
+            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+              Upload a DOCX (Mathpix / embedded figures) or PDF. Stored in bucket <code className="text-zinc-700">prompt-reference-docs</code>.
+            </p>
+            <label className="mt-4 block text-[11px] font-medium text-zinc-600">Label (optional)</label>
+            <input
+              type="text"
+              value={refModalTitle}
+              onChange={(e) => setRefModalTitle(e.target.value)}
+              placeholder="e.g. Allen NEET mock 2024"
+              className="mt-1 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-900 outline-none focus:border-zinc-400 focus:ring-1 focus:ring-zinc-400"
+            />
+            <label className="mt-3 block text-[11px] font-medium text-zinc-600">File</label>
             <input
               type="file"
               accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              className="hidden"
-              disabled={!kbId || !!busy}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                void uploadReferenceLayer(f || null);
-                e.target.value = '';
-              }}
+              className="mt-1 block w-full text-[11px] text-zinc-600 file:mr-2 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-2 file:py-1 file:text-[11px] file:font-medium"
+              onChange={(e) => setRefModalFile(e.target.files?.[0] ?? null)}
             />
-          </label>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setRefModalOpen(false);
+                  setRefModalTitle('');
+                  setRefModalFile(null);
+                }}
+                className="flex-1 rounded-lg border border-zinc-200 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => submitRefUploadModal()}
+                disabled={!!busy || !kbId}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-zinc-900 py-2 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+              >
+                {busy === 'upload' ? (
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                ) : (
+                  <iconify-icon icon="mdi:cloud-upload-outline" width="16" />
+                )}
+                Upload
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {promptSets.length > 0 && (
         <div className="rounded-lg border border-zinc-200 bg-white p-3">
