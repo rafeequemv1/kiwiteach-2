@@ -1,39 +1,30 @@
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowRight, Bird, CheckCircle2, Layout, Menu, Sparkles, X } from 'lucide-react';
+import { ArrowRight, Bird, CheckCircle2, Layout, Sparkles } from 'lucide-react';
 import { BlogArticlePage, BlogIndexPage } from '../Blog';
-import { supabase } from '../supabase/client';
+import PricingPage from '../src/pages/PricingPage';
 import { footerColumns, homePills, landingNavLinks, landingTheme } from './theme';
 import { LandingSeoHelmet } from './LandingSeoHelmet';
 import NeetPyqSection from './NeetPyqSection';
 
 type LandingTab = 'home' | 'neet' | 'test-prep' | 'pricing' | 'blog' | 'blog-post';
-type PricingAudience = 'b2b' | 'b2c';
-
-interface SubscriptionTier {
-  id: string;
-  audience: PricingAudience;
-  name: string;
-  description: string;
-  sort_order: number;
-  features: Record<string, boolean>;
-  is_active: boolean;
-}
 
 interface LandingPageProps {
   onLoginClick: () => void;
+  onSignUpClick: () => void;
   isLoggedIn?: boolean;
   onDashboardClick?: () => void;
 }
 
-const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onDashboardClick }) => {
+const LandingPage: React.FC<LandingPageProps> = ({
+  onLoginClick,
+  onSignUpClick,
+  isLoggedIn,
+  onDashboardClick,
+}) => {
   const [activeTab, setActiveTab] = useState<LandingTab>('home');
   const [blogSlug, setBlogSlug] = useState<string | null>(null);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [pricingAudience, setPricingAudience] = useState<PricingAudience>('b2b');
-  const [pricingTiers, setPricingTiers] = useState<SubscriptionTier[]>([]);
-  const [pricingLoading, setPricingLoading] = useState(false);
 
   const goToTab = (tabId: string) => {
     setBlogSlug(null);
@@ -65,49 +56,6 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
     }
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadPricing = async () => {
-      setPricingLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from('subscription_tiers')
-          .select('id, audience, name, description, sort_order, features, is_active')
-          .eq('is_active', true)
-          .order('sort_order', { ascending: true });
-        if (error) throw error;
-        if (!cancelled) setPricingTiers((data || []) as SubscriptionTier[]);
-      } catch (e) {
-        if (!cancelled) setPricingTiers([]);
-      } finally {
-        if (!cancelled) setPricingLoading(false);
-      }
-    };
-    void loadPricing();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const currentPricingTiers = useMemo(
-    () => pricingTiers.filter((tier) => tier.audience === pricingAudience),
-    [pricingAudience, pricingTiers]
-  );
-
-  const featureLabelMap: Record<string, string> = {
-    test_paper_generation: 'Test paper generation',
-    online_exam: 'Online exams',
-    student_profiles: 'Student profiles',
-  };
-
-  const getTierFeatures = (features: Record<string, boolean>) => {
-    const enabled = Object.entries(features)
-      .filter(([key, value]) => key !== 'all_features' && !!value)
-      .map(([key]) => featureLabelMap[key] || key.replace(/_/g, ' '));
-    if (enabled.length === 0) return ['Custom feature set'];
-    return enabled;
-  };
-
   const renderHome = () => (
     <motion.div 
       key="home"
@@ -119,7 +67,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
     >
       <section
         id="features"
-        className="relative pt-24 md:pt-28 pb-16 md:pb-24 px-4 md:px-6 border-b border-black/5"
+        className="relative pt-32 md:pt-28 pb-16 md:pb-24 px-4 md:px-6 border-b border-black/5"
         style={{ background: landingTheme.gradients.hero }}
       >
         <div className="absolute inset-0 opacity-60" style={{ background: landingTheme.gradients.glow }} />
@@ -157,8 +105,8 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
           <div className="relative">
             <div className="rounded-[2rem] border border-white/70 p-3 bg-white/80 backdrop-blur" style={{ boxShadow: landingTheme.shadow.card }}>
               <img
-                src="https://images.unsplash.com/photo-1516534775068-ba3e7458af70?auto=format&fit=crop&w=1200&q=80"
-                alt="Teacher teaching in class"
+                src="https://images.unsplash.com/photo-1509062522246-3755977927d7?auto=format&fit=crop&w=1200&q=80"
+                alt="Students learning in a classroom"
                 className="rounded-[1.6rem] h-[280px] md:h-[420px] w-full object-cover"
                 referrerPolicy="no-referrer"
               />
@@ -227,7 +175,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       variants={containerVariants}
       className="w-full"
     >
-      <section className="relative min-h-[90vh] flex items-center overflow-hidden pt-20" style={{ background: landingTheme.gradients.testPrepHero }}>
+      <section className="relative min-h-[90vh] flex items-center overflow-hidden pt-28 md:pt-20" style={{ background: landingTheme.gradients.testPrepHero }}>
         <div className="absolute top-1/2 left-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-indigo-500 rounded-full blur-[110px] opacity-20 -translate-x-1/2" />
         <div className="absolute top-1/2 right-0 -translate-y-1/2 w-[30vw] h-[30vw] bg-indigo-500 rounded-full blur-[110px] opacity-10 translate-x-1/2" />
 
@@ -362,7 +310,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       className="w-full"
     >
       <section
-        className="relative overflow-hidden border-b border-zinc-200 pt-24 pb-14 md:pt-28 md:pb-20"
+        className="relative overflow-hidden border-b border-zinc-200 pt-32 pb-14 md:pt-28 md:pb-20"
         style={{ background: landingTheme.gradients.testPrepHero }}
       >
         <div className="absolute top-1/2 left-0 h-[40vw] max-h-[420px] w-[40vw] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/20 blur-[100px]" />
@@ -393,149 +341,22 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       animate="visible"
       exit={{ opacity: 0, y: -20 }}
       variants={containerVariants}
-      className="w-full"
+      className="w-full min-h-screen bg-zinc-50"
     >
-      <section className="border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white pt-28 pb-14 px-4 md:px-6">
+      <section className="border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white pt-32 pb-8 px-4 md:pt-28 md:pb-10 md:px-6">
         <div className="mx-auto max-w-5xl text-center">
           <p className="mb-3 text-[11px] font-black uppercase tracking-[0.22em] text-zinc-500">Pricing</p>
-          <h1 className="text-4xl font-black tracking-tight text-zinc-900 md:text-6xl">
-            Flexible tiers for every learning model
+          <h1 className="text-3xl font-black tracking-tight text-zinc-900 md:text-5xl">
+            Plans &amp; checkout
           </h1>
-          <p className="mx-auto mt-5 max-w-2xl text-base text-zinc-600 md:text-lg">
-            Clean feature-based plans now, with usage limits coming next.
+          <p className="mx-auto mt-4 max-w-2xl text-sm text-zinc-600 md:text-base">
+            Subscribe or upgrade securely via Dodo Payments.
           </p>
         </div>
       </section>
-
-      <section className="bg-zinc-50 px-4 py-10 md:px-6 md:py-14">
-        <div className="mx-auto max-w-6xl">
-          <div className="mb-7 flex items-center justify-center">
-            <div className="inline-flex rounded-xl border border-zinc-200 bg-white p-1 shadow-sm">
-              <button
-                type="button"
-                onClick={() => setPricingAudience('b2b')}
-                className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-wider transition-colors ${
-                  pricingAudience === 'b2b'
-                    ? 'bg-zinc-900 text-white'
-                    : 'text-zinc-600 hover:bg-zinc-100'
-                }`}
-              >
-                B2B institutes
-              </button>
-              <button
-                type="button"
-                onClick={() => setPricingAudience('b2c')}
-                className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-wider transition-colors ${
-                  pricingAudience === 'b2c'
-                    ? 'bg-zinc-900 text-white'
-                    : 'text-zinc-600 hover:bg-zinc-100'
-                }`}
-              >
-                Student pricing
-              </button>
-            </div>
-          </div>
-
-          {pricingLoading ? (
-            <div className="rounded-2xl border border-zinc-200 bg-white py-16 text-center text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              Loading tiers...
-            </div>
-          ) : currentPricingTiers.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-zinc-300 bg-white py-16 text-center">
-              <p className="text-sm font-semibold text-zinc-700">No tiers published yet for this segment.</p>
-              <p className="mt-2 text-xs text-zinc-500">Manage tiers in Admin and they will appear here automatically.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              {currentPricingTiers.map((tier) => (
-                (() => {
-                  // Precompute card tone for Tailwind (keep class strings static).
-                  const isPopular = tier.sort_order === 2;
-                  const tone =
-                    tier.sort_order === 1
-                      ? {
-                          badge: 'Popular not set',
-                          border: 'border-emerald-200/80',
-                          bg: 'bg-gradient-to-b from-emerald-500/12 to-white',
-                          cta: 'bg-emerald-600 hover:bg-emerald-700',
-                          ctaText: 'text-white',
-                        }
-                      : tier.sort_order === 2
-                        ? {
-                            badge: 'Popular',
-                            border: 'border-indigo-300/70',
-                            bg: 'bg-gradient-to-b from-indigo-600/15 to-white',
-                            cta: 'bg-indigo-600 hover:bg-indigo-700',
-                            ctaText: 'text-white',
-                          }
-                        : {
-                            badge: '',
-                            border: 'border-amber-200/80',
-                            bg: 'bg-gradient-to-b from-amber-500/12 to-white',
-                            cta: 'bg-zinc-900 hover:bg-zinc-800',
-                            ctaText: 'text-white',
-                          };
-
-                  return (
-                <article
-                  key={tier.id}
-                  className={`rounded-2xl border p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${tone.border} ${tone.bg} ${
-                    isPopular ? 'shadow-[0_0_0_1px_rgba(99,102,241,0.15)]' : ''
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
-                        {tier.name}
-                      </p>
-                      <p className="mt-2 text-sm leading-relaxed text-zinc-600">
-                        {tier.description || 'Feature bundle'}
-                      </p>
-                    </div>
-                    {isPopular && (
-                      <span className="shrink-0 rounded-full bg-indigo-600/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-indigo-700">
-                        Most popular
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="my-4 h-px bg-zinc-100" />
-
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-black uppercase tracking-widest text-zinc-500">Included</p>
-                    <ul className="space-y-2">
-                      {getTierFeatures(tier.features || {}).map((feature) => (
-                        <li key={feature} className="flex items-start gap-2 text-sm text-zinc-700">
-                          <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-zinc-900" />
-                          <span>{feature}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="mt-5 flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isLoggedIn) onDashboardClick?.();
-                        else onLoginClick();
-                      }}
-                      className={`inline-flex items-center justify-center rounded-xl px-4 py-2 text-[11px] font-black uppercase tracking-widest transition-colors ${tone.cta} ${tone.ctaText}`}
-                    >
-                      {pricingAudience === 'b2b' ? 'Request demo' : 'Continue'}
-                    </button>
-                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
-                      No limits yet
-                    </span>
-                  </div>
-                </article>
-                  );
-                })()
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
+      <div className="px-4 pb-16 md:px-6">
+        <PricingPage embedded />
+      </div>
     </motion.div>
   );
 
@@ -545,109 +366,79 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, isLoggedIn, onD
       style={{ backgroundColor: landingTheme.colors.page }}
     >
       <LandingSeoHelmet activeTab={activeTab} />
-      {/* Navigation */}
+      {/* Navigation — logo left, page links centered, sign in / sign up (or Dashboard) on the right */}
       <nav className="fixed top-0 w-full z-50 bg-white/80 backdrop-blur-xl border-b border-zinc-200">
-        <div className="max-w-7xl mx-auto px-4 md:px-6 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-12">
-            <div 
-              className="flex items-center gap-3 cursor-pointer"
-              onClick={() => { setActiveTab('home'); setBlogSlug(null); setMobileMenuOpen(false); }}
-            >
-              <div className="w-10 h-10 bg-zinc-100 rounded-xl flex items-center justify-center">
-                <Bird className="text-zinc-900 w-6 h-6" />
-              </div>
-              <span className="text-xl font-black tracking-tighter text-zinc-900">KiwiTeach</span>
+        <div className="mx-auto grid min-h-[3.75rem] w-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-4 md:px-6 py-2">
+          <div
+            className="flex min-w-0 shrink-0 cursor-pointer items-center gap-2 sm:gap-3 justify-self-start"
+            onClick={() => {
+              setActiveTab('home');
+              setBlogSlug(null);
+            }}
+          >
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-zinc-100 sm:h-10 sm:w-10">
+              <Bird className="h-5 w-5 text-zinc-900 sm:h-6 sm:w-6" />
             </div>
-            <div className="hidden md:flex items-center gap-8">
-              {landingNavLinks.map((link) => {
-                const isActive =
-                  (link.id === 'home' && activeTab === 'home') ||
-                  (link.id === 'neet' && activeTab === 'neet') ||
-                  (link.id === 'test-prep' && activeTab === 'test-prep') ||
-                  (link.id === 'pricing' && activeTab === 'pricing') ||
-                  (link.id === 'blog' && (activeTab === 'blog' || activeTab === 'blog-post'));
-                return (
-                  <button
-                    key={link.id}
-                    type="button"
-                    onClick={() => {
-                      goToTab(link.id);
-                    }}
-                    className={`text-sm font-bold transition-colors ${isActive ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-900'}`}
-                  >
-                    {link.label}
-                  </button>
-                );
-              })}
-              {isLoggedIn && (
-                <button 
-                  onClick={onDashboardClick}
-                  className="text-sm font-bold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-2"
+            <span className="truncate text-lg font-black tracking-tighter text-zinc-900 sm:text-xl">
+              KiwiTeach
+            </span>
+          </div>
+
+          <div className="flex max-w-[min(100vw-12rem,32rem)] items-center justify-center gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] sm:gap-3 md:gap-4 [&::-webkit-scrollbar]:hidden touch-pan-x">
+            {landingNavLinks.map((link) => {
+              const isActive =
+                (link.id === 'home' && activeTab === 'home') ||
+                (link.id === 'neet' && activeTab === 'neet') ||
+                (link.id === 'test-prep' && activeTab === 'test-prep') ||
+                (link.id === 'pricing' && activeTab === 'pricing') ||
+                (link.id === 'blog' && (activeTab === 'blog' || activeTab === 'blog-post'));
+              return (
+                <button
+                  key={link.id}
+                  type="button"
+                  onClick={() => goToTab(link.id)}
+                  className={`shrink-0 whitespace-nowrap text-xs font-bold transition-colors sm:text-sm ${
+                    isActive ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-900'
+                  }`}
                 >
-                  <Layout className="w-4 h-4" />
-                  Dashboard
+                  {link.label}
                 </button>
-              )}
-            </div>
+              );
+            })}
           </div>
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={isLoggedIn ? onDashboardClick : onLoginClick}
-              className="hidden md:inline-flex text-white border px-6 py-2.5 rounded-full text-sm font-bold transition-all"
-              style={{ backgroundColor: landingTheme.colors.navy, borderColor: landingTheme.colors.navySoft }}
-            >
-              {isLoggedIn ? 'Go to Dashboard' : 'Get Started'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen((v) => !v)}
-              className="md:hidden w-10 h-10 rounded-xl border border-zinc-200 bg-white text-zinc-700 grid place-items-center"
-            >
-              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </button>
-          </div>
-        </div>
-        {mobileMenuOpen && (
-          <div className="md:hidden border-t border-zinc-200 bg-white px-4 py-3 space-y-2">
-            {landingNavLinks.map((link) => (
-              <button
-                key={link.id}
-                type="button"
-                onClick={() => {
-                  goToTab(link.id);
-                  setMobileMenuOpen(false);
-                }}
-                className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-zinc-700 hover:bg-zinc-50"
-              >
-                {link.label}
-              </button>
-            ))}
-            {isLoggedIn && onDashboardClick && (
+
+          <div className="flex min-w-0 shrink-0 items-center justify-end justify-self-end gap-1.5 sm:gap-2">
+            {!isLoggedIn ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onLoginClick}
+                  className="shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold text-zinc-600 transition-colors hover:bg-zinc-100 hover:text-zinc-900 sm:px-2.5 sm:text-sm"
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  onClick={onSignUpClick}
+                  className="shrink-0 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs font-semibold text-zinc-800 transition-colors hover:bg-zinc-50 sm:px-2.5 sm:text-sm"
+                  style={{ borderColor: landingTheme.colors.navySoft }}
+                >
+                  Sign up
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  onDashboardClick();
-                }}
-                className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 flex items-center gap-2"
+                onClick={() => onDashboardClick?.()}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-95 sm:gap-1.5 sm:px-3 sm:text-sm"
+                style={{ backgroundColor: landingTheme.colors.navy, borderColor: landingTheme.colors.navySoft }}
               >
-                <Layout className="w-4 h-4 shrink-0" />
+                <Layout className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
                 Dashboard
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                isLoggedIn ? onDashboardClick?.() : onLoginClick();
-              }}
-              className="w-full text-center px-3 py-2 rounded-lg text-sm font-bold text-white"
-              style={{ backgroundColor: landingTheme.colors.navy }}
-            >
-              {isLoggedIn ? 'Go to Dashboard' : 'Get Started'}
-            </button>
           </div>
-        )}
+        </div>
       </nav>
 
       <main>

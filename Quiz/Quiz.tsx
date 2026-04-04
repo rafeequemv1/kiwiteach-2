@@ -51,7 +51,6 @@ import {
   PLATFORM_BRANDING_UPDATED_EVENT,
 } from '../branding/platformBrandingService';
 import { PlatformBrandingProvider } from '../branding/PlatformBrandingContext';
-import { Menu } from 'lucide-react';
 
 interface Institute {
   id: string;
@@ -71,6 +70,9 @@ const TESTS_LIST_COLUMNS =
   'id, name, question_count, created_at, scheduled_at, status, folder_id, class_ids, config';
 
 const DASHBOARD_BASE = '/dashboard';
+
+/** Tailwind lg — sidebar in flow; below this width the nav is a slide-out drawer (closed by default). */
+const DASHBOARD_SIDEBAR_LG_MQ = '(min-width: 1024px)';
 
 const VIEW_TO_SLUG: Record<DashboardView, string> = {
   test: 'paper-tests',
@@ -221,12 +223,12 @@ const Quiz: React.FC = () => {
   }, []);
 
   const [showAuth, setShowAuth] = useState(() => initialAuthMode === 'reset-password' || !!initialAuthError);
+  const [authIntent, setAuthIntent] = useState<'login' | 'signup'>('login');
   const [activeView, setActiveView] = useState('test');
   const [appRole, setAppRole] = useState<AppRole>('student');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(''); // New state for loading text
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const fetchingRef = useRef(false);
   const lastFetchTime = useRef<number>(0);
   const didInitRouteRef = useRef(false);
@@ -247,6 +249,11 @@ const Quiz: React.FC = () => {
     setPlatformTheme(resolvePlatformBranding(row));
   }, []);
   const [showLanding, setShowLanding] = useState(false);
+
+  const [dashSidebarLg, setDashSidebarLg] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(DASHBOARD_SIDEBAR_LG_MQ).matches
+  );
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
   const [isCreatorOpen, setIsCreatorOpen] = useState(false);
   const [isOnlineExamCreatorOpen, setIsOnlineExamCreatorOpen] = useState(false);
@@ -406,6 +413,18 @@ const Quiz: React.FC = () => {
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, [appRole]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia(DASHBOARD_SIDEBAR_LG_MQ);
+    const sync = () => {
+      setDashSidebarLg(mq.matches);
+      setMobileDrawerOpen(false);
+    };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   // Test repositories should open in icon card view by default.
   useEffect(() => {
@@ -1163,11 +1182,16 @@ const Quiz: React.FC = () => {
 
   if (!session || showLanding) {
     if (showAuth) {
+      const authUIInitialMode =
+        initialAuthMode === 'reset-password' || initialAuthMode === 'forgot-password'
+          ? initialAuthMode
+          : authIntent;
       return (
         <AuthUI
+          key={authUIInitialMode}
           onBackHome={() => setShowAuth(false)}
           onDemoLogin={() => supabase.auth.signInWithPassword({ email: 'demo@kiwiteach.com', password: 'password123' })}
-          initialMode={initialAuthMode}
+          initialMode={authUIInitialMode}
           recoveryAccessToken={initialRecoveryAccessToken}
           recoveryRefreshToken={initialRecoveryRefreshToken}
           initialError={initialAuthError}
@@ -1175,45 +1199,77 @@ const Quiz: React.FC = () => {
       );
     }
     return (
-      <LandingPage 
-        onLoginClick={() => setShowAuth(true)} 
-        isLoggedIn={!!session} 
-        onDashboardClick={() => setShowLanding(false)} 
+      <LandingPage
+        onLoginClick={() => {
+          setAuthIntent('login');
+          setShowAuth(true);
+        }}
+        onSignUpClick={() => {
+          setAuthIntent('signup');
+          setShowAuth(true);
+        }}
+        isLoggedIn={!!session}
+        onDashboardClick={() => setShowLanding(false)}
       />
     );
   }
 
   return (
     <PlatformBrandingProvider value={platformTheme}>
-    <div className="flex h-screen overflow-hidden font-sans" style={{ backgroundColor: platformTheme.page_background }}>
-      <LeftPanel 
-        activeView={activeView} 
-        setActiveView={setActiveView} 
-        isOpen={isSidebarOpen} 
-        onClose={() => setIsSidebarOpen(false)} 
-        brandConfig={brandConfig} 
-        appRole={appRole}
-        onHomeClick={() => setShowLanding(true)}
-        onSignOut={() => supabase.auth.signOut()}
-      />
-      {isSidebarOpen && (
+    <div className="relative flex h-screen min-w-0 overflow-hidden font-sans" style={{ backgroundColor: platformTheme.page_background }}>
+      {!dashSidebarLg && mobileDrawerOpen && (
         <button
           type="button"
-          className="lg:hidden fixed inset-0 bg-slate-900/45 z-40"
-          onClick={() => setIsSidebarOpen(false)}
+          className="fixed inset-0 z-[44] bg-black/45 lg:hidden"
+          aria-label="Close menu"
+          onClick={() => setMobileDrawerOpen(false)}
         />
       )}
-      <main className="flex-1 h-full overflow-hidden relative">
-        <div className="lg:hidden px-4 py-3 border-b border-slate-200 bg-white/90 backdrop-blur-sm flex items-center gap-3">
+
+      <div
+        className={[
+          'flex h-full min-h-0 shrink-0 transition-transform duration-200 ease-out',
+          dashSidebarLg
+            ? 'relative'
+            : 'fixed left-0 top-0 z-[45] shadow-xl max-lg:pointer-events-auto',
+          !dashSidebarLg && !mobileDrawerOpen ? 'max-lg:-translate-x-full max-lg:pointer-events-none' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <LeftPanel
+          activeView={activeView}
+          setActiveView={setActiveView}
+          brandConfig={brandConfig}
+          appRole={appRole}
+          onHomeClick={() => {
+            setShowLanding(true);
+            if (!dashSidebarLg) setMobileDrawerOpen(false);
+          }}
+          onSignOut={() => supabase.auth.signOut()}
+          onAfterNavClick={() => {
+            if (!dashSidebarLg) setMobileDrawerOpen(false);
+          }}
+        />
+      </div>
+
+      <main
+        className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${!dashSidebarLg ? 'max-lg:pt-14' : ''}`}
+      >
+        {!dashSidebarLg && (
           <button
             type="button"
-            onClick={() => setIsSidebarOpen(true)}
-            className="w-10 h-10 rounded-xl border border-slate-200 bg-white text-slate-700 grid place-items-center"
+            onClick={() => setMobileDrawerOpen((o) => !o)}
+            className="fixed left-3 top-3 z-[46] flex h-10 w-10 items-center justify-center rounded-md border border-zinc-200/90 bg-white/95 text-zinc-800 shadow-sm backdrop-blur-sm lg:hidden"
+            aria-expanded={mobileDrawerOpen}
+            aria-label={mobileDrawerOpen ? 'Close menu' : 'Open menu'}
           >
-            <Menu className="w-5 h-5" />
+            <iconify-icon
+              icon={mobileDrawerOpen ? 'mdi:close' : 'mdi:menu'}
+              className="h-6 w-6"
+            />
           </button>
-          <span className="text-sm font-black text-slate-700 truncate">{brandConfig.name}</span>
-        </div>
+        )}
         {isLoadingWorkspace && <div className="absolute inset-0 bg-white/80 backdrop-blur-md z-50 flex flex-col items-center justify-center"><div className="w-12 h-12 border-4 border-slate-100 rounded-full animate-spin mb-4" style={{ borderTopColor: platformTheme.primary_color }}></div><h3 className="text-xl font-black uppercase tracking-tight text-slate-800">Syncing Hub</h3></div>}
         
         {isLoadingTest && (

@@ -506,9 +506,9 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
       </header>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <div className="flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-0 md:px-8 md:py-5">
+        <div className="kiwi-split-shell-row flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-0 md:px-8 md:py-5">
           <nav
-            className={`hidden min-h-0 shrink-0 flex-col pr-4 md:flex md:border-r md:border-zinc-200/90 ${navCollapsed ? 'w-[72px]' : 'w-[220px]'}`}
+            className={`kiwi-admin-nav-desktop hidden min-h-0 shrink-0 flex-col pr-4 md:flex md:border-r md:border-zinc-200/90 ${navCollapsed ? 'w-[72px]' : 'w-[220px]'}`}
             aria-label="Admin sections"
           >
             <div className="mb-2 flex items-center justify-between">
@@ -550,7 +550,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
             </div>
           </nav>
 
-          <div className="-mx-1 flex flex-col gap-2 pb-1 md:hidden px-1">
+          <div className="kiwi-admin-mobile-chips -mx-1 flex flex-col gap-2 pb-1 md:hidden px-1">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Go to</p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
               {navGroups.map((group) => {

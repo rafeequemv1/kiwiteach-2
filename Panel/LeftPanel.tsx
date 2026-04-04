@@ -8,23 +8,22 @@ import type { AppRole } from '../auth/roles';
 interface LeftPanelProps {
   activeView: string;
   setActiveView: (view: string) => void;
-  isOpen: boolean;
-  onClose: () => void;
   brandConfig: BrandingConfig;
   appRole: AppRole;
   onHomeClick?: () => void;
   onSignOut?: () => void;
+  /** Called after a nav item changes view (e.g. close mobile drawer). */
+  onAfterNavClick?: () => void;
 }
 
 const LeftPanel: React.FC<LeftPanelProps> = ({
   activeView,
   setActiveView,
-  isOpen,
-  onClose,
   brandConfig,
   appRole,
   onHomeClick,
   onSignOut,
+  onAfterNavClick,
 }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -52,8 +51,8 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
   ];
 
   const handleNavClick = (id: string) => {
-      setActiveView(id);
-      onClose();
+    setActiveView(id);
+    onAfterNavClick?.();
   };
 
   const downloadBlankOmr = async () => {
@@ -71,52 +70,39 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
 
   return (
     <aside
-      className={`
-        no-print
-        fixed left-0 top-0 z-50 flex h-screen w-64 flex-col border-r transition-all duration-300 ease-out
-        lg:sticky lg:translate-x-0 ${isCollapsed ? 'lg:w-[72px]' : 'lg:w-56'}
-        border-white/10
-        ${isOpen ? 'translate-x-0' : '-translate-x-full'}
-    `}
+      className={[
+        'kiwi-app-sidebar no-print flex h-full min-h-0 shrink-0 flex-row border-r border-white/10 transition-[width] duration-200 ease-out',
+        isCollapsed ? 'kiwi-app-sidebar--collapsed w-[4.5rem]' : 'w-56',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       style={{
         background: pb.sidebarGradient,
-        boxShadow: '4px 0 24px rgba(8, 25, 48, 0.12)',
         fontFamily: pb.font_family_sans,
       }}
     >
-      <button
-        type="button"
-        onClick={() => setIsCollapsed((v) => !v)}
-        className="absolute -right-3 top-4 hidden h-6 w-6 items-center justify-center rounded-full border bg-white shadow-sm transition hover:opacity-90 lg:flex"
-        style={{ borderColor: `${pb.primary_color}55`, color: pb.primary_color }}
-        title={isCollapsed ? 'Expand menu' : 'Collapse menu'}
-      >
-        <iconify-icon icon={isCollapsed ? 'mdi:chevron-right' : 'mdi:chevron-left'} width="14" />
-      </button>
-      <div className="flex shrink-0 items-center justify-between p-4 pb-2 lg:block">
-        <button
-          type="button"
-          onClick={onHomeClick}
-          className="mb-4 flex items-center gap-2.5 text-left"
-          title="Go to Landing Page"
-        >
-          <div
-            className="flex min-h-[32px] min-w-[32px] items-center justify-center overflow-hidden rounded-md border border-white/20 bg-black/20 p-1.5"
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="shrink-0 p-4 pb-2">
+          <button
+            type="button"
+            onClick={onHomeClick}
+            className="flex w-full items-center gap-2.5 text-left"
+            title="Go to Landing Page"
           >
-            {brandConfig.logo ? (
-              <img src={brandConfig.logo} alt="Brand Logo" className="h-5 w-5 object-contain" />
-            ) : (
-              <iconify-icon icon="carbon:machine-learning-model" className="h-5 w-5 text-white/70" />
+            <div className="flex min-h-[32px] min-w-[32px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-white/20 bg-black/20 p-1.5">
+              {brandConfig.logo ? (
+                <img src={brandConfig.logo} alt="Brand Logo" className="h-5 w-5 object-contain" />
+              ) : (
+                <iconify-icon icon="carbon:machine-learning-model" className="h-5 w-5 text-white/70" />
+              )}
+            </div>
+            {!isCollapsed && (
+              <h1 className="truncate text-lg font-semibold tracking-tight text-white">{brandConfig.name}</h1>
             )}
-          </div>
-          {!isCollapsed && <h1 className="truncate text-lg font-semibold tracking-tight text-white">{brandConfig.name}</h1>}
-        </button>
-        <button type="button" onClick={onClose} className="-mt-4 text-white/60 hover:text-white lg:hidden">
-            <iconify-icon icon="mdi:close" width="20"></iconify-icon>
-        </button>
-      </div>
+          </button>
+        </div>
 
-      <nav className={`flex flex-1 flex-col gap-0.5 overflow-y-auto pb-4 ${isCollapsed ? 'px-2' : 'px-3'}`}>
+        <nav className={`flex flex-1 flex-col gap-0.5 overflow-y-auto pb-4 ${isCollapsed ? 'px-2' : 'px-3'}`}>
         
         {/* Teacher nav */}
         {showTeacherNav &&
@@ -162,10 +148,10 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
                 })}
             </>
         )}
-      </nav>
+        </nav>
 
-      {/* Footer — Admin (syllabus, OMR lab, etc. live inside Admin) */}
-      <div className="mt-auto flex shrink-0 flex-col gap-1.5 border-t border-white/10 z-10 bg-black/20" style={{ padding: isCollapsed ? '0.5rem' : '0.75rem' }}>
+        {/* Footer — Admin (syllabus, OMR lab, etc. live inside Admin) */}
+        <div className="mt-auto flex shrink-0 flex-col gap-1.5 border-t border-white/10 z-10 bg-black/20" style={{ padding: isCollapsed ? '0.5rem' : '0.75rem' }}>
         {showAdminInFooter && (
           <button
             type="button"
@@ -206,7 +192,22 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
             {!isCollapsed && <span>Logout</span>}
           </button>
         )}
+        </div>
       </div>
+
+      <button
+        type="button"
+        onClick={() => setIsCollapsed((v) => !v)}
+        className="flex w-2.5 shrink-0 flex-col items-center justify-center border-l border-white/10 text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/75"
+        title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        <iconify-icon
+          icon="mdi:chevron-left"
+          width="12"
+          className={isCollapsed ? 'rotate-180 transition-transform duration-200' : 'transition-transform duration-200'}
+        />
+      </button>
     </aside>
   );
 };

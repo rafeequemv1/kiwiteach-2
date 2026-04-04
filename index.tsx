@@ -1,8 +1,17 @@
 
+import './src/index.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { HelmetProvider } from 'react-helmet-async';
 import Quiz from './Quiz/Quiz';
+
+const App: React.FC = () => (
+  <React.StrictMode>
+    <HelmetProvider>
+      <Quiz />
+    </HelmetProvider>
+  </React.StrictMode>
+);
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -10,10 +19,4 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <HelmetProvider>
-      <Quiz />
-    </HelmetProvider>
-  </React.StrictMode>
-);
+root.render(<App />);

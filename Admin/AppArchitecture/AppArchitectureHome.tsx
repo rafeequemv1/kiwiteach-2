@@ -1,5 +1,6 @@
 import '../../types';
 import React, { useEffect, useId, useRef, useState } from 'react';
+import { DIAGRAM_SUPABASE_TABLE_LINKS, SUPABASE_TABLE_CATALOG } from './supabaseTablesCatalog';
 
 const DIAGRAM_DB = `flowchart TB
   subgraph AUTH["Authentication"]
@@ -278,6 +279,42 @@ const AppArchitectureHome: React.FC = () => {
           user journeys, and frontend-to-backend flow. Mermaid diagrams — scroll each panel when content is large.
         </p>
       </div>
+
+      <div className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+        <div className="border-b border-zinc-100 bg-zinc-50/80 px-4 py-2.5">
+          <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900">Supabase tables</h3>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
+            Complete list of application tables (plus <code className="rounded bg-zinc-100 px-1">auth.users</code>). Descriptions reflect how KiwiTeach uses each object; see migrations for exact columns and RLS.
+          </p>
+        </div>
+        <div className="max-h-[min(70vh,560px)] overflow-auto custom-scrollbar">
+          <table className="w-full min-w-[640px] border-collapse text-left text-[12px]">
+            <thead className="sticky top-0 z-[1] bg-zinc-100/95 backdrop-blur-sm">
+              <tr className="border-b border-zinc-200">
+                <th className="whitespace-nowrap px-3 py-2 font-semibold text-zinc-700">Schema</th>
+                <th className="whitespace-nowrap px-3 py-2 font-semibold text-zinc-700">Table</th>
+                <th className="px-3 py-2 font-semibold text-zinc-700">Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              {SUPABASE_TABLE_CATALOG.map((row) => (
+                <tr key={`${row.schema}.${row.name}`} className="border-b border-zinc-100 hover:bg-zinc-50/80">
+                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-zinc-500">{row.schema}</td>
+                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-zinc-900">{row.name}</td>
+                  <td className="px-3 py-2 leading-snug text-zinc-600">{row.purpose}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <MermaidBlock
+        diagramKey="supabase-fk"
+        title="Table links (conceptual)"
+        description="High-level relationships and groupings. Solid arrows indicate primary ownership or FK-style flows used by the app; dotted lines are associative or syllabus-mapping links."
+        definition={DIAGRAM_SUPABASE_TABLE_LINKS}
+      />
 
       <MermaidBlock diagramKey="db" title="Database structure" definition={DIAGRAM_DB} />
       <MermaidBlock

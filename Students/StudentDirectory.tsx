@@ -216,13 +216,27 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ institutesList = []
           .select('role, business_id')
           .eq('id', uid)
           .maybeSingle();
-        setActorRole((actorProf?.role || 'student') as string);
-        setActorBusinessId((actorProf?.business_id as string | null) || null);
-        const { data, error } = await supabase
+        const roleLower = String(actorProf?.role || 'student').toLowerCase();
+        const bizId = (actorProf?.business_id as string | null) || null;
+        setActorRole(roleLower);
+        setActorBusinessId(bizId);
+
+        let listQuery = supabase
           .from('students')
           .select('id, name, email, mobile_phone, attending_exams, business_id, institute_id, class_id')
-          .eq('user_id', uid)
           .order('created_at', { ascending: false });
+
+        const staffWithBusiness =
+          !!bizId && (roleLower === 'teacher' || roleLower === 'school_admin');
+        if (staffWithBusiness) {
+          listQuery = listQuery.eq('business_id', bizId);
+        } else if (roleLower === 'developer') {
+          /* RLS scopes rows; no user_id filter */
+        } else {
+          listQuery = listQuery.eq('user_id', uid);
+        }
+
+        const { data, error } = await listQuery;
         if (error) throw error;
         const mappedStudents = ((data || []) as Omit<Student, 'avatar'>[]).map((s) => ({
           ...s,

@@ -70,9 +70,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({
       </header>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <div className="flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-4 md:px-8 md:py-4">
+        <div className="kiwi-split-shell-row flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-4 md:px-8 md:py-4">
           <nav
-            className={`hidden shrink-0 flex-col gap-0.5 border-r border-zinc-200 pr-3 md:flex ${navCollapsed ? 'w-16' : 'w-44'}`}
+            className={`kiwi-settings-nav-desktop hidden shrink-0 flex-col gap-0.5 border-r border-zinc-200 pr-3 md:flex ${navCollapsed ? 'w-16' : 'w-44'}`}
             aria-label="Settings sections"
           >
             <button
@@ -89,7 +89,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({
             {navBtn('team', 'Team', 'mdi:account-multiple-outline')}
           </nav>
 
-          <div className="grid grid-cols-2 gap-1 md:hidden">
+          <div className="kiwi-settings-mobile-grid grid grid-cols-2 gap-1 md:hidden">
             {navBtn('branding', 'Branding', 'mdi:palette-outline')}
             {navBtn('profile', 'Profile', 'mdi:account-circle-outline')}
             {navBtn('institutes', 'Institutes', 'mdi:domain')}

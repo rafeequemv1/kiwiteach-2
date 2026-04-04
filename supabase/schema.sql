@@ -120,3 +120,131 @@ create policy "Users can manage own question usage"
 on public.question_usage for all
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
+
+-- 5. Dodo Payments (webhook / service role only; RLS enabled, no client policies)
+create table if not exists public.payments (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default timezone('utc'::text, now()),
+  updated_at timestamptz not null default timezone('utc'::text, now()),
+  dodo_payment_id text not null unique,
+  total_amount_minor bigint not null,
+  currency text not null,
+  status text,
+  customer_id text,
+  dodo_subscription_id text,
+  dodo_created_at timestamptz,
+  dodo_updated_at timestamptz,
+  raw_event jsonb
+);
+
+create index if not exists payments_customer_id_idx on public.payments (customer_id);
+create index if not exists payments_dodo_subscription_id_idx on public.payments (dodo_subscription_id);
+
+create table if not exists public.subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default timezone('utc'::text, now()),
+  updated_at timestamptz not null default timezone('utc'::text, now()),
+  dodo_subscription_id text not null unique,
+  customer_id text not null,
+  status text not null,
+  product_id text not null,
+  currency text not null,
+  recurring_pre_tax_amount bigint not null,
+  cancel_at_next_billing_date boolean not null default false,
+  previous_billing_date timestamptz,
+  next_billing_date timestamptz,
+  payment_frequency_count int not null,
+  payment_frequency_interval text not null,
+  subscription_period_count int not null,
+  subscription_period_interval text not null,
+  quantity int not null default 1,
+  raw_event jsonb
+);
+
+create index if not exists subscriptions_customer_id_idx on public.subscriptions (customer_id);
+create index if not exists subscriptions_status_idx on public.subscriptions (status);
+
+create or replace function public.dodo_payments_set_updated_at()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $$
+begin
+  new.updated_at := timezone('utc'::text, now());
+  return new;
+end;
+$$;
+
+drop trigger if exists payments_updated_at on public.payments;
+create trigger payments_updated_at
+before update on public.payments
+for each row execute function public.dodo_payments_set_updated_at();
+
+drop trigger if exists subscriptions_updated_at on public.subscriptions;
+create trigger subscriptions_updated_at
+before update on public.subscriptions
+for each row execute function public.dodo_payments_set_updated_at();
+
+alter table public.payments enable row level security;
+alter table public.subscriptions enable row level security;
+
+-- 6. Marketing pricing (INR, public read for pricing page; amounts in paise)
+create table if not exists public.marketing_pricing_plans (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default timezone('utc'::text, now()),
+  updated_at timestamptz not null default timezone('utc'::text, now()),
+  plan_key text not null unique,
+  title text not null,
+  description text not null default '',
+  currency text not null default 'INR' check (currency = 'INR'),
+  pricing_model text not null default 'fixed' check (pricing_model in ('fixed', 'custom')),
+  monthly_amount_paise bigint,
+  yearly_amount_paise bigint,
+  highlight boolean not null default false,
+  badge text,
+  button_text text not null default 'Choose plan',
+  features jsonb not null default '[]'::jsonb,
+  sort_order int not null default 0,
+  is_active boolean not null default true,
+  dodo_product_id text,
+  dodo_yearly_product_id text
+);
+
+create index if not exists marketing_pricing_plans_active_sort_idx
+  on public.marketing_pricing_plans (is_active, sort_order);
+
+create or replace function public.marketing_pricing_plans_set_updated_at()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $$
+begin
+  new.updated_at := timezone('utc'::text, now());
+  return new;
+end;
+$$;
+
+drop trigger if exists marketing_pricing_plans_updated_at on public.marketing_pricing_plans;
+create trigger marketing_pricing_plans_updated_at
+before update on public.marketing_pricing_plans
+for each row execute function public.marketing_pricing_plans_set_updated_at();
+
+alter table public.marketing_pricing_plans enable row level security;
+
+drop policy if exists marketing_pricing_plans_public_read on public.marketing_pricing_plans;
+create policy marketing_pricing_plans_public_read
+  on public.marketing_pricing_plans for select
+  to anon, authenticated
+  using (is_active = true);
+
+drop policy if exists marketing_pricing_plans_dev_all on public.marketing_pricing_plans;
+create policy marketing_pricing_plans_dev_all
+  on public.marketing_pricing_plans for all
+  to authenticated
+  using (public.is_developer())
+  with check (public.is_developer());
+
+grant select on public.marketing_pricing_plans to anon, authenticated;
+grant insert, update, delete on public.marketing_pricing_plans to authenticated;
