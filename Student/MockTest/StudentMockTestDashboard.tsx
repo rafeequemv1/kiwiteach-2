@@ -94,11 +94,11 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
   };
 
   return (
-    <div className={`${workspacePageClass} w-full overflow-y-auto p-6 md:p-8 custom-scrollbar`}>
-      <div className="mx-auto flex max-w-5xl flex-col gap-8">
-        <header className="border-b border-zinc-200 pb-6">
-            <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-md bg-zinc-900 text-white shadow-sm">
+    <div className={`${workspacePageClass} flex w-full justify-center overflow-y-auto p-6 md:p-8 custom-scrollbar`}>
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-6 sm:max-w-2xl">
+        <header className="border-b border-zinc-200 pb-5 text-center sm:text-left">
+            <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-center sm:justify-start">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-zinc-900 text-white shadow-sm">
                     <iconify-icon icon="mdi:flask-outline" width="22" />
                 </div>
                 <div>
@@ -108,7 +108,7 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
             </div>
         </header>
 
-        <div className="relative flex flex-col gap-8 rounded-md border border-zinc-200 bg-white p-6 shadow-sm md:p-8">
+        <div className="relative flex w-full min-w-0 flex-col gap-8 rounded-lg border border-zinc-200 bg-white p-6 shadow-sm md:p-8">
             <div className="relative z-10 flex flex-col gap-8">
                 
                 {/* 1. Class Selection */}
@@ -186,12 +186,12 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
                         </div>
                         
                         {isFetching ? (
-                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
                                 <div className="h-12 w-full animate-pulse rounded-md bg-zinc-100"></div>
                                 <div className="h-12 w-full animate-pulse rounded-md bg-zinc-100"></div>
                             </div>
                         ) : chapters.length > 0 ? (
-                            <div className="custom-scrollbar grid max-h-64 grid-cols-1 gap-2 overflow-y-auto p-1 pr-2 md:grid-cols-2 lg:grid-cols-3">
+                            <div className="custom-scrollbar grid max-h-72 grid-cols-1 gap-2 overflow-y-auto p-1 pr-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
                                 {chapters.map(chap => {
                                     const isSelected = selectedChapterIds.has(chap.id);
                                     return (
@@ -225,8 +225,8 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
                 )}
 
                 {/* 4. Configuration & Action */}
-                <div className="flex flex-col gap-8 border-t border-zinc-200 pt-8 xl:flex-row">
-                    <div className="grid flex-1 grid-cols-1 gap-6 md:grid-cols-2">
+                <div className="flex flex-col gap-8 border-t border-zinc-200 pt-8 lg:flex-row lg:items-start lg:gap-10">
+                    <div className="grid min-w-0 flex-1 grid-cols-1 gap-6 sm:grid-cols-2">
                         <div>
                             <label className="mb-3 ml-1 block text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Difficulty</label>
                             <div className="flex gap-2">
@@ -263,7 +263,7 @@ const StudentMockTestDashboard: React.FC<StudentMockTestDashboardProps> = ({ onS
                         </div>
                     </div>
 
-                    <div className="flex flex-col justify-end xl:w-64">
+                    <div className="flex w-full flex-col justify-end lg:w-56 lg:shrink-0 xl:w-64">
                         <button 
                             type="button"
                             onClick={handleStart}

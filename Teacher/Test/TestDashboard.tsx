@@ -1123,7 +1123,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
             <h1 className="text-lg font-semibold tracking-tight text-zinc-900">{title}</h1>
             <p className="text-[13px] text-zinc-500">{subtitle ?? (username ? `${username.split('@')[0]}` : 'Class tests')}</p>
           </div>
-          <div className="grid gap-2 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
+          <div className="grid gap-2 md:grid-cols-[1fr_auto_1fr] md:items-center">
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -1143,7 +1143,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
             <div className="mx-auto">
               {viewToggle}
             </div>
-            <div className="hidden lg:block" />
+            <div className="hidden md:block" />
           </div>
         </div>
       </header>
@@ -1161,8 +1161,8 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row overflow-hidden">
-        <aside className="w-full shrink-0 border-b lg:w-72 lg:border-b-0 lg:border-r border-zinc-200 bg-white px-4 py-3">
+      <div className="kiwi-test-explorer-shell flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+        <aside className="kiwi-test-explorer-sidebar w-full shrink-0 border-b border-zinc-200 bg-white px-4 py-3 md:w-72 md:border-b-0 md:border-r">
           <div className="space-y-4">
             <div>
               <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-zinc-400">Institutes</p>

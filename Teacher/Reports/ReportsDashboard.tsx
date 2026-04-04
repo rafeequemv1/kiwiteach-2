@@ -1,6 +1,7 @@
 
 import '../../types';
 import React, { useState, useMemo, useEffect } from 'react';
+import { supabase } from '../../supabase/client';
 import { WorkspacePageHeader, WorkspacePanel, workspacePageClass } from '../components/WorkspaceChrome';
 
 interface Institute {
@@ -47,10 +48,58 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, cla
   const [filterSchool, setFilterSchool] = useState('all');
 
   useEffect(() => {
-    const localStudents = localStorage.getItem('kt_students');
-    const localResults = localStorage.getItem('kt_test_results');
-    if (localStudents) setStudents(JSON.parse(localStudents));
-    if (localResults) setResults(JSON.parse(localResults));
+    const load = async () => {
+      const localResults = localStorage.getItem('kt_test_results');
+      if (localResults) setResults(JSON.parse(localResults));
+
+      const localStudentsRaw = localStorage.getItem('kt_students');
+      const localParsed: Student[] = localStudentsRaw ? JSON.parse(localStudentsRaw) : [];
+
+      const { data: authData } = await supabase.auth.getUser();
+      const uid = authData.user?.id;
+      if (!uid) {
+        setStudents(localParsed);
+        return;
+      }
+
+      const { data: actorProf } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', uid)
+        .maybeSingle();
+      const roleLower = String(actorProf?.role || 'student').toLowerCase();
+      const rosterViaRls = ['teacher', 'school_admin', 'developer'].includes(roleLower);
+
+      let q = supabase
+        .from('students')
+        .select('id, name, email, class_id, attending_exams')
+        .order('created_at', { ascending: false });
+      if (!rosterViaRls) q = q.eq('user_id', uid);
+
+      const { data: rows, error } = await q;
+      if (error) {
+        console.warn('Reports: could not load students from API', error.message);
+        setStudents(localParsed);
+        return;
+      }
+
+      const fromDb: Student[] = (rows || []).map((s: { id: string; name: string; email: string | null; class_id: string | null; attending_exams?: string[] | null }) => ({
+        id: s.id,
+        name: s.name,
+        email: s.email || '',
+        class_id: s.class_id || '',
+        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${(s.name || '').replace(/\s+/g, '')}`,
+        attending_exams: s.attending_exams || undefined,
+      }));
+
+      const byId = new Map<string, Student>();
+      for (const s of fromDb) byId.set(s.id, s);
+      for (const s of localParsed) {
+        if (!byId.has(s.id)) byId.set(s.id, s);
+      }
+      setStudents(Array.from(byId.values()));
+    };
+    void load();
   }, []);
 
   const studentStats = useMemo(() => {
@@ -134,9 +183,9 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, cla
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 custom-scrollbar">
-        <div className="mx-auto w-full max-w-6xl space-y-4">
+        <div className="kiwi-reports-inner mx-auto w-full max-w-6xl space-y-4 px-0 sm:px-0">
           <WorkspacePanel title="Campus comparison">
-            <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 md:grid-cols-3">
               {schoolStats.map((school) => (
                 <div
                   key={school.id}
@@ -165,23 +214,26 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ institutesList, cla
           </WorkspacePanel>
 
           <WorkspacePanel title="Student leaderboard">
-            <div className="flex flex-col gap-4 border-b border-zinc-100 bg-zinc-50/50 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-              <p className="text-[13px] text-zinc-500">Cross-campus merit ranking (local demo data)</p>
-              <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
-                <div className="relative flex-1">
+            {/* Grid on md+ avoids flex min-content width squeezing the blurb (word-per-line bug). */}
+            <div className="grid gap-4 border-b border-zinc-100 bg-zinc-50/50 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:gap-6">
+              <p className="text-[13px] leading-relaxed text-zinc-500 md:min-w-0">
+                Cross-campus merit ranking (roster from your workspace; scores from saved test results)
+              </p>
+              <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 md:w-max md:max-w-none md:shrink-0">
+                <div className="relative w-full min-w-0 sm:w-64 sm:min-w-[16rem]">
                   <iconify-icon icon="mdi:magnify" className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
                   <input
                     type="text"
                     placeholder="Search students…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full rounded-md border border-zinc-200 bg-white py-2 pl-10 pr-4 text-xs font-medium text-zinc-800 shadow-sm outline-none placeholder:text-zinc-400 focus:border-zinc-400 sm:w-64"
+                    className="w-full rounded-md border border-zinc-200 bg-white py-2 pl-10 pr-4 text-xs font-medium text-zinc-800 shadow-sm outline-none placeholder:text-zinc-400 focus:border-zinc-400"
                   />
                 </div>
                 <select
                   value={filterSchool}
                   onChange={(e) => setFilterSchool(e.target.value)}
-                  className="rounded-md border border-zinc-200 bg-white px-4 py-2 text-xs font-medium text-zinc-700 shadow-sm outline-none focus:border-zinc-400"
+                  className="w-full shrink-0 rounded-md border border-zinc-200 bg-white px-4 py-2 text-xs font-medium text-zinc-700 shadow-sm outline-none focus:border-zinc-400 sm:w-auto sm:min-w-[11rem]"
                 >
                   <option value="all">All campuses</option>
                   {institutesList.map((s) => (

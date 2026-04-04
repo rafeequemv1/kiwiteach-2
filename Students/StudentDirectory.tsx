@@ -226,13 +226,10 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ institutesList = []
           .select('id, name, email, mobile_phone, attending_exams, business_id, institute_id, class_id')
           .order('created_at', { ascending: false });
 
-        const staffWithBusiness =
-          !!bizId && (roleLower === 'teacher' || roleLower === 'school_admin');
-        if (staffWithBusiness) {
-          listQuery = listQuery.eq('business_id', bizId);
-        } else if (roleLower === 'developer') {
-          /* RLS scopes rows; no user_id filter */
-        } else {
+        // Teachers, school admins, developers: let RLS return every visible row (avoid client filters that
+        // hide demo rows when business_id on profile ≠ rows in DB).
+        const rosterViaRls = ['teacher', 'school_admin', 'developer'].includes(roleLower);
+        if (!rosterViaRls) {
           listQuery = listQuery.eq('user_id', uid);
         }
 
@@ -562,8 +559,8 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ institutesList = []
         }
       />
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <aside className="w-full shrink-0 border-b lg:w-80 lg:border-b-0 lg:border-r border-zinc-200 bg-white px-4 py-3 overflow-y-auto">
+      <div className="kiwi-students-shell flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+        <aside className="kiwi-students-filters w-full shrink-0 border-b border-zinc-200 bg-white px-4 py-3 md:w-80 md:border-b-0 md:border-r overflow-y-auto">
           <div className="space-y-4">
             <div>
               <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-zinc-400">Filters</p>
@@ -637,7 +634,7 @@ const StudentDirectory: React.FC<StudentDirectoryProps> = ({ institutesList = []
               <p className="text-sm font-medium">No students match this filter</p>
             </div>
           ) : viewMode === 'grid' ? (
-            <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
               {paginatedStudents.map((student) => {
                 const sClass = classesList.find((c) => c.id === student.class_id);
                 const school = institutesList.find((s) => s.id === (student.institute_id || sClass?.institute_id || undefined));

@@ -1,0 +1,44 @@
+/* Imported after index.css so these beat Tailwind/shadcn utilities regardless of bundle order. */
+@media (min-width: 768px) {
+  .kiwi-split-shell-row {
+    flex-direction: row !important;
+  }
+  nav.kiwi-admin-nav-desktop {
+    display: flex !important;
+  }
+  div.kiwi-admin-mobile-chips {
+    display: none !important;
+  }
+  nav.kiwi-settings-nav-desktop {
+    display: flex !important;
+  }
+  div.kiwi-settings-mobile-grid {
+    display: none !important;
+  }
+  .kiwi-students-shell {
+    flex-direction: row !important;
+  }
+  aside.kiwi-students-filters {
+    width: 20rem !important;
+    max-width: 20rem !important;
+    flex-shrink: 0 !important;
+    border-bottom-width: 0 !important;
+    border-bottom-style: none !important;
+    border-right-width: 1px !important;
+    border-right-style: solid !important;
+    border-right-color: rgb(228 228 231) !important;
+  }
+  .kiwi-test-explorer-shell {
+    flex-direction: row !important;
+  }
+  aside.kiwi-test-explorer-sidebar {
+    width: 18rem !important;
+    max-width: 18rem !important;
+    flex-shrink: 0 !important;
+    border-bottom-width: 0 !important;
+    border-bottom-style: none !important;
+    border-right-width: 1px !important;
+    border-right-style: solid !important;
+    border-right-color: rgb(228 228 231) !important;
+  }
+}

@@ -101,24 +101,4 @@
   }
 }
 
-/*
- * Admin + Settings desktop layout: unlayered so this wins over Tailwind `utilities`
- * (and shadcn imports) — `.hidden` was beating @layer components rules.
- */
-@media (min-width: 768px) {
-  .kiwi-split-shell-row {
-    flex-direction: row !important;
-  }
-  .kiwi-admin-nav-desktop {
-    display: flex !important;
-  }
-  .kiwi-admin-mobile-chips {
-    display: none !important;
-  }
-  .kiwi-settings-nav-desktop {
-    display: flex !important;
-  }
-  .kiwi-settings-mobile-grid {
-    display: none !important;
-  }
-}
+/* Wide-layout overrides live in kiwi-layout-overrides.css (imported after this file from index.tsx). */

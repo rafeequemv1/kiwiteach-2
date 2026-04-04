@@ -29,7 +29,7 @@ type WorkspacePageHeaderProps = {
 
 export const WorkspacePageHeader: React.FC<WorkspacePageHeaderProps> = ({ title, subtitle, toolbar, actions }) => (
   <header className="shrink-0 border-b border-zinc-200 bg-white px-4 py-3 shadow-sm">
-    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div>
         <h1 className="text-lg font-semibold tracking-tight text-zinc-900">{title}</h1>
         {subtitle != null && subtitle !== '' && <p className="text-[13px] text-zinc-500">{subtitle}</p>}
