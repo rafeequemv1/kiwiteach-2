@@ -111,6 +111,48 @@ const NeetPromptSetDetail: React.FC<NeetPromptSetDetailProps> = ({ onBack, embed
 
   const concatenatedSystemPrompt = SECTIONS.map((s) => `## ${s.id}\n${prompts[s.id] || ''}`).join('\n\n');
 
+  const escapeCsvCell = (value: string): string => {
+    const v = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (/[",\n]/.test(v)) {
+      return `"${v.replace(/"/g, '""')}"`;
+    }
+    return v;
+  };
+
+  /** All editable system sections plus static Neural Studio forge docs (same as JSON bundle scope). */
+  const buildAllPromptsCsv = (): string => {
+    const lines: string[] = ['category,section_key,section_label,content'];
+    for (const s of SECTIONS) {
+      lines.push(
+        ['system_prompt', s.id, s.label, prompts[s.id] ?? ''].map(escapeCsvCell).join(',')
+      );
+    }
+    for (const doc of NEURAL_STUDIO_FORGE_SECTIONS) {
+      const key =
+        doc.title
+          .replace(/[^\w\s-]/g, '')
+          .trim()
+          .replace(/\s+/g, '_')
+          .slice(0, 96) || 'forge_section';
+      lines.push(
+        ['neural_studio_forge_doc', key, doc.title, doc.body].map(escapeCsvCell).join(',')
+      );
+    }
+    return lines.join('\n');
+  };
+
+  const downloadPromptsCsv = () => {
+    const csv = `\uFEFF${buildAllPromptsCsv()}`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kiwiteach-neet-prompts-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.rel = 'noopener';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const tabScrollClass = embedded
     ? 'min-h-0 flex-1 overflow-y-auto pb-4 pr-1 custom-scrollbar'
     : 'space-y-4 pb-4';
@@ -198,45 +240,58 @@ const NeetPromptSetDetail: React.FC<NeetPromptSetDetailProps> = ({ onBack, embed
         </p>
       )}
 
-      <div className="shrink-0 flex flex-col gap-3 border-t border-zinc-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="inline-flex rounded-md border border-zinc-200 bg-zinc-100 p-0.5">
-          <button
-            type="button"
-            onClick={() => setActiveTab('system')}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              activeTab === 'system' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
-            }`}
-          >
-            System prompts
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('neural_forge')}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              activeTab === 'neural_forge' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
-            }`}
-          >
-            Neural Studio forge
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('bundle')}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              activeTab === 'bundle' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
-            }`}
-          >
-            JSON / full text
-          </button>
+      <div className="shrink-0 flex flex-col gap-3 border-t border-zinc-200 pt-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="inline-flex rounded-md border border-zinc-200 bg-zinc-100 p-0.5">
+            <button
+              type="button"
+              onClick={() => setActiveTab('system')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeTab === 'system' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              System prompts
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('neural_forge')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeTab === 'neural_forge' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              Neural Studio forge
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('bundle')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeTab === 'bundle' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              JSON / full text
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={downloadPromptsCsv}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+              title="Download every system prompt section and Neural Studio forge docs as CSV"
+            >
+              <iconify-icon icon="mdi:file-delimited-outline" width="14" />
+              Download all (CSV)
+            </button>
+            {activeTab === 'system' && (
+              <button
+                type="button"
+                onClick={handleResetDefaults}
+                className="text-xs font-medium text-zinc-500 hover:text-red-600"
+              >
+                Reset defaults
+              </button>
+            )}
+          </div>
         </div>
-        {activeTab === 'system' && (
-          <button
-            type="button"
-            onClick={handleResetDefaults}
-            className="self-start text-xs font-medium text-zinc-500 hover:text-red-600 sm:self-auto"
-          >
-            Reset defaults
-          </button>
-        )}
       </div>
 
       {activeTab === 'neural_forge' ? (
@@ -282,6 +337,14 @@ const NeetPromptSetDetail: React.FC<NeetPromptSetDetailProps> = ({ onBack, embed
             >
               <iconify-icon icon="mdi:text-box-outline" width="14" />
               {copyFlash === 'text' ? 'Copied' : 'Copy concatenated system prompts'}
+            </button>
+            <button
+              type="button"
+              onClick={downloadPromptsCsv}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+            >
+              <iconify-icon icon="mdi:file-delimited-outline" width="14" />
+              Download all (CSV)
             </button>
           </div>
           <div
