@@ -15,7 +15,8 @@ interface NeetPromptSetDetailProps {
 const NeetPromptSetDetail: React.FC<NeetPromptSetDetailProps> = ({ onBack, embedded }) => {
   const [activeTab, setActiveTab] = useState<PromptsTab>('system');
   const [prompts, setPrompts] = useState<Record<string, string>>(DEFAULT_PROMPTS);
-  const [persistMode, setPersistMode] = useState<'local' | 'cloud'>('local');
+  const [persistMode, setPersistMode] = useState<'local' | 'cloud' | 'builtin'>('local');
+  const [promptStudioOpen, setPromptStudioOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState('');
@@ -33,6 +34,15 @@ const NeetPromptSetDetail: React.FC<NeetPromptSetDetailProps> = ({ onBack, embed
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (!promptStudioOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPromptStudioOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [promptStudioOpen]);
 
   const handleSavePrompt = (section: string, text: string) => {
     setSaving(true);
@@ -134,9 +144,52 @@ const NeetPromptSetDetail: React.FC<NeetPromptSetDetailProps> = ({ onBack, embed
         </div>
       </div>
 
-      <div className="shrink-0">
-        <NeetKbPromptStudio prompts={prompts} setPrompts={setPrompts} onPersistModeChange={setPersistMode} />
+      <div className="shrink-0 flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-[12px] leading-relaxed text-zinc-600">
+          Open Prompt Studio to choose the knowledge base, <strong>which prompts Question Bank uses</strong> (built-in,
+          browser, or cloud), upload reference papers, and manage saved sets.
+        </p>
+        <button
+          type="button"
+          onClick={() => setPromptStudioOpen(true)}
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-zinc-900 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-zinc-800"
+        >
+          <iconify-icon icon="mdi:cloud-cog-outline" width="18" />
+          Open Prompt Studio
+        </button>
       </div>
+
+      {promptStudioOpen && (
+        <div
+          className="fixed inset-0 z-[55] flex items-center justify-center bg-zinc-900/50 p-3 backdrop-blur-sm"
+          onClick={() => setPromptStudioOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="prompt-studio-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white px-4 py-3">
+              <h3 id="prompt-studio-modal-title" className="text-sm font-semibold text-zinc-900">
+                Prompt Studio (cloud)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setPromptStudioOpen(false)}
+                className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+              >
+                Close
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 custom-scrollbar">
+              <NeetKbPromptStudio prompts={prompts} setPrompts={setPrompts} onPersistModeChange={setPersistMode} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {persistMode === 'cloud' && (
         <p className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">

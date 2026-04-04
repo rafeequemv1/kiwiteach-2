@@ -1,6 +1,14 @@
 import { supabase } from '../supabase/client';
 import { DEFAULT_PROMPTS } from '../Admin/Prompts/neetPromptConfig';
 
+/** UI + DB values for `kb_prompt_preferences.generation_prompt_source`. */
+export type KbGenerationPromptSource = 'builtin_default' | 'browser_local' | 'cloud_set';
+
+/** Single-select id for "built-in app defaults" (not a UUID). */
+export const KB_GEN_SOURCE_BUILTIN = '__builtin__';
+/** Single-select id for browser localStorage + reference layer path. */
+export const KB_GEN_SOURCE_BROWSER_LOCAL = '__local__';
+
 export type KbPromptSetRow = {
   id: string;
   created_at: string;
@@ -28,20 +36,39 @@ export type PromptReferenceLayerRow = {
   created_by: string | null;
 };
 
-/** When a KB has an active cloud prompt set, merge DB JSON with defaults for generation. Otherwise null → use browser localStorage + legacy reference block. */
+/**
+ * When `builtin_default`: return shipped DEFAULT_PROMPTS (deterministic).
+ * When `browser_local` or no row: null → geminiService uses getSystemPrompt + reference block.
+ * When `cloud_set`: merge active `kb_prompt_sets.prompts_json` over defaults.
+ */
 export async function fetchMergedPromptsForKbGeneration(knowledgeBaseId: string): Promise<Record<string, string> | null> {
   const { data: pref, error: pErr } = await supabase
     .from('kb_prompt_preferences')
-    .select('active_prompt_set_id')
+    .select('active_prompt_set_id, generation_prompt_source')
     .eq('knowledge_base_id', knowledgeBaseId)
     .maybeSingle();
 
-  if (pErr || !pref?.active_prompt_set_id) return null;
+  if (pErr) return null;
+
+  const source = (pref?.generation_prompt_source as KbGenerationPromptSource | undefined) ?? 'browser_local';
+  const activeId = pref?.active_prompt_set_id ?? null;
+
+  if (source === 'builtin_default') {
+    return { ...DEFAULT_PROMPTS };
+  }
+
+  if (source === 'browser_local') {
+    return null;
+  }
+
+  if (source !== 'cloud_set' || !activeId) {
+    return null;
+  }
 
   const { data: setRow, error: sErr } = await supabase
     .from('kb_prompt_sets')
     .select('prompts_json')
-    .eq('id', pref.active_prompt_set_id)
+    .eq('id', activeId)
     .single();
 
   if (sErr || !setRow?.prompts_json || typeof setRow.prompts_json !== 'object') return null;
@@ -55,23 +82,68 @@ export async function fetchMergedPromptsForKbGeneration(knowledgeBaseId: string)
   return merged;
 }
 
-export async function fetchKbPromptPreferences(knowledgeBaseId: string): Promise<string | null> {
-  const { data } = await supabase
+export type KbPromptGenerationPrefs = {
+  generationSource: KbGenerationPromptSource;
+  activePromptSetId: string | null;
+};
+
+export async function fetchKbPromptGenerationPrefs(knowledgeBaseId: string): Promise<KbPromptGenerationPrefs | null> {
+  const { data, error } = await supabase
     .from('kb_prompt_preferences')
-    .select('active_prompt_set_id')
+    .select('active_prompt_set_id, generation_prompt_source')
     .eq('knowledge_base_id', knowledgeBaseId)
     .maybeSingle();
-  return data?.active_prompt_set_id ?? null;
+
+  if (error) throw error;
+  if (!data) return null;
+
+  const generationSource = (data.generation_prompt_source as KbGenerationPromptSource) || 'browser_local';
+  return {
+    generationSource,
+    activePromptSetId: data.active_prompt_set_id ?? null,
+  };
 }
 
-export async function setKbActivePromptSet(knowledgeBaseId: string, activePromptSetId: string | null): Promise<void> {
+/** @deprecated Use fetchKbPromptGenerationPrefs */
+export async function fetchKbPromptPreferences(knowledgeBaseId: string): Promise<string | null> {
+  const p = await fetchKbPromptGenerationPrefs(knowledgeBaseId);
+  if (!p) return null;
+  return p.generationSource === 'cloud_set' ? p.activePromptSetId : null;
+}
+
+export async function upsertKbPromptGenerationPreferences(input: {
+  knowledgeBaseId: string;
+  generationSource: KbGenerationPromptSource;
+  activePromptSetId?: string | null;
+}): Promise<void> {
+  const active_prompt_set_id =
+    input.generationSource === 'cloud_set' ? (input.activePromptSetId ?? null) : null;
+  if (input.generationSource === 'cloud_set' && !active_prompt_set_id) {
+    throw new Error('Cloud prompt set requires activePromptSetId');
+  }
   const payload = {
-    knowledge_base_id: knowledgeBaseId,
-    active_prompt_set_id: activePromptSetId,
+    knowledge_base_id: input.knowledgeBaseId,
+    generation_prompt_source: input.generationSource,
+    active_prompt_set_id,
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('kb_prompt_preferences').upsert(payload, { onConflict: 'knowledge_base_id' });
   if (error) throw error;
+}
+
+export async function setKbActivePromptSet(knowledgeBaseId: string, activePromptSetId: string | null): Promise<void> {
+  if (activePromptSetId) {
+    await upsertKbPromptGenerationPreferences({
+      knowledgeBaseId,
+      generationSource: 'cloud_set',
+      activePromptSetId,
+    });
+  } else {
+    await upsertKbPromptGenerationPreferences({
+      knowledgeBaseId,
+      generationSource: 'browser_local',
+    });
+  }
 }
 
 export async function listKbPromptSets(knowledgeBaseId: string): Promise<KbPromptSetRow[]> {

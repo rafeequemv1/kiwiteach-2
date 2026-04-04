@@ -51,7 +51,7 @@ export const SUPABASE_TABLE_CATALOG: SupabaseTableRow[] = [
   {
     schema: 'public',
     name: 'kb_prompt_preferences',
-    purpose: 'Prompt Studio: which kb_prompt_sets row is active for quiz generation per knowledge base (null = browser defaults).',
+    purpose: 'Prompt Studio: generation_prompt_source (builtin_default | browser_local | cloud_set) plus active_prompt_set_id when cloud_set.',
   },
   { schema: 'public', name: 'subscription_tiers', purpose: 'Named tiers used for KB and feature gating.' },
   { schema: 'public', name: 'user_knowledge_base_access', purpose: 'Direct grants from a user to a knowledge base.' },

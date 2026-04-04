@@ -4,24 +4,28 @@ import { supabase } from '../../supabase/client';
 import {
   deleteKbPromptSet,
   deletePromptReferenceLayer,
-  fetchKbPromptPreferences,
+  fetchKbPromptGenerationPrefs,
   insertKbPromptSet,
   insertPromptReferenceLayer,
+  KB_GEN_SOURCE_BROWSER_LOCAL,
+  KB_GEN_SOURCE_BUILTIN,
   listKbPromptSets,
   listPromptReferenceLayers,
   setKbActivePromptSet,
   updateKbPromptSet,
   updatePromptReferenceLayerAnalysis,
+  upsertKbPromptGenerationPreferences,
   type KbPromptSetRow,
   type PromptReferenceLayerRow,
 } from '../../services/kbPromptService';
 import { analyzeReferenceDocument, generateSystemPromptsFromAnalysis, type ReferenceAnalysis } from '../../services/promptReferenceAi';
 import { DEFAULT_PROMPTS, KIWITEACH_SYSTEM_PROMPTS_KEY } from './neetPromptConfig';
 
-const LOCAL_SOURCE = '__local__';
+const LOCAL_SOURCE = KB_GEN_SOURCE_BROWSER_LOCAL;
+const BUILTIN_SOURCE = KB_GEN_SOURCE_BUILTIN;
 const BUCKET = 'prompt-reference-docs';
 
-type PersistMode = 'local' | 'cloud';
+type PersistMode = 'local' | 'cloud' | 'builtin';
 
 interface NeetKbPromptStudioProps {
   prompts: Record<string, string>;
@@ -65,6 +69,10 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
 
   const loadEditorForActive = useCallback(
     async (src: string) => {
+      if (src === BUILTIN_SOURCE) {
+        setPrompts({ ...DEFAULT_PROMPTS });
+        return;
+      }
       if (src === LOCAL_SOURCE) {
         const saved = localStorage.getItem(KIWITEACH_SYSTEM_PROMPTS_KEY);
         if (saved) {
@@ -93,11 +101,18 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
       if (!id) return;
       setLoading(true);
       try {
-        const activeId = await fetchKbPromptPreferences(id);
+        const prefs = await fetchKbPromptGenerationPrefs(id);
         await syncLists(id);
-        const src = activeId || LOCAL_SOURCE;
+        let src: string = LOCAL_SOURCE;
+        if (prefs) {
+          if (prefs.generationSource === 'builtin_default') src = BUILTIN_SOURCE;
+          else if (prefs.generationSource === 'browser_local') src = LOCAL_SOURCE;
+          else if (prefs.activePromptSetId) src = prefs.activePromptSetId;
+        }
         setActiveSource(src);
-        onPersistModeChange(activeId ? 'cloud' : 'local');
+        onPersistModeChange(
+          src === BUILTIN_SOURCE ? 'builtin' : src === LOCAL_SOURCE ? 'local' : 'cloud'
+        );
         await loadEditorForActive(src);
       } catch (e: any) {
         console.error(e);
@@ -153,10 +168,28 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
     if (!kbId) return;
     setBusy('source');
     try {
-      await setKbActivePromptSet(kbId, value === LOCAL_SOURCE ? null : value);
+      if (value === BUILTIN_SOURCE) {
+        await upsertKbPromptGenerationPreferences({
+          knowledgeBaseId: kbId,
+          generationSource: 'builtin_default',
+        });
+      } else if (value === LOCAL_SOURCE) {
+        await upsertKbPromptGenerationPreferences({
+          knowledgeBaseId: kbId,
+          generationSource: 'browser_local',
+        });
+      } else {
+        await upsertKbPromptGenerationPreferences({
+          knowledgeBaseId: kbId,
+          generationSource: 'cloud_set',
+          activePromptSetId: value,
+        });
+      }
       await syncLists(kbId);
       setActiveSource(value);
-      onPersistModeChange(value === LOCAL_SOURCE ? 'local' : 'cloud');
+      onPersistModeChange(
+        value === BUILTIN_SOURCE ? 'builtin' : value === LOCAL_SOURCE ? 'local' : 'cloud'
+      );
       await loadEditorForActive(value);
     } catch (e: any) {
       alert(e?.message || 'Failed to update active prompt source');
@@ -166,8 +199,8 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
   };
 
   const saveCloudPromptSet = async () => {
-    if (!kbId || activeSource === LOCAL_SOURCE) {
-      alert('Select a saved prompt set as the active source (not Browser local).');
+    if (!kbId || activeSource === LOCAL_SOURCE || activeSource === BUILTIN_SOURCE) {
+      alert('Select a saved cloud prompt set as the active source (not built-in or browser-only).');
       return;
     }
     setBusy('save');
@@ -212,7 +245,10 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
     try {
       await deleteKbPromptSet(id);
       if (activeSource === id) {
-        await setKbActivePromptSet(kbId, null);
+        await upsertKbPromptGenerationPreferences({
+          knowledgeBaseId: kbId,
+          generationSource: 'browser_local',
+        });
         setActiveSource(LOCAL_SOURCE);
         onPersistModeChange('local');
         await loadEditorForActive(LOCAL_SOURCE);
@@ -430,29 +466,81 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
             ))}
           </select>
         </label>
-        <label className="flex min-w-[240px] flex-[2] flex-col gap-1 text-[11px] font-medium text-zinc-600">
-          Active for generation (this KB)
-          <select
-            value={activeSource}
-            onChange={(e) => void handleActiveSourceChange(e.target.value)}
-            disabled={!kbId || loading || busy === 'source'}
-            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-900 disabled:opacity-50"
-          >
-            <option value={LOCAL_SOURCE}>Browser local (this device)</option>
-            {promptSets.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.set_kind === 'reference_derived' ? 'from reference paper' : 'manual'})
-              </option>
-            ))}
-          </select>
-        </label>
+      </div>
+
+      <div className="rounded-lg border border-zinc-200 bg-white p-3">
+        <p id="kb-gen-prompt-label" className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+          Used for Neural Studio / Question Bank generation (this KB)
+        </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-zinc-600">
+          Pick one source. <strong>Built-in</strong> uses shipped defaults from the app. <strong>Browser</strong> uses this
+          device&apos;s localStorage overrides. <strong>Cloud sets</strong> use saved rows in Supabase.
+        </p>
+        <ul className="mt-3 space-y-2" role="radiogroup" aria-labelledby="kb-gen-prompt-label">
+          <li>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 transition-colors has-[:checked]:border-sky-400 has-[:checked]:bg-sky-50/60">
+              <input
+                type="radio"
+                name="kb-gen-prompt"
+                className="mt-0.5"
+                checked={activeSource === BUILTIN_SOURCE}
+                disabled={!kbId || loading || busy === 'source'}
+                onChange={() => void handleActiveSourceChange(BUILTIN_SOURCE)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="text-[11px] font-semibold text-zinc-900">Built-in default system prompts</span>
+                <span className="mt-0.5 block text-[10px] leading-snug text-zinc-500">
+                  Same NEET defaults for everyone; ignores this browser&apos;s localStorage for generation.
+                </span>
+              </span>
+            </label>
+          </li>
+          <li>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 transition-colors has-[:checked]:border-sky-400 has-[:checked]:bg-sky-50/60">
+              <input
+                type="radio"
+                name="kb-gen-prompt"
+                className="mt-0.5"
+                checked={activeSource === LOCAL_SOURCE}
+                disabled={!kbId || loading || busy === 'source'}
+                onChange={() => void handleActiveSourceChange(LOCAL_SOURCE)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="text-[11px] font-semibold text-zinc-900">Browser / this device</span>
+                <span className="mt-0.5 block text-[10px] leading-snug text-zinc-500">
+                  localStorage prompts + reference layer block (per device).
+                </span>
+              </span>
+            </label>
+          </li>
+          {promptSets.map((s) => (
+            <li key={s.id}>
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 transition-colors has-[:checked]:border-sky-400 has-[:checked]:bg-sky-50/60">
+                <input
+                  type="radio"
+                  name="kb-gen-prompt"
+                  className="mt-0.5"
+                  checked={activeSource === s.id}
+                  disabled={!kbId || loading || busy === 'source'}
+                  onChange={() => void handleActiveSourceChange(s.id)}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="text-[11px] font-semibold text-zinc-900">{s.name}</span>
+                  <span className="mt-0.5 block text-[10px] text-zinc-500">
+                    {s.set_kind === 'reference_derived' ? 'From reference paper' : 'Manual cloud set'}
+                  </span>
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
       </div>
 
       <div className="flex flex-wrap gap-2 border-t border-sky-200/60 pt-3">
         <button
           type="button"
           onClick={() => void saveCloudPromptSet()}
-          disabled={!kbId || activeSource === LOCAL_SOURCE || !!busy}
+          disabled={!kbId || activeSource === LOCAL_SOURCE || activeSource === BUILTIN_SOURCE || !!busy}
           className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:opacity-40"
         >
           <iconify-icon icon="mdi:cloud-upload-outline" width="14" />
