@@ -1,7 +1,7 @@
 import { landingTheme } from './landingTheme';
 
 /**
- * App shell — navy sidebar with indigo/purple active states (dashboard nav).
+ * App shell: navy sidebar with indigo/purple active states (dashboard nav).
  */
 export const appShellTheme = {
   mainBackground: landingTheme.colors.page,

@@ -17,13 +17,13 @@ interface LandingSeoHelmetProps {
 }
 
 const NEET_DESCRIPTION =
-  'NEET practice for teachers: syllabus-aligned MCQs, previous-year style workflows, and tests you can run online or on paper — so your batch gets reps that match the real exam.';
+  'NEET practice for teachers: syllabus-aligned MCQs, previous-year style workflows, and tests you can run online or on paper, so your batch gets reps that match the real exam.';
 
 const TEST_PREP_DESCRIPTION =
   'For teachers who run test series: pick chapters, balance difficulty, generate papers fast, and run secure online exams or print-ready sets for your NEET batch.';
 
 const PRICING_DESCRIPTION =
-  'Simple KiwiTeach plans for teachers and teams: test generation, online exams, and question workflows — pay only for what your classroom needs.';
+  'Simple KiwiTeach plans for teachers and teams: test generation, online exams, and question workflows. Pay only for what your classroom needs.';
 
 const BLOG_INDEX_DESCRIPTION =
   'KiwiTeach journal: ideas for assessment design, classroom rhythm, AI-assisted quiz workflows, and GEO-friendly teaching notes for educators.';
@@ -39,16 +39,16 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
     switch (activeTab) {
       case 'neet':
         return {
-          title: `NEET practice tests for teachers | ${SITE_NAME}`,
+          title: `NEET PYQ for teachers | ${SITE_NAME}`,
           description: NEET_DESCRIPTION,
-          keywords: `${HOME_KEYWORDS}, NEET, medical entrance, biology chemistry physics`,
+          keywords: `${HOME_KEYWORDS}, NEET PYQ, previous year questions, medical entrance, biology chemistry physics`,
           canonical: `${origin}/`,
         };
       case 'test-prep':
         return {
-          title: `Test papers & mocks for NEET teachers | ${SITE_NAME}`,
+          title: `NEET test prep & mock papers for teachers | ${SITE_NAME}`,
           description: TEST_PREP_DESCRIPTION,
-          keywords: `${HOME_KEYWORDS}, test prep, coaching centre, exam software`,
+          keywords: `${HOME_KEYWORDS}, NEET test prep, coaching centre, exam software`,
           canonical: `${origin}/`,
         };
       case 'pricing':
@@ -67,7 +67,7 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
         };
       default:
         return {
-          title: `${SITE_NAME} — ${SITE_TAGLINE}`,
+          title: `${SITE_NAME} | ${SITE_TAGLINE}`,
           description: HOME_DESCRIPTION,
           keywords: HOME_KEYWORDS,
           canonical: `${origin}/`,

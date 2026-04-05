@@ -1,73 +1,93 @@
 import React from 'react';
-import {
-  ArrowDown,
-  ArrowRight,
-  BookOpen,
-  ClipboardCheck,
-  Clock,
-  Layers,
-  Route,
-  SlidersHorizontal,
-  Sparkles,
-} from 'lucide-react';
+import { BookOpen, ClipboardCheck, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
+import { Card, CardContent } from '@/components/ui/card';
+import { LANDING_NEET_COMMAND_IMAGE, LANDING_WORKFLOW_STEP_IMAGES } from './theme';
 
 const steps = [
   {
     key: 'syllabus',
     step: '01',
-    title: 'Lock to your syllabus',
+    title: 'Teach a topic, lock the paper to it',
     description:
-      'Pick chapters and topics from your bank so every item matches this week’s class—not a stale PDF from years ago.',
+      'No more "generic NEET PDFs" that skip what you just finished. Pick the exact chapters and lines you covered so every question matches this week\'s class, not last year\'s booklet.',
     icon: BookOpen,
+    imageSrc: LANDING_WORKFLOW_STEP_IMAGES[0],
+    imageLabel: 'Syllabus & topics',
   },
   {
     key: 'mix',
     step: '02',
-    title: 'Dial difficulty',
+    title: 'Set the bite: difficulty mix & question styles',
     description:
-      'Set Easy, Medium, and Hard counts (or ratios) so the paper feels fair for this batch before you generate.',
+      "Your batch isn't everyone else's batch. Control Easy / Medium / Hard, pick question styles that match your board, or start from ready-made templates in Test Studio—so every paper feels intentional, not generic.",
     icon: SlidersHorizontal,
+    imageSrc: LANDING_WORKFLOW_STEP_IMAGES[1],
+    imageLabel: 'Test Studio — styles & templates',
   },
   {
     key: 'generate',
     step: '03',
-    title: 'Generate in one pass',
+    title: 'One click → a full NEET-style set',
     description:
-      'KiwiTeach assembles a balanced set from your rules—ready to review, tweak, or ship immediately.',
+      'KiwiTeach builds a balanced paper from your rules. You review, tweak odd lines if you want, then ship, instead of burning Sunday night typing MCQs.',
     icon: Sparkles,
+    imageSrc: LANDING_WORKFLOW_STEP_IMAGES[2],
+    imageLabel: 'Generate paper',
   },
   {
     key: 'deliver',
     step: '04',
-    title: 'Assign or print',
+    title: 'Run the mock online or hand out prints',
     description:
-      'Push to your online test for the batch or export a print-ready paper. Same flow, two delivery modes.',
+      'Same paper: assign on screen for the batch or print for the hall. Results land where you can actually use them, so the next class fixes weak spots, not guesswork.',
     icon: ClipboardCheck,
+    imageSrc: LANDING_WORKFLOW_STEP_IMAGES[3],
+    imageLabel: 'Deliver & review',
   },
 ] as const;
 
-const highlights = [
-  {
-    title: 'Syllabus as source of truth',
-    body: 'Filter by subject, chapter, and topic so assessments stay aligned with what you actually taught.',
-    icon: Layers,
-  },
-  {
-    title: 'Visual pipeline',
-    body: 'See the hand-off from selection → constraints → generation → classroom without juggling five tools.',
-    icon: Route,
-  },
-  {
-    title: 'Teacher-first defaults',
-    body: 'Start from sensible mixes, then refine. No blank-slate paralysis when the period ends in an hour.',
-    icon: Clock,
-  },
-] as const;
+function StepImagePlaceholder({ stepNum, label }: { stepNum: string; label: string }) {
+  return (
+    <div
+      className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border bg-muted/30 px-6 text-center shadow-inner"
+      role="img"
+      aria-label={`Placeholder image for step ${stepNum}: ${label}`}
+    >
+      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Image placeholder</span>
+      <span className="font-heading text-sm font-semibold text-foreground">{label}</span>
+      <span className="text-xs text-muted-foreground">Step {stepNum} — replace in code when ready</span>
+    </div>
+  );
+}
 
-/** Home landing: “How it works” with shadcn cards + responsive flow connectors. */
+function StepVisual({
+  stepNum,
+  label,
+  imageSrc,
+}: {
+  stepNum: string;
+  label: string;
+  imageSrc: string | null;
+}) {
+  if (imageSrc) {
+    return (
+      <div className="overflow-hidden rounded-2xl border border-border/80 bg-card shadow-sm">
+        <img
+          src={imageSrc}
+          alt={`${label} — workflow step ${stepNum}`}
+          className="aspect-[4/3] w-full object-cover"
+          width={960}
+          height={720}
+          decoding="async"
+        />
+      </div>
+    );
+  }
+  return <StepImagePlaceholder stepNum={stepNum} label={label} />;
+}
+
+/** NEET Test Prep: vertical timeline workflow + command center. */
 export function LandingHowItWorksSection({ sectionId = 'how-it-works' }: { sectionId?: string }) {
   return (
     <section
@@ -75,148 +95,109 @@ export function LandingHowItWorksSection({ sectionId = 'how-it-works' }: { secti
       className="border-b border-border bg-muted/30 px-4 py-16 md:px-6 md:py-24"
       aria-labelledby="landing-how-it-works-heading"
     >
-      <div className="mx-auto max-w-6xl">
-        <div className="mx-auto mb-12 max-w-2xl text-center md:mb-14">
+      <div className="mx-auto max-w-5xl">
+        <div className="mx-auto mb-14 max-w-2xl text-center md:mb-16">
           <Badge variant="outline" className="mb-4 gap-1.5 px-3 py-1 text-[11px] font-medium uppercase tracking-wider">
-            <Layers className="size-3" aria-hidden />
-            How it works
+            <Sparkles className="size-3" aria-hidden />
+            Your NEET prep workflow
           </Badge>
           <h2
             id="landing-how-it-works-heading"
             className="font-heading text-3xl font-semibold tracking-tight text-foreground md:text-4xl"
           >
-            From chapter pick to class-ready paper
+            From &ldquo;what we taught this week&rdquo; to a mock they can sit tomorrow
           </h2>
           <p className="mt-3 text-base text-muted-foreground md:text-lg">
-            One straight line: choose what you taught, set how hard the set should bite, generate once, then deliver
-            online or on paper—without losing your evening to formatting.
+            You&apos;re not short on dedication. You&apos;re short on hours. KiwiTeach removes the busywork between your lesson
+            plan and a paper that actually feels like NEET: syllabus-true, difficulty-controlled, ready to run online or in
+            the hall.
           </p>
         </div>
 
-        <Card className="overflow-hidden border-border/80 bg-card shadow-sm">
-          <CardHeader className="border-b border-border bg-muted/40 pb-4">
-            <CardTitle className="font-heading text-lg md:text-xl">End-to-end flow</CardTitle>
-            <CardDescription>
-              Each step is a decision you already make; KiwiTeach connects them into a single workflow.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-6 md:p-6">
-            <div className="flex flex-col md:flex-row md:items-stretch md:justify-between md:gap-0">
-              {steps.map((s, index) => {
-                const Icon = s.icon;
-                const isLast = index === steps.length - 1;
-                return (
-                  <React.Fragment key={s.key}>
-                    <div className="relative flex min-w-0 flex-1 flex-col">
-                      <div className="flex h-full flex-col rounded-lg border border-border bg-background p-4 shadow-sm transition-colors hover:bg-muted/30 md:p-5">
-                        <div className="mb-3 flex items-center gap-3">
-                          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                            <Icon className="size-5" strokeWidth={2} aria-hidden />
-                          </div>
-                          <span className="text-xs font-medium tabular-nums text-muted-foreground">Step {s.step}</span>
-                        </div>
-                        <h3 className="font-heading text-base font-semibold text-foreground">{s.title}</h3>
-                        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{s.description}</p>
-                      </div>
-                    </div>
-                    {!isLast && (
-                      <>
-                        <div
-                          className="flex shrink-0 items-center justify-center py-2 md:hidden"
-                          aria-hidden
-                        >
-                          <div className="flex flex-col items-center gap-0.5 text-muted-foreground">
-                            <div className="h-6 w-px bg-border" />
-                            <ArrowDown className="size-4" strokeWidth={2} />
-                            <div className="h-6 w-px bg-border" />
-                          </div>
-                        </div>
-                        <div
-                          className="hidden w-10 shrink-0 items-center justify-center self-center md:flex"
-                          aria-hidden
-                        >
-                          <ArrowRight className="size-5 text-muted-foreground/80" strokeWidth={2} />
-                        </div>
-                      </>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </div>
+        <div className="relative">
+          <div
+            className="absolute bottom-0 left-[1.125rem] top-2 w-px bg-border md:left-1/2 md:-translate-x-1/2"
+            aria-hidden
+          />
 
-            {/* Desktop flow diagram: simple SVG lanes */}
-            <div className="mt-8 hidden rounded-lg border border-dashed border-border bg-muted/20 p-4 md:block">
-              <p className="mb-3 text-center text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                At a glance
+          <ol className="relative space-y-14 md:space-y-20">
+            {steps.map((s, index) => {
+              const Icon = s.icon;
+              const isEven = index % 2 === 0;
+              return (
+                <li key={s.key} className="relative">
+                  <span
+                    className="absolute left-[1.125rem] top-10 z-[1] size-3.5 -translate-x-1/2 rounded-full border-[3px] border-background bg-primary shadow-sm md:left-1/2"
+                    aria-hidden
+                  />
+
+                  <div className="grid gap-8 pl-10 md:grid-cols-2 md:items-center md:gap-12 md:pl-0">
+                    <div className={`min-w-0 ${!isEven ? 'md:order-2' : ''}`}>
+                      <StepVisual stepNum={s.step} label={s.imageLabel} imageSrc={s.imageSrc} />
+                    </div>
+
+                    <div className={`min-w-0 space-y-4 ${!isEven ? 'md:order-1' : ''}`}>
+                      <div className="flex items-center gap-3">
+                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-foreground text-background shadow-sm">
+                          <Icon className="size-5" strokeWidth={2} aria-hidden />
+                        </div>
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          Step {s.step}
+                        </span>
+                      </div>
+                      <h3 className="font-heading text-xl font-semibold tracking-tight text-foreground md:text-2xl">
+                        {s.title}
+                      </h3>
+                      <p className="text-sm leading-relaxed text-muted-foreground md:text-base">{s.description}</p>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+
+        <Card className="mt-16 overflow-hidden border border-border/80 bg-card shadow-sm md:mt-20">
+          <CardContent className="grid items-center gap-8 p-6 md:grid-cols-2 md:gap-10 md:p-10">
+            <div>
+              <Badge variant="outline" className="mb-4">
+                Command center
+              </Badge>
+              <h3 className="font-heading text-2xl font-semibold tracking-tight text-foreground md:text-3xl">
+                One place to steer the batch, not ten tabs and a folder of PDFs
+              </h3>
+              <p className="mt-4 text-base leading-relaxed text-muted-foreground">
+                See what you&apos;re running at a glance: which topics are in today&apos;s set, how hard you&apos;ve set the
+                paper, and whether the next mock is ready to push to class. Built for teachers who&apos;d rather coach
+                students than chase files.
               </p>
-              <svg
-                viewBox="0 0 800 120"
-                className="h-auto w-full"
-                aria-hidden
-                preserveAspectRatio="xMidYMid meet"
-              >
-                <defs>
-                  <marker
-                    id="landing-flow-arrow"
-                    markerWidth="7"
-                    markerHeight="7"
-                    refX="6"
-                    refY="3.5"
-                    orient="auto"
-                  >
-                    <path d="M0,0 L7,3.5 L0,7 Z" fill="var(--border)" />
-                  </marker>
-                </defs>
-                <line
-                  x1="56"
-                  y1="60"
-                  x2="736"
-                  y2="60"
-                  stroke="var(--border)"
-                  strokeWidth="2"
-                  strokeDasharray="6 6"
-                  markerEnd="url(#landing-flow-arrow)"
-                />
-                {[110, 280, 450, 620].map((cx, i) => (
-                  <g key={i}>
-                    <circle cx={cx} cy="60" r="10" fill="var(--card)" stroke="var(--border)" strokeWidth="2" />
-                    <text
-                      x={cx}
-                      y="64"
-                      textAnchor="middle"
-                      fill="var(--foreground)"
-                      fontSize="11"
-                      fontWeight="600"
-                    >
-                      {i + 1}
-                    </text>
-                  </g>
-                ))}
-              </svg>
+              <ul className="mt-6 space-y-3 text-sm text-foreground">
+                <li className="flex gap-2">
+                  <span className="mt-0.5 text-muted-foreground">✓</span>
+                  <span>Batch and paper in one view: assign or print without re-formatting.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="mt-0.5 text-muted-foreground">✓</span>
+                  <span>Syllabus filters so &ldquo;NEET prep&rdquo; stays tied to what you actually taught.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="mt-0.5 text-muted-foreground">✓</span>
+                  <span>Less admin, more teaching: the painkiller for crowded prep seasons.</span>
+                </li>
+              </ul>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-border/80 bg-muted/20 shadow-sm">
+              <img
+                src={LANDING_NEET_COMMAND_IMAGE}
+                alt="Teacher hub with laptop and printed tests in one organized workspace"
+                className="aspect-[4/3] w-full object-cover md:aspect-auto md:min-h-[280px] md:max-h-[340px]"
+                width={960}
+                height={720}
+                decoding="async"
+              />
             </div>
           </CardContent>
         </Card>
-
-        <Separator className="my-12" />
-
-        <div className="grid gap-4 md:grid-cols-3">
-          {highlights.map((h) => {
-            const Hi = h.icon;
-            return (
-              <Card key={h.title} className="border-border/80 shadow-sm">
-                <CardHeader className="pb-2">
-                  <div className="mb-2 flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground">
-                    <Hi className="size-4" strokeWidth={2} aria-hidden />
-                  </div>
-                  <CardTitle className="font-heading text-base">{h.title}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm leading-relaxed text-muted-foreground">{h.body}</p>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
       </div>
     </section>
   );

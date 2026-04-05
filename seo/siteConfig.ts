@@ -6,11 +6,12 @@ export const PRODUCTION_SITE_ORIGIN = 'https://kiwiteach.com';
 
 export const SITE_NAME = 'KiwiTeach';
 
-export const SITE_TAGLINE = 'Exam-ready NEET practice tests in minutes — for teachers';
+export const SITE_TAGLINE =
+  'Intelligent tools for educators—lesson plans, assessments, and feedback in less time';
 
-/** Default meta description (home / app shell). ICP: NEET/board science teachers. */
+/** Default meta description (home / app shell). Broader positioning; NEET/test prep lives on Test Prep. */
 export const HOME_DESCRIPTION =
-  'KiwiTeach is for teachers who run NEET and board-science batches: go from syllabus to balanced, exam-style MCQs and full practice tests in minutes, then deliver online or on paper. Less copy-paste, more teaching.';
+  'KiwiTeach helps educators reclaim time with AI-driven lesson planning, assessments, and feedback. Explore Test Prep for NEET-ready practice tests and exam workflows.';
 
 export const HOME_KEYWORDS =
   'KiwiTeach, online exam software, NEET test generator, teacher quiz tool, paper test maker, question bank, OMR, institute exams, India, formative assessment, AI for teachers';

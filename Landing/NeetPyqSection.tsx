@@ -156,7 +156,7 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
           questions={sessionQuestions}
           topic="NEET PYQ practice"
           onExit={() => setSessionQuestions(null)}
-          exitButtonLabel="Back to NEET"
+          exitButtonLabel="Back to NEET PYQ"
           layout="embedded"
         />
       </div>
