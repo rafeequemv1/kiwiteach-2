@@ -1,6 +1,8 @@
 
 import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Dialog } from 'radix-ui';
+import { Minus, Plus } from 'lucide-react';
 import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
@@ -160,6 +162,17 @@ const QuestionBankHome: React.FC = () => {
   });
   const [isFillBatch, setIsFillBatch] = useState(false);
   const [fillProgress, setFillProgress] = useState('');
+  const [fillSettingsOpen, setFillSettingsOpen] = useState(false);
+  const prevStudioToolRef = useRef<'forge' | 'fill'>('forge');
+
+  useEffect(() => {
+    if (studioTool !== 'fill') {
+      setFillSettingsOpen(false);
+    } else if (prevStudioToolRef.current !== 'fill' && selectedChapterIds.size > 0) {
+      setFillSettingsOpen(true);
+    }
+    prevStudioToolRef.current = studioTool;
+  }, [studioTool, selectedChapterIds.size]);
 
   const [activeChapterSyllabus, setActiveChapterSyllabus] = useState<string[]>([]);
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
@@ -746,6 +759,53 @@ const QuestionBankHome: React.FC = () => {
     </div>
   );
 
+  /** Compact shadcn-like numeric row: − | value | + */
+  const FillNumericRow = ({
+    value,
+    onChange,
+    label,
+    min = 0,
+  }: {
+    value: number;
+    onChange: (v: number) => void;
+    label: string;
+    min?: number;
+  }) => (
+    <div className="space-y-1.5">
+      <label className="block text-xs font-medium leading-none text-zinc-500 dark:text-zinc-400">{label}</label>
+      <div className="flex h-11 min-w-0 items-stretch overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 [color-scheme:light] dark:[color-scheme:dark]">
+        <button
+          type="button"
+          aria-label={`Decrease ${label}`}
+          onClick={() => onChange(Math.max(min, value - 1))}
+          className="inline-flex w-11 shrink-0 items-center justify-center border-r border-zinc-200 bg-transparent text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+        >
+          <Minus className="size-4 shrink-0" strokeWidth={2} aria-hidden />
+        </button>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={min}
+          value={value}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            onChange(Number.isFinite(n) ? Math.max(min, n) : min);
+          }}
+          onFocus={(e) => e.currentTarget.select()}
+          className="min-w-[3.25rem] flex-1 border-0 bg-transparent px-2 text-center text-xl font-semibold tabular-nums text-zinc-900 outline-none ring-offset-white transition-shadow focus-visible:ring-2 focus-visible:ring-zinc-950/15 focus-visible:ring-offset-0 dark:text-zinc-50 dark:ring-offset-zinc-950 dark:focus-visible:ring-zinc-50/20 sm:min-w-[4rem] sm:text-2xl [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <button
+          type="button"
+          aria-label={`Increase ${label}`}
+          onClick={() => onChange(value + 1)}
+          className="inline-flex w-11 shrink-0 items-center justify-center border-l border-zinc-200 bg-transparent text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+        >
+          <Plus className="size-4 shrink-0" strokeWidth={2} aria-hidden />
+        </button>
+      </div>
+    </div>
+  );
+
   const activeConfig = activeEditingChapterId ? chapterConfigs[activeEditingChapterId] : null;
   const updateActiveConfig = (key: keyof ChapterConfig, nestedKey: string | null, val: any) => {
       if (!activeEditingChapterId) return;
@@ -1298,7 +1358,7 @@ const QuestionBankHome: React.FC = () => {
                                     <h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight shrink-0">Neural Studio</h2>
                                     <div className="flex bg-zinc-100 p-1 rounded-xl border border-zinc-200 w-full sm:w-auto">
                                       <button type="button" disabled={isForgingBatch || isFillBatch} onClick={() => setStudioTool('forge')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-50 ${studioTool === 'forge' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Forge</button>
-                                      <button type="button" disabled={isForgingBatch || isFillBatch} onClick={() => setStudioTool('fill')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-50 ${studioTool === 'fill' ? 'bg-white text-emerald-700 shadow-sm' : 'text-zinc-400'}`}>Fill</button>
+                                      <button type="button" disabled={isForgingBatch || isFillBatch} onClick={() => setStudioTool('fill')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-50 ${studioTool === 'fill' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-400'}`}>Fill</button>
                                     </div>
                                   </div>
                                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -1317,101 +1377,63 @@ const QuestionBankHome: React.FC = () => {
                                         <iconify-icon icon="mdi:lightning-bolt" width="18" /> Forge
                                       </button>
                                     ) : (
-                                      <button
-                                        type="button"
-                                        onClick={handleRunFillMode}
-                                        disabled={
-                                          isForgingBatch || isFillBatch || fillQuestionsPerChapter === 0 || fillStyleWeightsSum <= 0
-                                        }
-                                        className="bg-emerald-800 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-emerald-900 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 w-full md:w-auto disabled:opacity-50"
-                                      >
-                                        <iconify-icon icon="mdi:playlist-plus" width="18" /> Run fill
-                                      </button>
+                                      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => setFillSettingsOpen(true)}
+                                          disabled={isForgingBatch || isFillBatch || selectedChapterIds.size === 0}
+                                          className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-4 py-2.5 text-sm font-medium text-zinc-800 shadow-sm transition-colors hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                                        >
+                                          Fill settings
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleRunFillMode()}
+                                          disabled={
+                                            isForgingBatch ||
+                                            isFillBatch ||
+                                            fillQuestionsPerChapter === 0 ||
+                                            fillStyleWeightsSum <= 0 ||
+                                            selectedChapterIds.size === 0
+                                          }
+                                          className="inline-flex items-center justify-center gap-2 rounded-md bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+                                        >
+                                          <iconify-icon icon="mdi:playlist-plus" width="18" /> Run fill
+                                        </button>
+                                      </div>
                                     )}
                                   </div>
                                 </header>
                                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                                     <div className="lg:col-span-5 space-y-3">
                                         {studioTool === 'fill' ? (
-                                            <div className="bg-white p-4 rounded-xl border border-emerald-100 shadow-sm space-y-4 min-w-0">
-                                                <div className="flex items-start justify-between gap-2 border-b border-zinc-100 pb-3">
-                                                  <div>
-                                                    <h3 className="text-[11px] font-bold text-zinc-800 tracking-tight">Chapter fill</h3>
-                                                    <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">
-                                                      Same difficulty and style mix for every selected chapter. Weights set the ratio of MCQ vs assertion / matching / statements (counts per chapter are computed from weights). Text-only figures off. One chapter at a time — each batch is saved before the next.
-                                                    </p>
-                                                  </div>
+                                            <div className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-950">
+                                              <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Chapter fill</h3>
+                                              <p className="mt-2 text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
+                                                Same difficulty and style weights for every selected chapter. Open settings to edit counts; run
+                                                from the header when ready.
+                                              </p>
+                                              <dl className="mt-4 space-y-2 border-t border-zinc-100 pt-4 text-sm dark:border-zinc-800">
+                                                <div className="flex justify-between gap-4">
+                                                  <dt className="text-zinc-500 dark:text-zinc-400">Questions / chapter</dt>
+                                                  <dd className="font-medium tabular-nums text-zinc-900 dark:text-zinc-100">{fillQuestionsPerChapter}</dd>
                                                 </div>
-                                                <div className="grid grid-cols-3 gap-2">
-                                                  <StepNumberInput label="Easy" color="text-emerald-500" value={fillUniformDiff.easy} onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, easy: Math.max(0, v) }))} />
-                                                  <StepNumberInput label="Medium" color="text-amber-500" value={fillUniformDiff.medium} onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, medium: Math.max(0, v) }))} />
-                                                  <StepNumberInput label="Hard" color="text-rose-500" value={fillUniformDiff.hard} onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, hard: Math.max(0, v) }))} />
+                                                <div className="flex justify-between gap-4">
+                                                  <dt className="text-zinc-500 dark:text-zinc-400">Chapters</dt>
+                                                  <dd className="font-medium tabular-nums text-zinc-900 dark:text-zinc-100">{selectedChapterIds.size}</dd>
                                                 </div>
-                                                <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3 space-y-2">
-                                                  <div className="flex items-center justify-between gap-2">
-                                                    <h4 className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Style mix (uniform)</h4>
-                                                    <button
-                                                      type="button"
-                                                      className="text-[8px] font-bold uppercase text-emerald-700 hover:text-emerald-900"
-                                                      onClick={() =>
-                                                        setFillUniformStyleWeights({ mcq: 60, reasoning: 20, matching: 10, statements: 10 })
-                                                      }
-                                                    >
-                                                      60 / 20 / 10 / 10
-                                                    </button>
-                                                  </div>
-                                                  <p className="text-[8px] text-zinc-500 leading-snug">
-                                                    Use any positive integers as relative weights (like percentages). Same proportions on every chapter.
-                                                  </p>
-                                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                                                    <StepNumberInput
-                                                      label="MCQ"
-                                                      color="text-indigo-500"
-                                                      value={fillUniformStyleWeights.mcq}
-                                                      onChange={(v: number) =>
-                                                        setFillUniformStyleWeights((s) => ({ ...s, mcq: Math.max(0, v) }))
-                                                      }
-                                                    />
-                                                    <StepNumberInput
-                                                      label="Assertion"
-                                                      color="text-indigo-500"
-                                                      value={fillUniformStyleWeights.reasoning}
-                                                      onChange={(v: number) =>
-                                                        setFillUniformStyleWeights((s) => ({ ...s, reasoning: Math.max(0, v) }))
-                                                      }
-                                                    />
-                                                    <StepNumberInput
-                                                      label="Matching"
-                                                      color="text-indigo-500"
-                                                      value={fillUniformStyleWeights.matching}
-                                                      onChange={(v: number) =>
-                                                        setFillUniformStyleWeights((s) => ({ ...s, matching: Math.max(0, v) }))
-                                                      }
-                                                    />
-                                                    <StepNumberInput
-                                                      label="Statements"
-                                                      color="text-indigo-500"
-                                                      value={fillUniformStyleWeights.statements}
-                                                      onChange={(v: number) =>
-                                                        setFillUniformStyleWeights((s) => ({ ...s, statements: Math.max(0, v) }))
-                                                      }
-                                                    />
-                                                  </div>
-                                                  {fillStyleWeightsSum <= 0 ? (
-                                                    <p className="text-[9px] font-semibold text-rose-600 text-center">Add at least one style weight.</p>
-                                                  ) : (
-                                                    <p className="text-[9px] text-zinc-600 text-center leading-relaxed">
-                                                      Per chapter:{' '}
-                                                      <span className="font-semibold text-zinc-800">
-                                                        {fillStyleTypeCounts.mcq} MCQ · {fillStyleTypeCounts.reasoning} assertion ·{' '}
-                                                        {fillStyleTypeCounts.matching} matching · {fillStyleTypeCounts.statements} statements
-                                                      </span>
-                                                    </p>
-                                                  )}
+                                                <div className="flex justify-between gap-4">
+                                                  <dt className="text-zinc-500 dark:text-zinc-400">Total planned</dt>
+                                                  <dd className="font-medium tabular-nums text-zinc-900 dark:text-zinc-100">{fillTotalPlannedQuestions}</dd>
                                                 </div>
-                                                <p className="text-[9px] text-zinc-500 text-center">
-                                                  <span className="font-semibold text-zinc-700">{fillQuestionsPerChapter}</span> per chapter · <span className="font-semibold text-zinc-700">{selectedChapterIds.size}</span> chapters · <span className="font-semibold text-emerald-700">{fillTotalPlannedQuestions}</span> total
-                                                </p>
+                                              </dl>
+                                              <button
+                                                type="button"
+                                                onClick={() => setFillSettingsOpen(true)}
+                                                className="mt-5 w-full rounded-md border border-zinc-200 bg-zinc-50 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                                              >
+                                                Open fill settings
+                                              </button>
                                             </div>
                                         ) : activeConfig && (
                                             <div className="bg-white p-3 sm:p-4 rounded-xl border border-zinc-200 shadow-sm space-y-4 animate-fade-in min-w-0 max-w-full overflow-hidden">
@@ -1599,16 +1621,16 @@ const QuestionBankHome: React.FC = () => {
                                         )}
                                     </div>
                                     <div className="lg:col-span-7 flex flex-col gap-3">
-                                      <div className={`rounded-xl p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3 border ${studioTool === 'fill' ? 'bg-emerald-950 border-emerald-500/30' : 'bg-zinc-900 border-indigo-500/30'}`}>
+                                      <div className={`rounded-xl p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3 border ${studioTool === 'fill' ? 'border-zinc-600 bg-zinc-900' : 'bg-zinc-900 border-indigo-500/30'}`}>
                                         <div className="flex items-center gap-3 min-w-0">
-                                          <div className={`w-10 h-10 shrink-0 text-white rounded-lg flex items-center justify-center shadow-md ${studioTool === 'fill' ? 'bg-emerald-600' : 'bg-indigo-500'}`}>
+                                          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-white shadow-md ${studioTool === 'fill' ? 'bg-zinc-700' : 'bg-indigo-500'}`}>
                                             <iconify-icon icon="mdi:currency-inr" width="22" />
                                           </div>
                                           <div>
                                             <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">Est. cost</span>
                                             <div className="flex items-baseline gap-1.5">
                                               <span className="text-2xl font-bold">₹{studioTool === 'fill' ? estimatedFillCostInr : estimatedBatchCost}</span>
-                                              <span className={`text-[10px] font-medium uppercase ${studioTool === 'fill' ? 'text-emerald-300' : 'text-indigo-300'}`}>INR</span>
+                                              <span className={`text-[10px] font-medium uppercase ${studioTool === 'fill' ? 'text-zinc-400' : 'text-indigo-300'}`}>INR</span>
                                             </div>
                                           </div>
                                         </div>
@@ -1619,7 +1641,7 @@ const QuestionBankHome: React.FC = () => {
                                             <span className="text-zinc-500 font-normal text-xs">items</span>
                                           </span>
                                           {studioTool === 'fill' ? (
-                                            <div className="mt-0.5 text-emerald-300/90 text-[9px]">
+                                            <div className="mt-0.5 text-[9px] text-zinc-400">
                                               Styles M{fillStyleTypeCounts.mcq}/A{fillStyleTypeCounts.reasoning}/m
                                               {fillStyleTypeCounts.matching}/S{fillStyleTypeCounts.statements} · model{' '}
                                               {STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel}
@@ -1667,7 +1689,7 @@ const QuestionBankHome: React.FC = () => {
                                                     </span>
                                                     {studioTool === 'fill' ? (
                                                       <span
-                                                        className="text-[8px] font-semibold text-emerald-800 bg-emerald-100 px-1 py-0.5 rounded uppercase"
+                                                        className="rounded bg-zinc-200 px-1 py-0.5 text-[8px] font-semibold uppercase text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200"
                                                         title="Uniform fill: difficulty + style mix"
                                                       >
                                                         Fill M{fillStyleTypeCounts.mcq}·A{fillStyleTypeCounts.reasoning}·m
@@ -1713,6 +1735,144 @@ const QuestionBankHome: React.FC = () => {
                                       </div>
                                     </div>
                                 </div>
+
+                            <Dialog.Root
+                              open={fillSettingsOpen}
+                              onOpenChange={(open) => {
+                                if (!open && isFillBatch) return;
+                                setFillSettingsOpen(open);
+                              }}
+                            >
+                              <Dialog.Portal>
+                                <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 dark:bg-black/55" />
+                                <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(88vh,620px)] w-[calc(100vw-1.5rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-2xl focus:outline-none sm:max-w-lg">
+                                  <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6 custom-scrollbar">
+                                    <Dialog.Title className="text-base font-semibold leading-none tracking-tight text-zinc-900 dark:text-zinc-50">
+                                      Chapter fill
+                                    </Dialog.Title>
+                                    <Dialog.Description className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                                      Same difficulty and style mix for all selected chapters. Weights set MCQ vs assertion, matching, and
+                                      statements (counts are derived). Text-only, no figures. Saves one chapter at a time.
+                                    </Dialog.Description>
+
+                                    <div className="mt-5 space-y-6">
+                                      <section className="space-y-3">
+                                        <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">Difficulty counts</h3>
+                                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-4">
+                                          <FillNumericRow
+                                            label="Easy"
+                                            value={fillUniformDiff.easy}
+                                            onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, easy: Math.max(0, v) }))}
+                                          />
+                                          <FillNumericRow
+                                            label="Medium"
+                                            value={fillUniformDiff.medium}
+                                            onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, medium: Math.max(0, v) }))}
+                                          />
+                                          <FillNumericRow
+                                            label="Hard"
+                                            value={fillUniformDiff.hard}
+                                            onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, hard: Math.max(0, v) }))}
+                                          />
+                                        </div>
+                                      </section>
+
+                                      <section className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                          <div className="space-y-1">
+                                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">Style weights</h3>
+                                            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                              Positive integers as relative weights (e.g. like percentages).
+                                            </p>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md px-2.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                                            onClick={() =>
+                                              setFillUniformStyleWeights({ mcq: 60, reasoning: 20, matching: 10, statements: 10 })
+                                            }
+                                          >
+                                            Reset 60·20·10·10
+                                          </button>
+                                        </div>
+                                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-4">
+                                          <FillNumericRow
+                                            label="MCQ"
+                                            value={fillUniformStyleWeights.mcq}
+                                            onChange={(v: number) =>
+                                              setFillUniformStyleWeights((s) => ({ ...s, mcq: Math.max(0, v) }))
+                                            }
+                                          />
+                                          <FillNumericRow
+                                            label="Assertion"
+                                            value={fillUniformStyleWeights.reasoning}
+                                            onChange={(v: number) =>
+                                              setFillUniformStyleWeights((s) => ({ ...s, reasoning: Math.max(0, v) }))
+                                            }
+                                          />
+                                          <FillNumericRow
+                                            label="Matching"
+                                            value={fillUniformStyleWeights.matching}
+                                            onChange={(v: number) =>
+                                              setFillUniformStyleWeights((s) => ({ ...s, matching: Math.max(0, v) }))
+                                            }
+                                          />
+                                          <FillNumericRow
+                                            label="Statements"
+                                            value={fillUniformStyleWeights.statements}
+                                            onChange={(v: number) =>
+                                              setFillUniformStyleWeights((s) => ({ ...s, statements: Math.max(0, v) }))
+                                            }
+                                          />
+                                        </div>
+                                        {fillStyleWeightsSum <= 0 ? (
+                                          <p className="text-center text-xs text-zinc-500 dark:text-zinc-400">
+                                            Add at least one style weight.
+                                          </p>
+                                        ) : (
+                                          <p className="text-center text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                                            Per chapter:{' '}
+                                            <span className="font-medium text-zinc-900 dark:text-zinc-50">
+                                              {fillStyleTypeCounts.mcq} MCQ · {fillStyleTypeCounts.reasoning} assertion ·{' '}
+                                              {fillStyleTypeCounts.matching} matching · {fillStyleTypeCounts.statements} statements
+                                            </span>
+                                          </p>
+                                        )}
+                                      </section>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-200 bg-zinc-50/80 px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900/50 sm:px-6">
+                                    <Dialog.Close asChild>
+                                      <button
+                                        type="button"
+                                        disabled={isFillBatch}
+                                        className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3.5 text-sm font-medium text-zinc-900 shadow-sm transition-colors hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-800"
+                                      >
+                                        Close
+                                      </button>
+                                    </Dialog.Close>
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        isFillBatch ||
+                                        fillQuestionsPerChapter === 0 ||
+                                        fillStyleWeightsSum <= 0 ||
+                                        selectedChapterIds.size === 0
+                                      }
+                                      onClick={() => {
+                                        setFillSettingsOpen(false);
+                                        void handleRunFillMode();
+                                      }}
+                                      className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-3.5 text-sm font-medium text-zinc-50 shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                                    >
+                                      Run fill
+                                    </button>
+                                  </div>
+                                </Dialog.Content>
+                              </Dialog.Portal>
+                            </Dialog.Root>
+
                             {syllabusDetailTopic && activeConfig && (
                               <div
                                 className="fixed inset-0 z-[140] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-zinc-900/50 backdrop-blur-sm"
