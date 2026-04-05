@@ -14,13 +14,18 @@ interface KnowledgeBase {
 
 interface KnowledgeSourceHomeProps {
   onSelectKb: (kb: { id: string; name: string }) => void;
+  /** Clear admin explorer selection if that KB was removed */
+  onKbDeleted?: (id: string) => void;
 }
 
-const KnowledgeSourceHome: React.FC<KnowledgeSourceHomeProps> = ({ onSelectKb }) => {
+const KnowledgeSourceHome: React.FC<KnowledgeSourceHomeProps> = ({ onSelectKb, onKbDeleted }) => {
   const [kbList, setKbList] = useState<KnowledgeBase[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newKbName, setNewKbName] = useState('');
+  const [deleteFlow, setDeleteFlow] = useState<{ kb: KnowledgeBase; step: 1 | 2 } | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const fetchKBs = async () => {
     setIsLoading(true);
@@ -75,24 +80,34 @@ const KnowledgeSourceHome: React.FC<KnowledgeSourceHomeProps> = ({ onSelectKb })
     }
   };
 
-  const deleteKb = async (e: React.MouseEvent, id: string, name: string, isCatalog?: boolean) => {
+  const openDeleteFlow = (e: React.MouseEvent, kb: KnowledgeBase) => {
     e.stopPropagation();
-    if (isCatalog) {
-      alert('Catalog knowledge bases (e.g. IIT-JEE) cannot be deleted from here.');
-      return;
-    }
-    if (!confirm(`DANGER: This will permanently delete the Knowledge Base "${name}" and ALL classes, subjects, and chapters inside it. Proceed?`)) return;
-    
-    try {
-      const { error } = await supabase
-        .from('knowledge_bases')
-        .delete()
-        .eq('id', id);
+    setDeleteConfirmName('');
+    setDeleteFlow({ kb, step: 1 });
+  };
 
+  const closeDeleteFlow = () => {
+    setDeleteFlow(null);
+    setDeleteConfirmName('');
+    setDeleteBusy(false);
+  };
+
+  const executeDeleteKb = async () => {
+    if (!deleteFlow) return;
+    const { kb } = deleteFlow;
+    if (deleteConfirmName.trim() !== kb.name.trim()) return;
+
+    setDeleteBusy(true);
+    try {
+      const { error } = await supabase.from('knowledge_bases').delete().eq('id', kb.id);
       if (error) throw error;
-      setKbList(kbList.filter(k => k.id !== id));
+      setKbList((prev) => prev.filter((k) => k.id !== kb.id));
+      onKbDeleted?.(kb.id);
+      closeDeleteFlow();
     } catch (err: any) {
-      alert("Delete failed: " + err.message);
+      alert('Delete failed: ' + (err?.message || String(err)));
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -133,19 +148,21 @@ const KnowledgeSourceHome: React.FC<KnowledgeSourceHomeProps> = ({ onSelectKb })
                 <div className={`w-8 h-8 ${theme.bg} ${theme.text} rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform`}>
                   <iconify-icon icon={theme.icon} width="18"></iconify-icon>
                 </div>
-                {!kb.is_catalog ? (
-                  <button 
-                    onClick={(e) => deleteKb(e, kb.id, kb.name, kb.is_catalog)}
-                    className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-50 text-zinc-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
-                    title="Delete Knowledge Base"
+                <div className="flex items-center gap-1">
+                  {kb.is_catalog && (
+                    <span className="rounded bg-teal-50 px-1 py-0.5 text-[6px] font-bold uppercase tracking-wider text-teal-700">
+                      Catalog
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => openDeleteFlow(e, kb)}
+                    className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-50 text-zinc-400 transition-colors hover:bg-rose-50 hover:text-rose-600"
+                    title="Delete knowledge base (two-step confirmation)"
                   >
-                    <iconify-icon icon="mdi:trash-can-outline" width="14"></iconify-icon>
+                    <iconify-icon icon="mdi:trash-can-outline" width="15"></iconify-icon>
                   </button>
-                ) : (
-                  <span className="text-[7px] font-black uppercase tracking-widest text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">
-                    Catalog
-                  </span>
-                )}
+                </div>
               </div>
               
               <div className="mt-3">
@@ -166,6 +183,90 @@ const KnowledgeSourceHome: React.FC<KnowledgeSourceHomeProps> = ({ onSelectKb })
           </div>
         )}
       </div>
+
+      {deleteFlow && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kb-delete-title"
+        >
+          <div className="w-full max-w-md animate-slide-up rounded-2xl border border-zinc-200 bg-white p-6 shadow-xl">
+            {deleteFlow.step === 1 ? (
+              <>
+                <h3 id="kb-delete-title" className="mb-2 text-lg font-semibold tracking-tight text-zinc-900">
+                  Delete “{deleteFlow.kb.name}”?
+                </h3>
+                {deleteFlow.kb.is_catalog ? (
+                  <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                    This is a <strong>platform catalog</strong> base. Deleting it removes curriculum data for every workspace that relied on it, plus linked access rows (cascade).
+                  </p>
+                ) : null}
+                <p className="mb-4 text-sm leading-relaxed text-zinc-600">
+                  This permanently deletes the knowledge base and related curriculum data (classes, subjects, chapters, and other records tied to this base via the database). This cannot be undone.
+                </p>
+                <p className="mb-6 text-xs font-medium text-zinc-500">Next step: you will be asked to type the exact name to confirm.</p>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={closeDeleteFlow}
+                    className="flex-1 rounded-xl border border-zinc-200 py-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteFlow({ kb: deleteFlow.kb, step: 2 })}
+                    className="flex-1 rounded-xl bg-rose-600 py-3 text-xs font-semibold text-white shadow-sm hover:bg-rose-700"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="mb-2 text-lg font-semibold tracking-tight text-zinc-900">
+                  Confirm deletion
+                </h3>
+                <p className="mb-3 text-sm text-zinc-600">
+                  Type the knowledge base name exactly{' '}
+                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-zinc-800">{deleteFlow.kb.name}</span>{' '}
+                  to enable delete.
+                </p>
+                <input
+                  type="text"
+                  value={deleteConfirmName}
+                  onChange={(e) => setDeleteConfirmName(e.target.value)}
+                  autoComplete="off"
+                  autoFocus
+                  placeholder={deleteFlow.kb.name}
+                  className="mb-6 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-900 outline-none focus:border-rose-400 focus:ring-1 focus:ring-rose-400"
+                />
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteConfirmName('');
+                      setDeleteFlow({ kb: deleteFlow.kb, step: 1 });
+                    }}
+                    className="flex-1 rounded-xl border border-zinc-200 py-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deleteBusy || deleteConfirmName.trim() !== deleteFlow.kb.name.trim()}
+                    onClick={() => void executeDeleteKb()}
+                    className="flex-1 rounded-xl bg-zinc-900 py-3 text-xs font-semibold text-white shadow-sm hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {deleteBusy ? 'Deleting…' : 'Delete permanently'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-900/40 p-4 backdrop-blur-sm">

@@ -38,6 +38,7 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
     appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
 
   const navItems = [
+    { id: 'overview', label: 'Overview', icon: 'mdi:view-dashboard-outline', role: 'teacher' },
     { id: 'test', label: 'Class Tests', icon: 'mdi:file-document-outline', role: 'teacher' },
     { id: 'online-exam', label: 'Online Test', icon: 'mdi:monitor-shimmer', role: 'teacher' },
     { id: 'students', label: 'Students', icon: 'mdi:account-group-outline', role: 'teacher' },

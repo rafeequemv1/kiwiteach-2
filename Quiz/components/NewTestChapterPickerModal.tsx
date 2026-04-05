@@ -52,19 +52,18 @@ interface NewTestChapterPickerModalProps {
   title?: string;
 }
 
-const toSelectedChapters = (rows: ChapterRow[]): SelectedChapter[] =>
-  rows.map((ch) => ({
-    id: ch.id,
-    name: ch.name,
-    subjectName: ch.subject_name || '',
-    className: ch.class_name || '',
-    count: 10,
-    figureCount: 0,
-    difficulty: 'Global',
-    source: 'db',
-    selectionMode: 'count',
-    visualMode: 'image',
-  }));
+const buildSelectedChapter = (ch: ChapterRow, count: number): SelectedChapter => ({
+  id: ch.id,
+  name: ch.name,
+  subjectName: ch.subject_name || '',
+  className: ch.class_name || '',
+  count: Math.max(0, Math.round(count)),
+  figureCount: 0,
+  difficulty: 'Global',
+  source: 'db',
+  selectionMode: 'count',
+  visualMode: 'image',
+});
 
 const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   open,
@@ -76,8 +75,12 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   const [selectedKb, setSelectedKb] = useState('');
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [selectedClassIds, setSelectedClassIds] = useState<Set<string>>(new Set());
-  const [subjectsUnion, setSubjectsUnion] = useState<SubjectRow[]>([]);
+  const [subjectsByClass, setSubjectsByClass] = useState<Record<string, SubjectRow[]>>({});
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
+  const [defaultQuestionsPerChapter, setDefaultQuestionsPerChapter] = useState(10);
+  const [chapterCounts, setChapterCounts] = useState<Record<string, number>>({});
+  const [activeClassPill, setActiveClassPill] = useState<string | null>(null);
+  const [activeSubjectPill, setActiveSubjectPill] = useState<string | null>(null);
   const [chapters, setChapters] = useState<ChapterRow[]>([]);
   const [allKbChapters, setAllKbChapters] = useState<ChapterRowForProfileExpand[]>([]);
   const [presets, setPresets] = useState<ExamPaperProfileRow[]>([]);
@@ -85,6 +88,7 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [presetsLoading, setPresetsLoading] = useState(false);
+  const [wizardStep, setWizardStep] = useState<1 | 2>(1);
 
   const toggleInSet = useCallback((set: Set<string>, id: string, on: boolean) => {
     const next = new Set(set);
@@ -115,15 +119,23 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   }, [open]);
 
   useEffect(() => {
+    if (open) setWizardStep(1);
+  }, [open]);
+
+  useEffect(() => {
     if (!open || !selectedKb) return;
     supabase.from('kb_classes').select('id, name').eq('kb_id', selectedKb).order('name').then(({ data }) => {
-      setClasses(data || []);
-      setSelectedClassIds(new Set());
+      const list = data || [];
+      setClasses(list);
+      setSelectedClassIds(list.length === 1 ? new Set([list[0].id]) : new Set());
       setSelectedSubjectIds(new Set());
-      setSubjectsUnion([]);
+      setSubjectsByClass({});
       setChapters([]);
       setSelectedIds(new Set());
+      setChapterCounts({});
       setSearch('');
+      setActiveClassPill(null);
+      setActiveSubjectPill(null);
     });
   }, [open, selectedKb]);
 
@@ -165,34 +177,40 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
 
   useEffect(() => {
     if (!open || selectedClassIds.size === 0) {
-      setSubjectsUnion([]);
+      setSubjectsByClass({});
       setSelectedSubjectIds(new Set());
       setChapters([]);
       setSelectedIds(new Set());
+      setChapterCounts({});
       return;
     }
     let cancelled = false;
     (async () => {
       const results = await Promise.all(
-        Array.from(selectedClassIds).map((cid) =>
-          supabase.from('subjects').select('id, name, class_id').eq('class_id', cid).order('name')
-        )
+        Array.from(selectedClassIds).map(async (cid) => {
+          const { data } = await supabase.from('subjects').select('id, name, class_id').eq('class_id', cid).order('name');
+          return [cid, (data || []) as SubjectRow[]] as const;
+        })
       );
       if (cancelled) return;
-      const map = new Map<string, SubjectRow>();
-      results.forEach(({ data }) => {
-        (data || []).forEach((s: SubjectRow) => {
-          if (!map.has(s.id)) map.set(s.id, s);
+      const next: Record<string, SubjectRow[]> = {};
+      const allIds = new Set<string>();
+      const uniqueById = new Map<string, SubjectRow>();
+      results.forEach(([cid, rows]) => {
+        next[cid] = rows;
+        rows.forEach((s) => {
+          allIds.add(s.id);
+          if (!uniqueById.has(s.id)) uniqueById.set(s.id, s);
         });
       });
-      const list = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-      setSubjectsUnion(list);
+      setSubjectsByClass(next);
       setSelectedSubjectIds((prev) => {
-        const next = new Set<string>();
-        for (const id of prev) {
-          if (map.has(id)) next.add(id);
+        const kept = new Set([...prev].filter((id) => allIds.has(id)));
+        if (uniqueById.size === 1) {
+          const only = uniqueById.values().next().value!;
+          return new Set([only.id]);
         }
-        return next;
+        return kept;
       });
     })();
     return () => {
@@ -221,27 +239,67 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
       });
   }, [open, selectedKb, selectedSubjectIds]);
 
+  const totalSubjectsListed = useMemo(() => {
+    let n = 0;
+    for (const cid of selectedClassIds) {
+      n += (subjectsByClass[cid] || []).length;
+    }
+    return n;
+  }, [selectedClassIds, subjectsByClass]);
+
+  /** Subjects currently selected, for pill labels (deduped by id). */
+  const selectedSubjectPillOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const cid of selectedClassIds) {
+      for (const s of subjectsByClass[cid] || []) {
+        if (selectedSubjectIds.has(s.id)) map.set(s.id, s.name);
+      }
+    }
+    return [...map.entries()];
+  }, [selectedClassIds, subjectsByClass, selectedSubjectIds]);
+
   const filteredChapters = useMemo(() => {
+    let list = chapters;
+    if (activeClassPill) {
+      const cn = classes.find((c) => c.id === activeClassPill)?.name?.trim() || '';
+      list = list.filter((c) => (c.class_name || '').trim() === cn);
+    }
+    if (activeSubjectPill) {
+      list = list.filter((c) => c.subject_id === activeSubjectPill);
+    }
     const q = search.trim().toLowerCase();
-    if (!q) return chapters;
-    return chapters.filter((c) => c.name.toLowerCase().includes(q));
-  }, [chapters, search]);
+    if (q) list = list.filter((c) => c.name.toLowerCase().includes(q));
+    return list;
+  }, [chapters, search, activeClassPill, activeSubjectPill, classes]);
 
   const toggleChapter = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+        setChapterCounts((c) => {
+          const { [id]: _, ...rest } = c;
+          return rest;
+        });
+      } else {
+        next.add(id);
+        setChapterCounts((c) => ({
+          ...c,
+          [id]: c[id] ?? defaultQuestionsPerChapter,
+        }));
+      }
       return next;
     });
   };
 
   const toggleClass = (id: string, checked: boolean) => {
     setSelectedClassIds((prev) => toggleInSet(prev, id, checked));
+    if (!checked) setActiveClassPill((p) => (p === id ? null : p));
   };
 
   const toggleSubject = (id: string, checked: boolean) => {
     setSelectedSubjectIds((prev) => toggleInSet(prev, id, checked));
+    if (!checked) setActiveSubjectPill((p) => (p === id ? null : p));
   };
 
   const selectAllClasses = () => {
@@ -253,21 +311,41 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   };
 
   const selectAllSubjects = () => {
-    setSelectedSubjectIds(new Set(subjectsUnion.map((s) => s.id)));
+    const ids = new Set<string>();
+    for (const cid of selectedClassIds) {
+      (subjectsByClass[cid] || []).forEach((s) => ids.add(s.id));
+    }
+    setSelectedSubjectIds(ids);
   };
 
   const clearSubjects = () => {
     setSelectedSubjectIds(new Set());
   };
 
+  const manualTotalQuestions = useMemo(() => {
+    let s = 0;
+    for (const id of selectedIds) {
+      s += chapterCounts[id] ?? defaultQuestionsPerChapter;
+    }
+    return s;
+  }, [selectedIds, chapterCounts, defaultQuestionsPerChapter]);
+
   const handleConfirmManual = () => {
     const picked = chapters.filter((c) => selectedIds.has(c.id));
     if (picked.length === 0) return;
+    const selectedChapters = picked.map((ch) =>
+      buildSelectedChapter(ch, chapterCounts[ch.id] ?? defaultQuestionsPerChapter)
+    );
+    const totalQs = selectedChapters.reduce((sum, ch) => sum + ch.count, 0);
+    if (totalQs <= 0) return;
     onConfirm({
-      chapters: toSelectedChapters(picked),
+      chapters: selectedChapters,
       knowledgeBaseId: selectedKb,
+      initialTotalTarget: totalQs,
+      initialDistributionMode: 'count',
     });
     setSelectedIds(new Set());
+    setChapterCounts({});
     setSearch('');
   };
 
@@ -306,129 +384,52 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="shrink-0 border-b border-zinc-100 bg-zinc-50/90 px-5 py-4">
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+            Step {wizardStep} of 2 · {wizardStep === 1 ? 'Scope' : 'Chapters'}
+          </p>
           <h2 id="new-test-chapter-picker-title" className="text-sm font-semibold tracking-tight text-zinc-900">
             {title}
           </h2>
           <p className="mt-1 text-[12px] text-zinc-500">
-            Select one or more classes and subjects, then tick chapters — or apply an admin <strong>exam paper</strong>{' '}
-            preset to build the blueprint automatically.
+            {wizardStep === 1
+              ? 'Pick a knowledge base, optionally use a template, then choose classes and subjects.'
+              : 'Filter the list, set default questions per chapter, then tick chapters — totals sync to the creator.'}
           </p>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="space-y-4 border-b border-zinc-100 px-5 py-4">
-            <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Knowledge base
-            </label>
-            <select
-              value={selectedKb}
-              onChange={(e) => setSelectedKb(e.target.value)}
-              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-500"
-            >
-              {kbs.map((kb) => (
-                <option key={kb.id} value={kb.id}>
-                  {kb.name}
-                </option>
-              ))}
-            </select>
-
+          {wizardStep === 1 ? (
+          <div className="space-y-4 px-5 py-4">
             <div>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Classes</span>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllClasses}
-                    disabled={classes.length === 0}
-                    className="text-[11px] font-medium text-indigo-600 hover:underline disabled:opacity-40"
-                  >
-                    All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearClasses}
-                    disabled={selectedClassIds.size === 0}
-                    className="text-[11px] font-medium text-zinc-500 hover:underline disabled:opacity-40"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              {classes.length === 0 ? (
-                <p className="text-[12px] text-zinc-400">No classes in this knowledge base.</p>
-              ) : (
-                <ul className="max-h-28 space-y-1 overflow-y-auto rounded-lg border border-zinc-100 bg-white p-2">
-                  {classes.map((c) => (
-                    <li key={c.id}>
-                      <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[13px] hover:bg-zinc-50">
-                        <input
-                          type="checkbox"
-                          checked={selectedClassIds.has(c.id)}
-                          onChange={(e) => toggleClass(c.id, e.target.checked)}
-                          className="h-4 w-4 rounded border-zinc-300 text-indigo-600"
-                        />
-                        {c.name}
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Subjects</span>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllSubjects}
-                    disabled={subjectsUnion.length === 0}
-                    className="text-[11px] font-medium text-indigo-600 hover:underline disabled:opacity-40"
-                  >
-                    All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearSubjects}
-                    disabled={selectedSubjectIds.size === 0}
-                    className="text-[11px] font-medium text-zinc-500 hover:underline disabled:opacity-40"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              {selectedClassIds.size === 0 ? (
-                <p className="text-[12px] text-zinc-400">Select at least one class to list subjects.</p>
-              ) : subjectsUnion.length === 0 ? (
-                <p className="text-[12px] text-zinc-400">No subjects for the selected classes.</p>
-              ) : (
-                <ul className="max-h-32 space-y-1 overflow-y-auto rounded-lg border border-zinc-100 bg-white p-2">
-                  {subjectsUnion.map((s) => (
-                    <li key={s.id}>
-                      <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[13px] hover:bg-zinc-50">
-                        <input
-                          type="checkbox"
-                          checked={selectedSubjectIds.has(s.id)}
-                          onChange={(e) => toggleSubject(s.id, e.target.checked)}
-                          className="h-4 w-4 rounded border-zinc-300 text-indigo-600"
-                        />
-                        <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                Knowledge base
+              </label>
+              <p className="mb-1.5 text-[11px] text-zinc-400">Templates and chapters below use this KB.</p>
+              <select
+                value={selectedKb}
+                onChange={(e) => setSelectedKb(e.target.value)}
+                className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-500"
+              >
+                {kbs.map((kb) => (
+                  <option key={kb.id} value={kb.id}>
+                    {kb.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
               <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                Exam paper presets
+                Exam paper templates
               </label>
+              <p className="mb-2 text-[11px] text-zinc-400">
+                Skip manual picks — a template carries totals, subject mix, and chapter spread for this KB.
+              </p>
               {presetsLoading ? (
-                <p className="text-[12px] text-zinc-400">Loading presets…</p>
+                <p className="text-[12px] text-zinc-400">Loading templates…</p>
               ) : presets.length === 0 ? (
                 <p className="text-[12px] text-zinc-400">
-                  No exam paper profiles for this KB yet. Create them under Admin → Exam papers.
+                  No profiles yet. Add them under Admin → Exam papers, or continue with classes below.
                 </p>
               ) : (
                 <ul className="max-h-36 space-y-2 overflow-y-auto rounded-lg border border-indigo-100 bg-indigo-50/40 p-2">
@@ -455,6 +456,182 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
                 </ul>
               )}
             </div>
+
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Classes & subjects</span>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllClasses}
+                    disabled={classes.length === 0}
+                    className="text-[11px] font-medium text-indigo-600 hover:underline disabled:opacity-40"
+                  >
+                    All classes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearClasses}
+                    disabled={selectedClassIds.size === 0}
+                    className="text-[11px] font-medium text-zinc-500 hover:underline disabled:opacity-40"
+                  >
+                    Clear classes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={selectAllSubjects}
+                    disabled={totalSubjectsListed === 0}
+                    className="text-[11px] font-medium text-indigo-600 hover:underline disabled:opacity-40"
+                  >
+                    All subjects
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearSubjects}
+                    disabled={selectedSubjectIds.size === 0}
+                    className="text-[11px] font-medium text-zinc-500 hover:underline disabled:opacity-40"
+                  >
+                    Clear subjects
+                  </button>
+                </div>
+              </div>
+              <p className="mb-2 text-[11px] text-zinc-400">
+                Tick a class, then choose subjects under it. You need at least one subject to continue.
+              </p>
+              {classes.length === 0 ? (
+                <p className="text-[12px] text-zinc-400">No classes in this knowledge base.</p>
+              ) : (
+                <ul className="max-h-[min(40vh,280px)] space-y-2 overflow-y-auto rounded-lg border border-zinc-100 bg-white p-2">
+                  {classes.map((c) => {
+                    const subs = subjectsByClass[c.id] || [];
+                    const classSelected = selectedClassIds.has(c.id);
+                    return (
+                      <li key={c.id} className="rounded-md border border-zinc-100 bg-zinc-50/50 p-2">
+                        <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[13px] font-medium text-zinc-900 hover:bg-white/80">
+                          <input
+                            type="checkbox"
+                            checked={classSelected}
+                            onChange={(e) => toggleClass(c.id, e.target.checked)}
+                            className="h-4 w-4 rounded border-zinc-300 text-indigo-600"
+                          />
+                          {c.name}
+                        </label>
+                        {classSelected ? (
+                          <div className="ml-6 mt-2 space-y-1 border-l border-zinc-200 pl-3">
+                            {subs.length === 0 ? (
+                              <p className="text-[11px] text-zinc-400">Loading or no subjects for this class.</p>
+                            ) : (
+                              subs.map((s) => (
+                                <label
+                                  key={s.id}
+                                  className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[12px] text-zinc-700 hover:bg-white"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedSubjectIds.has(s.id)}
+                                    onChange={(e) => toggleSubject(s.id, e.target.checked)}
+                                    className="h-3.5 w-3.5 rounded border-zinc-300 text-indigo-600"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                                </label>
+                              ))
+                            )}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+          ) : (
+          <>
+          <div className="space-y-3 border-b border-zinc-100 px-5 py-4">
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  Default questions / chapter
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={defaultQuestionsPerChapter}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
+                    setDefaultQuestionsPerChapter(v);
+                  }}
+                  className="w-24 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-sm tabular-nums outline-none focus:border-indigo-500"
+                />
+                <p className="mt-1 max-w-md text-[11px] text-zinc-400">
+                  Applied when you tick a chapter. Edit each row anytime; creator total follows the sum.
+                </p>
+              </div>
+            </div>
+
+            {(selectedClassIds.size > 1 || selectedSubjectPillOptions.length > 1) && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">Filter list</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setActiveClassPill(null)}
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      activeClassPill === null
+                        ? 'bg-zinc-200 text-zinc-800'
+                        : 'bg-zinc-100/80 text-zinc-500 hover:bg-zinc-100'
+                    }`}
+                  >
+                    All classes
+                  </button>
+                  {classes
+                    .filter((c) => selectedClassIds.has(c.id))
+                    .map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setActiveClassPill((prev) => (prev === c.id ? null : c.id))}
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                          activeClassPill === c.id
+                            ? 'bg-zinc-200 text-zinc-800'
+                            : 'bg-zinc-50 text-zinc-500 ring-1 ring-zinc-200/80 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {c.name}
+                      </button>
+                    ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubjectPill(null)}
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      activeSubjectPill === null
+                        ? 'bg-zinc-200 text-zinc-800'
+                        : 'bg-zinc-100/80 text-zinc-500 hover:bg-zinc-100'
+                    }`}
+                  >
+                    All subjects
+                  </button>
+                  {selectedSubjectPillOptions.map(([sid, name]) => (
+                    <button
+                      key={sid}
+                      type="button"
+                      onClick={() => setActiveSubjectPill((prev) => (prev === sid ? null : sid))}
+                      className={`max-w-[140px] truncate rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                        activeSubjectPill === sid
+                          ? 'bg-zinc-200 text-zinc-800'
+                          : 'bg-zinc-50 text-zinc-500 ring-1 ring-zinc-200/80 hover:bg-zinc-100'
+                      }`}
+                      title={name}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="space-y-2 px-5 py-3">
@@ -466,65 +643,130 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
               disabled={selectedSubjectIds.size === 0}
               className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 disabled:bg-zinc-50"
             />
+            {selectedSubjectIds.size === 0 ? (
+              <p className="text-[11px] text-zinc-400">Go back and select at least one subject to load chapters.</p>
+            ) : null}
           </div>
 
           <div className="min-h-[200px] px-5 pb-4">
             {loading ? (
               <p className="py-8 text-center text-sm text-zinc-400">Loading…</p>
             ) : selectedSubjectIds.size === 0 ? (
-              <p className="py-8 text-center text-sm text-zinc-400">Select subjects to list chapters.</p>
+              <p className="py-8 text-center text-sm text-zinc-400">Select subjects in step 1 to list chapters.</p>
             ) : filteredChapters.length === 0 ? (
               <p className="py-8 text-center text-sm text-zinc-400">No chapters for this filter.</p>
             ) : (
               <ul className="space-y-1">
                 {filteredChapters.map((ch) => {
                   const checked = selectedIds.has(ch.id);
+                  const qCount = chapterCounts[ch.id] ?? defaultQuestionsPerChapter;
                   return (
                     <li key={ch.id}>
-                      <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-100 bg-white px-3 py-2 transition-colors hover:border-zinc-200 hover:bg-zinc-50">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleChapter(ch.id)}
-                          className="mt-1 h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
-                        />
-                        <span className="min-w-0 flex-1 text-sm font-medium text-zinc-800">
-                          <span className="text-zinc-400">{ch.chapter_number != null ? `${ch.chapter_number}. ` : ''}</span>
-                          {ch.name}
-                          {ch.class_name ? (
-                            <span className="mt-0.5 block text-[11px] font-normal text-zinc-500">
-                              {ch.class_name}
-                              {ch.subject_name ? ` · ${ch.subject_name}` : ''}
-                            </span>
-                          ) : null}
-                        </span>
-                      </label>
+                      <div className="flex flex-wrap items-start gap-2 rounded-lg border border-zinc-100 bg-white px-3 py-2 transition-colors hover:border-zinc-200 hover:bg-zinc-50 sm:flex-nowrap sm:items-center">
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 sm:items-center">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleChapter(ch.id)}
+                            className="mt-1 h-4 w-4 shrink-0 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 sm:mt-0"
+                          />
+                          <span className="min-w-0 flex-1 text-sm font-medium text-zinc-800">
+                            <span className="text-zinc-400">{ch.chapter_number != null ? `${ch.chapter_number}. ` : ''}</span>
+                            {ch.name}
+                            {ch.class_name ? (
+                              <span className="mt-0.5 block text-[11px] font-normal text-zinc-500">
+                                {ch.class_name}
+                                {ch.subject_name ? ` · ${ch.subject_name}` : ''}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                        <div className="flex shrink-0 items-center gap-1 pl-7 sm:pl-0">
+                          <label className="flex items-center gap-1 text-[11px] text-zinc-500">
+                            <span className="hidden sm:inline">Qs</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={500}
+                              disabled={!checked}
+                              value={checked ? qCount : defaultQuestionsPerChapter}
+                              onChange={(e) => {
+                                const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
+                                setChapterCounts((prev) => ({ ...prev, [ch.id]: v }));
+                              }}
+                              className="w-14 rounded border border-zinc-200 bg-white px-1.5 py-1 text-center text-xs tabular-nums outline-none focus:border-indigo-500 disabled:opacity-40"
+                            />
+                          </label>
+                        </div>
+                      </div>
                     </li>
                   );
                 })}
               </ul>
             )}
           </div>
+          </>
+          )}
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-zinc-100 bg-zinc-50/80 px-5 py-3">
-          <span className="text-[12px] text-zinc-500">{selectedIds.size} chapter(s) selected</span>
+          <span className="text-[12px] text-zinc-500">
+            {wizardStep === 1 ? (
+              selectedClassIds.size > 0 && selectedSubjectIds.size > 0 ? (
+                `${selectedClassIds.size} class(es), ${selectedSubjectIds.size} subject(s)`
+              ) : (
+                'Select at least one class and subject'
+              )
+            ) : (
+              <>
+                {selectedIds.size} chapter(s) selected
+                {selectedIds.size > 0 ? (
+                  <span className="text-zinc-400"> · {manualTotalQuestions} questions total</span>
+                ) : null}
+                {selectedIds.size > 0 && manualTotalQuestions <= 0 ? (
+                  <span className="block text-amber-600">Raise default or per-chapter counts above 0.</span>
+                ) : null}
+              </>
+            )}
+          </span>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={selectedIds.size === 0 || !selectedKb}
-              onClick={handleConfirmManual}
-              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
-            >
-              Continue with selected chapters
-            </button>
+            {wizardStep === 1 ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedClassIds.size === 0 || selectedSubjectIds.size === 0}
+                  onClick={() => setWizardStep(2)}
+                  className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  Continue
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setWizardStep(1)}
+                  className="rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedIds.size === 0 || !selectedKb || manualTotalQuestions <= 0}
+                  onClick={handleConfirmManual}
+                  className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  Continue with selected chapters
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

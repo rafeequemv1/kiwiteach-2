@@ -41,6 +41,7 @@ export function persistedRoleForNewProfile(userMetaRole: string | null | undefin
 }
 
 export type DashboardView =
+  | 'overview'
   | 'test'
   | 'online-exam'
   | 'students'
@@ -51,6 +52,7 @@ export type DashboardView =
   | 'student-mock-test';
 
 const TEACHER_VIEWS: DashboardView[] = [
+  'overview',
   'test',
   'online-exam',
   'students',
@@ -79,6 +81,6 @@ export function canAccessView(role: AppRole, view: string): boolean {
 
 export function defaultViewForRole(role: AppRole): DashboardView {
   if (role === 'student') return 'student-online-test';
-  if (role === 'school_admin') return 'test';
-  return role === 'developer' || role === 'teacher' ? 'test' : 'student-online-test';
+  if (role === 'school_admin' || role === 'developer' || role === 'teacher') return 'overview';
+  return 'student-online-test';
 }

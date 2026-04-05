@@ -275,7 +275,14 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
       case 'reference-questions':
         return <ReferenceQuestionsManager />;
       case 'knowledge-source':
-        return <KnowledgeSourceHome onSelectKb={handleSelectKb} />;
+        return (
+          <KnowledgeSourceHome
+            onSelectKb={handleSelectKb}
+            onKbDeleted={(deletedId) => {
+              setSelectedKb((prev) => (prev?.id === deletedId ? null : prev));
+            }}
+          />
+        );
       case 'kb-explorer':
         return selectedKb ? (
           <KnowledgeBaseExplorer

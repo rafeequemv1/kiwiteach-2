@@ -11,6 +11,7 @@ import {
 } from '../../utils/docxFigureExtract';
 import { buildParseSanityWarning, type ParseSanityWarning } from '../../utils/examQuestionCountHeuristic';
 import { correctLetterToIndex, extractLocalMcqRowsFromText, type LocalMcqRow } from '../../utils/localMcqExtract';
+import ReferenceBankImportPanel from './ReferenceBankImportPanel';
 
 declare const mammoth: any;
 
@@ -44,6 +45,7 @@ type RefRow = {
   topic_tag: string | null;
   image_url: string | null;
   reference_set_id?: string | null;
+  reference_upload_set_id?: string | null;
   metadata: Record<string, unknown> | null;
 };
 
@@ -554,6 +556,7 @@ const ReferenceQuestionsManager: React.FC = () => {
   const [stagedPreview, setStagedPreview] = useState<Draft[]>([]);
   const [refParseSanityWarnings, setRefParseSanityWarnings] = useState<ParseSanityWarning[]>([]);
   const [pendingPublishFiles, setPendingPublishFiles] = useState<File[] | null>(null);
+  const [bankPanelResetSignal, setBankPanelResetSignal] = useState(0);
   const docFileInputRef = useRef<HTMLInputElement>(null);
 
   const [refImportParser, setRefImportParser] = useState<'gemini' | 'local'>('gemini');
@@ -759,6 +762,7 @@ const ReferenceQuestionsManager: React.FC = () => {
       setDocQueueStats([]);
       setStagedPreview(finalizeReferenceDrafts(combined));
       setRefParseSanityWarnings(sanityCollected);
+      setBankPanelResetSignal((k) => k + 1);
     } catch (e: any) {
       setError(e?.message || 'Failed to parse documents with Gemini');
     } finally {
@@ -1050,12 +1054,22 @@ const ReferenceQuestionsManager: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="mt-0 shrink-0 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm md:p-5">
+      <div className="mt-0 shrink-0 space-y-4">
+        <ReferenceBankImportPanel
+          onRefreshAll={loadAll}
+          onClearMathpixStaged={cancelStagedImport}
+          mathpixStagedActive={stagedPreview.length > 0}
+          savedRows={rows}
+          resetSignal={bankPanelResetSignal}
+        />
+
+        <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm md:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="text-base font-semibold text-zinc-900">Reference questions import</h3>
+            <h3 className="text-base font-semibold text-zinc-900">Mathpix DOCX · AI pipeline</h3>
             <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
-              Add one or more Mathpix <span className="font-mono">.docx</span> files, choose <strong>Gemini</strong> or <strong>local</strong> parser, then parse. Long papers with Gemini are split into overlapping segments so each response stays smaller
+              Uses <span className="font-mono">reference_question_sets</span> + stored docs (not the PYQ-style bank above). Add one or more Mathpix{' '}
+              <span className="font-mono">.docx</span> files, choose <strong>Gemini</strong> or <strong>local</strong> parser, then parse. Long papers with Gemini are split into overlapping segments so each response stays smaller
               (reduces dropped rows on 100–200 question sets). For maximum recall on large papers use <strong>Gemini 3 Pro</strong>. Then{' '}
               <strong>Publish to server</strong> and <strong>Save to library</strong> on the card.
             </p>
@@ -1323,6 +1337,7 @@ const ReferenceQuestionsManager: React.FC = () => {
             )}
           </div>
         )}
+        </div>
       </div>
 
       {(error || parsingDoc || saving) && (

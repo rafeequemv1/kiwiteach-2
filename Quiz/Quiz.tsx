@@ -3,6 +3,7 @@ import { supabase } from '../supabase/client';
 import { fetchClassesForUser, fetchInstitutesForUser } from '../supabase/orgScope';
 import AuthUI from '../supabase/AuthUI';
 import LeftPanel from '../Panel/LeftPanel';
+import TeacherOverview from '../Teacher/Overview/TeacherOverview';
 import TestDashboard from '../Teacher/Test/TestDashboard';
 import OnlineExamDashboard from '../Teacher/OnlineExam/OnlineExamDashboard';
 import OnlineExamScheduler from '../Teacher/OnlineExam/OnlineExamScheduler';
@@ -37,7 +38,6 @@ import {
   TypeDistribution,
   CreateTestOptions,
 } from './types';
-import { extractChapterReferenceImages } from '../services/geminiService';
 import {
   fetchEligibleQuestions,
   isUuid,
@@ -71,10 +71,14 @@ const TESTS_LIST_COLUMNS =
 
 const DASHBOARD_BASE = '/dashboard';
 
+/** Remember last teacher dashboard section for refresh / return from marketing while logged in. */
+const LAST_DASH_SLUG_KEY = 'kiwi_dash_slug_v1';
+
 /** Tailwind lg — sidebar in flow; below this width the nav is a slide-out drawer (closed by default). */
 const DASHBOARD_SIDEBAR_LG_MQ = '(min-width: 1024px)';
 
 const VIEW_TO_SLUG: Record<DashboardView, string> = {
+  overview: 'overview',
   test: 'paper-tests',
   'online-exam': 'online-exams',
   students: 'students',
@@ -94,6 +98,10 @@ const SLUG_TO_VIEW: Record<string, DashboardView> = Object.entries(VIEW_TO_SLUG)
 );
 
 const VIEW_SEO: Record<DashboardView, { title: string; description: string }> = {
+  overview: {
+    title: 'Overview',
+    description: 'Workspace summary, organizations, classes, and tests.',
+  },
   test: {
     title: 'Class Tests',
     description: 'Create, schedule, and manage class tests.',
@@ -224,8 +232,9 @@ const Quiz: React.FC = () => {
 
   const [showAuth, setShowAuth] = useState(() => initialAuthMode === 'reset-password' || !!initialAuthError);
   const [authIntent, setAuthIntent] = useState<'login' | 'signup'>('login');
-  const [activeView, setActiveView] = useState('test');
+  const [activeView, setActiveView] = useState('overview');
   const [appRole, setAppRole] = useState<AppRole>('student');
+  const [orgScopeReady, setOrgScopeReady] = useState(false);
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(''); // New state for loading text
@@ -293,6 +302,7 @@ const Quiz: React.FC = () => {
     email?: string | null;
     user_metadata?: Record<string, unknown>;
   }) => {
+    try {
     const email = user.email ?? '';
     type ProfileRow = { role?: string | null; class_id?: string | null; business_id?: string | null };
     let prof: ProfileRow | null = null;
@@ -361,28 +371,40 @@ const Quiz: React.FC = () => {
       setInstitutes([]);
     }
     setOrgClasses((classRows as OrgClass[]) || []);
+    } finally {
+      setOrgScopeReady(true);
+    }
   };
 
   const refreshOrgData = () => {
     if (session?.user) void loadProfileAndOrg(session.user);
   };
 
+  // Initialize dashboard view from URL slug, then sessionStorage, then role default (after profile/org load).
+  useEffect(() => {
+    if (!session?.user || !orgScopeReady || didInitRouteRef.current) return;
+    let fromPath = viewFromPathname(window.location.pathname);
+    if (!fromPath) {
+      try {
+        const slug = sessionStorage.getItem(LAST_DASH_SLUG_KEY);
+        if (slug && SLUG_TO_VIEW[slug] && canAccessView(appRole, SLUG_TO_VIEW[slug])) {
+          fromPath = SLUG_TO_VIEW[slug];
+        }
+      } catch {
+        /* ignore storage errors */
+      }
+    }
+    const fallback = defaultViewForRole(appRole);
+    const nextView = fromPath && canAccessView(appRole, fromPath) ? fromPath : fallback;
+    setActiveView(nextView);
+    didInitRouteRef.current = true;
+  }, [session?.user, appRole, orgScopeReady]);
+
   useEffect(() => {
     if (!canAccessView(appRole, activeView)) {
       setActiveView(defaultViewForRole(appRole));
     }
   }, [appRole, activeView]);
-
-  // Initialize dashboard view from URL slug on reload; fallback to role default.
-  useEffect(() => {
-    if (!session?.user || didInitRouteRef.current) return;
-    const fromPath = viewFromPathname(window.location.pathname);
-    const fallback = defaultViewForRole(appRole);
-    const nextView =
-      fromPath && canAccessView(appRole, fromPath) ? fromPath : fallback;
-    setActiveView(nextView);
-    didInitRouteRef.current = true;
-  }, [session?.user, appRole]);
 
   // Logged-out users should not keep /dashboard/* in the address bar while the marketing shell is shown.
   useEffect(() => {
@@ -400,6 +422,11 @@ const Quiz: React.FC = () => {
     if (!session?.user || showLanding) return;
     const view = activeView as DashboardView;
     if (!VIEW_TO_SLUG[view]) return;
+    try {
+      sessionStorage.setItem(LAST_DASH_SLUG_KEY, VIEW_TO_SLUG[view]);
+    } catch {
+      /* ignore */
+    }
     const targetPath = pathForView(view);
     if (window.location.pathname !== targetPath) {
       window.history.replaceState(null, '', targetPath);
@@ -478,9 +505,11 @@ const Quiz: React.FC = () => {
         fetchBranding(session.user.id);
         void loadProfileAndOrg(session.user);
       } else if (event === 'SIGNED_OUT') {
-        setFolders([]); 
-        setAllTests([]); 
-        setIsLoadingWorkspace(false); 
+        setFolders([]);
+        setAllTests([]);
+        setIsLoadingWorkspace(false);
+        setOrgScopeReady(false);
+        didInitRouteRef.current = false;
       }
     });
     return () => subscription.unsubscribe();
@@ -836,15 +865,6 @@ const Quiz: React.FC = () => {
       await fetchWorkspace();
   };
 
-  const processUploadContent = (content: string) => {
-      const images: { data: string; mimeType: string }[] = [];
-      let text = content;
-      const imgRegex = /<img[^>]+src=["'](data:image\/([^;]+);base64,\s*([^"']+))["'][^>]*>/gi;
-      let count = 0;
-      text = text.replace(imgRegex, (match, fullSrc, mimeType, base64Data) => { if (count < 20) { images.push({ data: base64Data.trim(), mimeType }); count++; return ` [FIGURE_REFERENCE_${count}] `; } return ''; });
-      return { text, images };
-  };
-
   const generateQuestionsLogic = async (options: CreateTestOptions, setStatus: (s: string) => void) => {
       const { data: authData } = await supabase.auth.getUser();
       const uid = authData.user?.id;
@@ -864,43 +884,19 @@ const Quiz: React.FC = () => {
       const manualQs = options.manualQuestions || [];
       let finalQuestions: Question[] = [...manualQs]; 
       
-      const styleTransferCache: Record<string, string> = {};
+      const chaptersForBank = options.chapters.map((c) => ({ ...c, source: 'db' as const }));
 
-      for (const chap of options.chapters) {
+      for (const chap of chaptersForBank) {
           const manualForThisChap = manualQs.filter(q => q.sourceChapterId === chap.id);
           const targetCount = chap.count || 0;
           
-          const neededFromAi = Math.max(0, targetCount - manualForThisChap.length);
-          if (neededFromAi <= 0) continue;
-          
-          setStatus(`Forging ${neededFromAi} remainder questions for ${chap.name}...`);
+          const neededFromBank = Math.max(0, targetCount - manualForThisChap.length);
+          if (neededFromBank <= 0) continue;
+
+          setStatus(`Loading ${neededFromBank} question(s) from the bank for ${chap.name}…`);
           let newBatch: Question[] = [];
-          let effectiveSource = chap.source;
-          
-          let allPossibleImgs: { data: string, mimeType: string }[] = [];
-          let rawText = "";
 
-          if (chap.content) { 
-              const p = processUploadContent(chap.content); 
-              rawText = p.text;
-              allPossibleImgs = p.images;
-          } else if (chap.id) { 
-              const { data } = await supabase.from('chapters').select('raw_text, doc_path, pdf_path').eq('id', chap.id).maybeSingle(); 
-              if (data?.raw_text) rawText = data.raw_text;
-              if (chap.figureCount > 0 && chap.visualMode === 'image') {
-                  setStatus(`Scanning source material for ${chap.name}...`);
-                  allPossibleImgs = await extractChapterReferenceImages(data?.doc_path ?? null, data?.pdf_path ?? null);
-              }
-          }
-
-          const selectedIndices = Object.keys(chap.selectedFigures || {}).map(Number);
-          const filteredImgs = selectedIndices.length > 0 
-              ? selectedIndices.map(idx => allPossibleImgs[idx]).filter(Boolean)
-              : allPossibleImgs.slice(0, 20);
-
-          const sourceContext = { text: rawText, images: filteredImgs };
-
-          if (effectiveSource === 'db') {
+          {
               const currentIds = finalQuestions
                 .map((q) => q.originalId || q.id)
                 .filter((id): id is string => isUuid(id));
@@ -934,7 +930,7 @@ const Quiz: React.FC = () => {
 
               const usePerStyle = !!(chap.useStyleMix && chap.styleCounts);
               if (usePerStyle) {
-                const plan = normalizeStylePlan(chap.styleCounts, neededFromAi);
+                const plan = normalizeStylePlan(chap.styleCounts, neededFromBank);
                 const collected: Question[] = [];
                 for (const qt of styleKeys) {
                   const want = plan[qt];
@@ -958,7 +954,7 @@ const Quiz: React.FC = () => {
                     }))
                   );
                 }
-                let still = neededFromAi - collected.length;
+                let still = neededFromBank - collected.length;
                 if (still > 0) {
                   const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
                   const filler = await fetchEligibleQuestions({
@@ -978,14 +974,14 @@ const Quiz: React.FC = () => {
                     }))
                   );
                 }
-                newBatch = collected.slice(0, neededFromAi);
+                newBatch = collected.slice(0, neededFromBank);
               } else {
                 const eligible = await fetchEligibleQuestions({
                   classId: options.targetClassId || null,
                   chapterId: chap.id,
                   difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
                   excludeIds: currentIds,
-                  limit: neededFromAi,
+                  limit: neededFromBank,
                   allowRepeats: !!options.allowPastQuestions,
                   includeUsedQuestionIds: options.includeUsedQuestionIds || [],
                   excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
@@ -996,19 +992,21 @@ const Quiz: React.FC = () => {
                 }));
               }
 
-              if (newBatch.length > 0) {
-                /* keep db */
-              } else {
-                effectiveSource = 'ai';
-              }
           }
-          
-          if (effectiveSource === 'ai') {
+
+          if (newBatch.length < neededFromBank) {
+              const found = newBatch.length;
+              const need = neededFromBank;
+              if (found === 0) {
+                  throw new Error(
+                      `No questions found in the question bank for “${chap.name}” with the current filters (difficulty, question types, repeat rules, or topic exclusions). Try different settings or another chapter, or ask your admin to add questions to the bank.`
+                  );
+              }
               throw new Error(
-                'AI question generation is reserved for platform administrators. Use the question bank, adjust chapter counts, upload source material, or add manual questions.'
+                  `Only ${found} of ${need} questions are available in the bank for “${chap.name}”. Reduce the count for this chapter, adjust filters, allow past questions, or ask your admin to add more questions.`
               );
           }
-          
+
           const enriched = newBatch.map(q => ({ ...q, sourceChapterId: q.sourceChapterId || chap.id, sourceChapterName: q.sourceChapterName || chap.name, sourceSubjectName: q.sourceSubjectName || chap.subjectName }));
           finalQuestions = [...finalQuestions, ...enriched];
       }
@@ -1110,35 +1108,64 @@ const Quiz: React.FC = () => {
           const { data: chaptersData } = await supabase.from('chapters').select('id, name, subject_name, class_name, kb_id').in('id', chapterIds);
           if (!chaptersData) throw new Error("Chapters not found");
           const mockKbId = chaptersData[0]?.kb_id ?? null;
-          
-          const selectedChapters: SelectedChapter[] = chaptersData.map(c => ({
-              id: c.id, name: c.name, subjectName: c.subject_name || 'General', className: c.class_name || 'General',
-              count: 10, figureCount: 0, difficulty: difficulty as any, source: 'ai', styleCounts: { mcq: 10 },
-              visualMode: 'image'
-          }));
-          
-          const totalQ = selectedChapters.length * 10;
-          
+          const perChapter = 10;
+
           const options: CreateTestOptions = {
               mode: 'multi-ai',
               topic: `Mock Test - ${new Date().toLocaleDateString()}`,
-              chapters: selectedChapters,
+              chapters: [],
               useGlobalDifficulty: true,
               globalDifficultyMix: { easy: 30, medium: 50, hard: 20 },
               globalTypeMix: { mcq: 100, reasoning: 0, matching: 0, statements: 0 },
-              totalQuestions: totalQ,
+              totalQuestions: chaptersData.length * perChapter,
               selectionMode: 'auto',
               questionType: type as any,
               knowledgeBaseId: mockKbId,
           };
-          
+
           if (difficulty === 'Easy') options.globalDifficultyMix = { easy: 80, medium: 20, hard: 0 };
           else if (difficulty === 'Hard') options.globalDifficultyMix = { easy: 10, medium: 30, hard: 60 };
-          
+
           if (type === 'neet') options.globalTypeMix = { mcq: 70, reasoning: 15, matching: 10, statements: 5 };
           else if (type === 'mcq') options.globalTypeMix = { mcq: 100, reasoning: 0, matching: 0, statements: 0 };
           else if (type === 'reasoning') options.globalTypeMix = { mcq: 0, reasoning: 100, matching: 0, statements: 0 };
-          
+
+          const mix = options.globalTypeMix;
+          const mockStyleKeys = ['mcq', 'reasoning', 'matching', 'statements'] as const;
+          const scaled = mockStyleKeys.map((k) => Math.max(0, Math.round((mix[k] / 100) * perChapter)));
+          let mixSum = scaled.reduce((a, b) => a + b, 0);
+          let mixDiff = perChapter - mixSum;
+          let mi = 0;
+          while (mixDiff !== 0 && mi < 200) {
+              const j = mi % mockStyleKeys.length;
+              if (mixDiff > 0) {
+                  scaled[j] += 1;
+                  mixDiff -= 1;
+              } else if (scaled[j] > 0) {
+                  scaled[j] -= 1;
+                  mixDiff += 1;
+              }
+              mi += 1;
+          }
+          const mockStyleCounts = Object.fromEntries(mockStyleKeys.map((k, idx) => [k, scaled[idx]])) as Record<
+              string,
+              number
+          >;
+
+          options.chapters = chaptersData.map((c) => ({
+              id: c.id,
+              name: c.name,
+              subjectName: c.subject_name || 'General',
+              className: c.class_name || 'General',
+              count: perChapter,
+              figureCount: 0,
+              difficulty: difficulty as SelectedChapter['difficulty'],
+              source: 'db',
+              useStyleMix: true,
+              styleCounts: { ...mockStyleCounts },
+              visualMode: 'text',
+          }));
+
           const questions = await generateQuestionsLogic(options, setForgeStep);
           setActiveStudentExam({ topic: options.topic, questions });
           
@@ -1302,6 +1329,15 @@ const Quiz: React.FC = () => {
             </div>
         )}
 
+        {activeView === 'overview' && (
+          <TeacherOverview
+            email={session.user.email}
+            institutes={institutes}
+            classes={orgClasses}
+            allTests={allTests}
+            onNavigate={(v) => setActiveView(v)}
+          />
+        )}
         {activeView === 'test' && (
           <TestDashboard
             username={session.user.email}
