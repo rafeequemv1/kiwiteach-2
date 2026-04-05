@@ -74,6 +74,28 @@ const STUDIO_MODEL_META: Record<(typeof STUDIO_MODEL_IDS)[number], { label: stri
   'gemini-flash-lite-latest': { label: 'Flash Lite', icon: 'mdi:feather' },
 };
 
+/** Turn non-negative style weights into integer counts that sum exactly to `total` (same mix for every chapter). */
+function allocateQuestionTypesByWeight(
+  total: number,
+  w: { mcq: number; reasoning: number; matching: number; statements: number }
+): { mcq: number; reasoning: number; matching: number; statements: number } {
+  const keys = ['mcq', 'reasoning', 'matching', 'statements'] as const;
+  const weights = keys.map((k) => Math.max(0, Math.floor(Number(w[k]) || 0)));
+  const sumW = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0) return { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
+  if (sumW === 0) return { mcq: total, reasoning: 0, matching: 0, statements: 0 };
+
+  const exact = weights.map((wi) => (wi / sumW) * total);
+  const floor = exact.map((x) => Math.floor(x));
+  let rem = total - floor.reduce((a, b) => a + b, 0);
+  const order = exact
+    .map((x, i) => ({ i, r: x - floor[i] }))
+    .sort((a, b) => b.r - a.r);
+  const out = [...floor];
+  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
+  return { mcq: out[0], reasoning: out[1], matching: out[2], statements: out[3] };
+}
+
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
   const [kbChapterCounts, setKbChapterCounts] = useState<Record<string, number>>({});
@@ -129,6 +151,13 @@ const QuestionBankHome: React.FC = () => {
   /** Forge = review queue; Fill = save MCQ text per chapter immediately */
   const [studioTool, setStudioTool] = useState<'forge' | 'fill'>('forge');
   const [fillUniformDiff, setFillUniformDiff] = useState({ easy: 3, medium: 4, hard: 2 });
+  /** Relative weights for MCQ / assertion / matching / statements — same mix applied to every chapter in fill mode. */
+  const [fillUniformStyleWeights, setFillUniformStyleWeights] = useState({
+    mcq: 60,
+    reasoning: 20,
+    matching: 10,
+    statements: 10,
+  });
   const [isFillBatch, setIsFillBatch] = useState(false);
   const [fillProgress, setFillProgress] = useState('');
 
@@ -266,6 +295,15 @@ const QuestionBankHome: React.FC = () => {
   }, [grandTotals.questions, selectedModel]);
 
   const fillQuestionsPerChapter = fillUniformDiff.easy + fillUniformDiff.medium + fillUniformDiff.hard;
+  const fillStyleWeightsSum =
+    fillUniformStyleWeights.mcq +
+    fillUniformStyleWeights.reasoning +
+    fillUniformStyleWeights.matching +
+    fillUniformStyleWeights.statements;
+  const fillStyleTypeCounts = useMemo(
+    () => allocateQuestionTypesByWeight(fillQuestionsPerChapter, fillUniformStyleWeights),
+    [fillQuestionsPerChapter, fillUniformStyleWeights]
+  );
   const fillTotalPlannedQuestions = fillQuestionsPerChapter * selectedChapterIds.size;
   const estimatedFillCostInr = useMemo(() => {
     const rate = COST_ESTIMATES[selectedModel as keyof typeof COST_ESTIMATES] || 0;
@@ -559,6 +597,16 @@ const QuestionBankHome: React.FC = () => {
       alert('Set at least one question per chapter (Easy + Medium + Hard).');
       return;
     }
+    const typeCounts = allocateQuestionTypesByWeight(perChap, fillUniformStyleWeights);
+    const styleSum =
+      fillUniformStyleWeights.mcq +
+      fillUniformStyleWeights.reasoning +
+      fillUniformStyleWeights.matching +
+      fillUniformStyleWeights.statements;
+    if (styleSum <= 0) {
+      alert('Set at least one positive style weight (MCQ, Assertion, Matching, or Statements).');
+      return;
+    }
 
     setIsFillBatch(true);
     stopForgingRef.current = false;
@@ -609,14 +657,16 @@ const QuestionBankHome: React.FC = () => {
         const contentRes = await supabase.from('chapters').select('raw_text').eq('id', chapId).single();
         const rawText = (contentRes.data?.raw_text || '') + '\n\n' + boundariesContext;
 
-        setFillProgress(`${progressPrefix} · ${savedTotal} saved · generating ${perChap} MCQ…`);
+        setFillProgress(
+          `${progressPrefix} · ${savedTotal} saved · generating ${perChap} Q (styles: M${typeCounts.mcq}·A${typeCounts.reasoning}·m${typeCounts.matching}·S${typeCounts.statements})…`
+        );
 
         const gen = await generateQuizQuestions(
           String(chapter.name),
           fillUniformDiff,
           perChap,
           { text: rawText },
-          { mcq: perChap, reasoning: 0, matching: 0, statements: 0 },
+          typeCounts,
           (status) => setFillProgress(`${progressPrefix} · ${savedTotal} saved · ${status}`),
           0,
           false,
@@ -1267,7 +1317,14 @@ const QuestionBankHome: React.FC = () => {
                                         <iconify-icon icon="mdi:lightning-bolt" width="18" /> Forge
                                       </button>
                                     ) : (
-                                      <button type="button" onClick={handleRunFillMode} disabled={isForgingBatch || isFillBatch || fillQuestionsPerChapter === 0} className="bg-emerald-800 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-emerald-900 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 w-full md:w-auto disabled:opacity-50">
+                                      <button
+                                        type="button"
+                                        onClick={handleRunFillMode}
+                                        disabled={
+                                          isForgingBatch || isFillBatch || fillQuestionsPerChapter === 0 || fillStyleWeightsSum <= 0
+                                        }
+                                        className="bg-emerald-800 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-emerald-900 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 w-full md:w-auto disabled:opacity-50"
+                                      >
                                         <iconify-icon icon="mdi:playlist-plus" width="18" /> Run fill
                                       </button>
                                     )}
@@ -1280,13 +1337,77 @@ const QuestionBankHome: React.FC = () => {
                                                 <div className="flex items-start justify-between gap-2 border-b border-zinc-100 pb-3">
                                                   <div>
                                                     <h3 className="text-[11px] font-bold text-zinc-800 tracking-tight">Chapter fill</h3>
-                                                    <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">Same Easy / Medium / Hard counts for every selected chapter. Text-only MCQ. One chapter at a time — each batch is saved before the next.</p>
+                                                    <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">
+                                                      Same difficulty and style mix for every selected chapter. Weights set the ratio of MCQ vs assertion / matching / statements (counts per chapter are computed from weights). Text-only figures off. One chapter at a time — each batch is saved before the next.
+                                                    </p>
                                                   </div>
                                                 </div>
                                                 <div className="grid grid-cols-3 gap-2">
                                                   <StepNumberInput label="Easy" color="text-emerald-500" value={fillUniformDiff.easy} onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, easy: Math.max(0, v) }))} />
                                                   <StepNumberInput label="Medium" color="text-amber-500" value={fillUniformDiff.medium} onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, medium: Math.max(0, v) }))} />
                                                   <StepNumberInput label="Hard" color="text-rose-500" value={fillUniformDiff.hard} onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, hard: Math.max(0, v) }))} />
+                                                </div>
+                                                <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3 space-y-2">
+                                                  <div className="flex items-center justify-between gap-2">
+                                                    <h4 className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Style mix (uniform)</h4>
+                                                    <button
+                                                      type="button"
+                                                      className="text-[8px] font-bold uppercase text-emerald-700 hover:text-emerald-900"
+                                                      onClick={() =>
+                                                        setFillUniformStyleWeights({ mcq: 60, reasoning: 20, matching: 10, statements: 10 })
+                                                      }
+                                                    >
+                                                      60 / 20 / 10 / 10
+                                                    </button>
+                                                  </div>
+                                                  <p className="text-[8px] text-zinc-500 leading-snug">
+                                                    Use any positive integers as relative weights (like percentages). Same proportions on every chapter.
+                                                  </p>
+                                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                                    <StepNumberInput
+                                                      label="MCQ"
+                                                      color="text-indigo-500"
+                                                      value={fillUniformStyleWeights.mcq}
+                                                      onChange={(v: number) =>
+                                                        setFillUniformStyleWeights((s) => ({ ...s, mcq: Math.max(0, v) }))
+                                                      }
+                                                    />
+                                                    <StepNumberInput
+                                                      label="Assertion"
+                                                      color="text-indigo-500"
+                                                      value={fillUniformStyleWeights.reasoning}
+                                                      onChange={(v: number) =>
+                                                        setFillUniformStyleWeights((s) => ({ ...s, reasoning: Math.max(0, v) }))
+                                                      }
+                                                    />
+                                                    <StepNumberInput
+                                                      label="Matching"
+                                                      color="text-indigo-500"
+                                                      value={fillUniformStyleWeights.matching}
+                                                      onChange={(v: number) =>
+                                                        setFillUniformStyleWeights((s) => ({ ...s, matching: Math.max(0, v) }))
+                                                      }
+                                                    />
+                                                    <StepNumberInput
+                                                      label="Statements"
+                                                      color="text-indigo-500"
+                                                      value={fillUniformStyleWeights.statements}
+                                                      onChange={(v: number) =>
+                                                        setFillUniformStyleWeights((s) => ({ ...s, statements: Math.max(0, v) }))
+                                                      }
+                                                    />
+                                                  </div>
+                                                  {fillStyleWeightsSum <= 0 ? (
+                                                    <p className="text-[9px] font-semibold text-rose-600 text-center">Add at least one style weight.</p>
+                                                  ) : (
+                                                    <p className="text-[9px] text-zinc-600 text-center leading-relaxed">
+                                                      Per chapter:{' '}
+                                                      <span className="font-semibold text-zinc-800">
+                                                        {fillStyleTypeCounts.mcq} MCQ · {fillStyleTypeCounts.reasoning} assertion ·{' '}
+                                                        {fillStyleTypeCounts.matching} matching · {fillStyleTypeCounts.statements} statements
+                                                      </span>
+                                                    </p>
+                                                  )}
                                                 </div>
                                                 <p className="text-[9px] text-zinc-500 text-center">
                                                   <span className="font-semibold text-zinc-700">{fillQuestionsPerChapter}</span> per chapter · <span className="font-semibold text-zinc-700">{selectedChapterIds.size}</span> chapters · <span className="font-semibold text-emerald-700">{fillTotalPlannedQuestions}</span> total
@@ -1498,7 +1619,11 @@ const QuestionBankHome: React.FC = () => {
                                             <span className="text-zinc-500 font-normal text-xs">items</span>
                                           </span>
                                           {studioTool === 'fill' ? (
-                                            <div className="mt-0.5 text-emerald-300/90 text-[9px]">Text MCQ · model {STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel}</div>
+                                            <div className="mt-0.5 text-emerald-300/90 text-[9px]">
+                                              Styles M{fillStyleTypeCounts.mcq}/A{fillStyleTypeCounts.reasoning}/m
+                                              {fillStyleTypeCounts.matching}/S{fillStyleTypeCounts.statements} · model{' '}
+                                              {STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel}
+                                            </div>
                                           ) : (
                                             <div className="mt-0.5 text-zinc-400">
                                               <span className="text-rose-300">{grandTotals.figures} fig</span>
@@ -1541,7 +1666,13 @@ const QuestionBankHome: React.FC = () => {
                                                       {chapterTotalCount} Q
                                                     </span>
                                                     {studioTool === 'fill' ? (
-                                                      <span className="text-[8px] font-semibold text-emerald-800 bg-emerald-100 px-1 py-0.5 rounded uppercase">Fill E/M/H</span>
+                                                      <span
+                                                        className="text-[8px] font-semibold text-emerald-800 bg-emerald-100 px-1 py-0.5 rounded uppercase"
+                                                        title="Uniform fill: difficulty + style mix"
+                                                      >
+                                                        Fill M{fillStyleTypeCounts.mcq}·A{fillStyleTypeCounts.reasoning}·m
+                                                        {fillStyleTypeCounts.matching}·S{fillStyleTypeCounts.statements}
+                                                      </span>
                                                     ) : config?.synthesisMode === 'syllabus' ? (
                                                       <span className="text-[8px] font-semibold text-rose-600 bg-rose-50 px-1 py-0.5 rounded uppercase">Syllabus</span>
                                                     ) : (
