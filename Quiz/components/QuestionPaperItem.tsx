@@ -29,6 +29,9 @@ interface QuestionPaperItemProps {
   index: number;
   showExplanation?: boolean;
   showSource?: boolean;
+  /** Browse repository: show cloud prompt set name when stored on the row. */
+  showPromptSet?: boolean;
+  promptSetName?: string | null;
   onToggleSelect?: (id: string) => void;
   isSelected?: boolean;
   onFlagOutOfSyllabus?: (id: string, reason?: QuestionFlagReason) => void;
@@ -42,6 +45,8 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   index, 
   showExplanation = false, 
   showSource = false,
+  showPromptSet = false,
+  promptSetName = null,
   onToggleSelect,
   isSelected,
   onFlagOutOfSyllabus,
@@ -107,6 +112,14 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
               {question.topic_tag && (
                   <span className="max-w-full min-w-0 break-words rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[8px] font-medium uppercase leading-snug text-zinc-700 [overflow-wrap:anywhere]" title={question.topic_tag}>
                     {question.topic_tag}
+                  </span>
+              )}
+              {showPromptSet && promptSetName && (
+                  <span
+                      className="max-w-full min-w-0 break-words rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-[8px] font-semibold uppercase leading-snug text-violet-800 [overflow-wrap:anywhere]"
+                      title={`Prompt set: ${promptSetName}`}
+                  >
+                      {promptSetName}
                   </span>
               )}
           </div>

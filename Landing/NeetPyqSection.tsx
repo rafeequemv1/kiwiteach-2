@@ -2,7 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../supabase/client';
 import InteractiveQuizSession from '../Quiz/components/InteractiveQuizSession';
 import type { Question, QuestionType } from '../Quiz/types';
-import { landingTheme } from './theme';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
 
 interface NeetPyqSectionProps {
   isLoggedIn: boolean;
@@ -56,6 +60,9 @@ function pyqRowToQuestion(row: PyqRow): Question | null {
     topic_tag: row.topic_tag || undefined,
   };
 }
+
+const selectClass =
+  'flex h-8 w-full rounded-md border border-input bg-background px-2.5 py-1 text-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50';
 
 const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClick }) => {
   const [yearFilter, setYearFilter] = useState('');
@@ -144,7 +151,7 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
 
   if (sessionQuestions && sessionQuestions.length > 0) {
     return (
-      <div ref={practiceAnchorRef} className="relative w-full flex justify-center px-3 py-4 md:px-4">
+      <div ref={practiceAnchorRef} className="relative flex w-full justify-center px-3 py-4 md:px-4">
         <InteractiveQuizSession
           questions={sessionQuestions}
           topic="NEET PYQ practice"
@@ -157,87 +164,87 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
   }
 
   return (
-    <section id="pyqs" className="scroll-mt-24 border-t border-zinc-200 bg-zinc-50/50 px-4 py-10 md:px-6 md:py-14">
+    <section id="pyqs" className="scroll-mt-24 border-t border-border bg-muted/30 px-4 py-10 md:px-6 md:py-14">
       <div className="mx-auto max-w-lg">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Practice</p>
-        <h2 className="mt-1 text-xl font-bold tracking-tight text-zinc-900 md:text-2xl">Previous year questions</h2>
-        <p className="mt-2 text-sm leading-relaxed text-zinc-600">
-          Filter by year and subject, choose how many questions, then practice in the panel below.
-        </p>
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="space-y-1 pb-4">
+            <Badge variant="secondary" className="w-fit text-[10px] font-semibold uppercase tracking-wider">
+              Practice
+            </Badge>
+            <CardTitle className="font-heading text-xl md:text-2xl">Previous year questions</CardTitle>
+            <CardDescription>
+              Filter by year and subject, choose how many questions, then practice in the panel below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {!isLoggedIn && (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm">
+                <p className="font-medium text-foreground">Sign in to practice</p>
+                <p className="mt-1 text-xs text-muted-foreground">Uses your KiwiTeach account.</p>
+                <Button size="sm" className="mt-3 font-semibold" onClick={onLoginClick}>
+                  Sign in
+                </Button>
+              </div>
+            )}
 
-        {!isLoggedIn && (
-          <div
-            className="mt-5 rounded-lg border border-indigo-200 bg-indigo-50/90 p-4 text-sm text-indigo-950"
-            style={{ boxShadow: landingTheme.shadow.soft }}
-          >
-            <p className="font-medium">Sign in to practice</p>
-            <p className="mt-1 text-xs text-indigo-900/85">Uses your KiwiTeach account.</p>
-            <button
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Year</Label>
+                <select
+                  value={yearFilter}
+                  onChange={(e) => setYearFilter(e.target.value)}
+                  disabled={loadingMeta}
+                  className={selectClass}
+                >
+                  <option value="">All years</option>
+                  {years.map((y) => (
+                    <option key={y} value={String(y)}>
+                      {y}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Subject</Label>
+                <select
+                  value={subjectFilter}
+                  onChange={(e) => setSubjectFilter(e.target.value)}
+                  disabled={loadingMeta}
+                  className={selectClass}
+                >
+                  <option value="">All subjects</option>
+                  {subjects.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1.5">
+                <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Questions</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={questionCount}
+                  onChange={(e) => setQuestionCount(parseInt(e.target.value, 10) || 25)}
+                  className="max-w-[8rem]"
+                />
+              </div>
+            </div>
+
+            {error && <p className="text-xs font-medium text-destructive">{error}</p>}
+
+            <Button
               type="button"
-              onClick={onLoginClick}
-              className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-indigo-700"
+              className="w-full font-semibold"
+              onClick={() => void startPractice()}
+              disabled={loadingStart || loadingMeta}
             >
-              Sign in
-            </button>
-          </div>
-        )}
-
-        <div className="mt-6 grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-0.5">
-            <span className="text-[10px] font-medium uppercase text-zinc-500">Year</span>
-            <select
-              value={yearFilter}
-              onChange={(e) => setYearFilter(e.target.value)}
-              disabled={loadingMeta}
-              className="rounded-lg border border-zinc-200 bg-white px-2 py-2 text-xs font-medium text-zinc-900 outline-none focus:border-indigo-400"
-            >
-              <option value="">All years</option>
-              {years.map((y) => (
-                <option key={y} value={String(y)}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-0.5">
-            <span className="text-[10px] font-medium uppercase text-zinc-500">Subject</span>
-            <select
-              value={subjectFilter}
-              onChange={(e) => setSubjectFilter(e.target.value)}
-              disabled={loadingMeta}
-              className="rounded-lg border border-zinc-200 bg-white px-2 py-2 text-xs font-medium text-zinc-900 outline-none focus:border-indigo-400"
-            >
-              <option value="">All subjects</option>
-              {subjects.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="col-span-2 flex flex-col gap-0.5">
-            <span className="text-[10px] font-medium uppercase text-zinc-500">Questions</span>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={questionCount}
-              onChange={(e) => setQuestionCount(parseInt(e.target.value, 10) || 25)}
-              className="w-full max-w-[8rem] rounded-lg border border-zinc-200 bg-white px-2 py-2 text-xs font-medium text-zinc-900 outline-none focus:border-indigo-400"
-            />
-          </label>
-        </div>
-
-        {error && <p className="mt-3 text-xs font-medium text-rose-600">{error}</p>}
-
-        <button
-          type="button"
-          onClick={() => void startPractice()}
-          disabled={loadingStart || loadingMeta}
-          className="mt-5 w-full rounded-lg bg-zinc-900 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-white transition hover:bg-zinc-800 disabled:opacity-50"
-        >
-          {loadingStart ? 'Loading…' : 'Start practice'}
-        </button>
+              {loadingStart ? 'Loading…' : 'Start practice'}
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     </section>
   );

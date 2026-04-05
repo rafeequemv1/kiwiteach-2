@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
+import { resolveStoredPromptSetIdForKbGeneration } from '../../services/kbPromptService';
 import { QuestionType, Question } from '../../Quiz/types';
 import QuestionPaperItem, { QuestionFlagReason } from '../../Quiz/components/QuestionPaperItem';
 import { ChapterStatChips } from '../../Quiz/components/ChapterStatChips';
@@ -111,7 +112,8 @@ const QuestionBankHome: React.FC = () => {
       difficulty: 'all' as string,
       style: 'all' as string,
       hasFigure: false,
-      showSource: false
+      showSource: false,
+      showPromptSet: false,
   });
 
   const [reviewShowSource, setReviewShowSource] = useState(false);
@@ -375,7 +377,7 @@ const QuestionBankHome: React.FC = () => {
       if (selectedChapterIds.size === 0) return;
       setIsFetching(true);
       try {
-          let q = supabase.from('question_bank_neet').select('*', { count: 'exact' });
+          let q = supabase.from('question_bank_neet').select('*, kb_prompt_sets(name)', { count: 'exact' });
           q = q.in('chapter_id', Array.from(selectedChapterIds));
           if (browseFilters.style !== 'all') q = q.eq('question_type', browseFilters.style);
           if (browseFilters.difficulty !== 'all') q = q.eq('difficulty', browseFilters.difficulty);
@@ -385,18 +387,28 @@ const QuestionBankHome: React.FC = () => {
           const { data, count, error } = await q.order('created_at', { ascending: false }).range(from, to);
           if (error) throw error;
           // Clean up data for QuestionItem type compatibility
-          const cleanData = (data || []).map((item: any) => ({
-              ...item,
-              id: item.id,
-              text: item.question_text || item.text,
-              type: item.question_type || item.type,
-              correctIndex: item.correct_index,
-              columnA: item.column_a,
-              columnB: item.column_b,
-              figureDataUrl: item.figure_url,
-              sourceFigureDataUrl: item.source_figure_url,
-              topic_tag: item.topic_tag || 'General'
-          }));
+          const cleanData = (data || []).map((item: any) => {
+              const nested = item.kb_prompt_sets;
+              const promptSetName =
+                  nested && typeof nested === 'object' && !Array.isArray(nested)
+                      ? (nested as { name?: string }).name
+                      : Array.isArray(nested) && nested[0]
+                        ? (nested[0] as { name?: string }).name
+                        : undefined;
+              return {
+                  ...item,
+                  id: item.id,
+                  text: item.question_text || item.text,
+                  type: item.question_type || item.type,
+                  correctIndex: item.correct_index,
+                  columnA: item.column_a,
+                  columnB: item.column_b,
+                  figureDataUrl: item.figure_url,
+                  sourceFigureDataUrl: item.source_figure_url,
+                  topic_tag: item.topic_tag || 'General',
+                  prompt_set_name: promptSetName ?? null,
+              };
+          });
           setQuestions(cleanData);
           setTotalCount(count || 0);
           setSelectedIds(new Set()); 
@@ -456,6 +468,7 @@ const QuestionBankHome: React.FC = () => {
                   console.warn('Exclusions fetch failed', e);
               }
           }
+          const batchPromptSetId = await resolveStoredPromptSetIdForKbGeneration(selectedKbId);
           for (let i = 0; i < chapterIds.length; i++) {
               if (stopForgingRef.current) break;
               const chapId = chapterIds[i];
@@ -512,7 +525,7 @@ const QuestionBankHome: React.FC = () => {
                       }
                       chapterGeneratedQs = gen;
                   }
-                  setReviewQueue(prev => [...prev, ...chapterGeneratedQs.map((q, k) => ({ id: `review-${chapter.id}-${Date.now()}-${k}`, chapter_id: chapter.id, chapter_name: chapter.name, subject_name: chapter.subject_name, class_name: chapter.class_name, question_text: q.text, options: q.options, correct_index: q.correctIndex, explanation: q.explanation, difficulty: q.difficulty, question_type: q.type, topic_tag: q.topic_tag || 'General', figure_url: q.figureDataUrl, source_figure_url: q.sourceFigureDataUrl, column_a: q.columnA, column_b: q.columnB }))]);
+                  setReviewQueue(prev => [...prev, ...chapterGeneratedQs.map((q, k) => ({ id: `review-${chapter.id}-${Date.now()}-${k}`, chapter_id: chapter.id, chapter_name: chapter.name, subject_name: chapter.subject_name, class_name: chapter.class_name, question_text: q.text, options: q.options, correct_index: q.correctIndex, explanation: q.explanation, difficulty: q.difficulty, question_type: q.type, topic_tag: q.topic_tag || 'General', figure_url: q.figureDataUrl, source_figure_url: q.sourceFigureDataUrl, column_a: q.columnA, column_b: q.columnB, prompt_set_id: batchPromptSetId }))]);
               } catch (chapErr) { console.error(`Chapter Error`, chapErr); }
           }
       } catch (e: any) { alert("Batch Error: " + e.message); } finally { setIsForgingBatch(false); setForgeProgress(''); setMode('review'); }
@@ -524,7 +537,7 @@ const QuestionBankHome: React.FC = () => {
     setIsSaving(true);
     setForgeProgress('Cloud Sync...');
     try {
-        const { error } = await supabase.from('question_bank_neet').insert(reviewQueue.map(item => ({ chapter_id: item.chapter_id, chapter_name: item.chapter_name, subject_name: item.subject_name, class_name: item.class_name, question_text: item.question_text, options: item.options, correct_index: item.correct_index, explanation: item.explanation, difficulty: item.difficulty, question_type: item.question_type, topic_tag: item.topic_tag || 'General', figure_url: item.figure_url, source_figure_url: item.source_figure_url, column_a: item.column_a, column_b: item.column_b })));
+        const { error } = await supabase.from('question_bank_neet').insert(reviewQueue.map(item => ({ chapter_id: item.chapter_id, chapter_name: item.chapter_name, subject_name: item.subject_name, class_name: item.class_name, question_text: item.question_text, options: item.options, correct_index: item.correct_index, explanation: item.explanation, difficulty: item.difficulty, question_type: item.question_type, topic_tag: item.topic_tag || 'General', figure_url: item.figure_url, source_figure_url: item.source_figure_url, column_a: item.column_a, column_b: item.column_b, prompt_set_id: item.prompt_set_id ?? null })));
         if (error) throw error;
         alert(`Synced ${reviewQueue.length} items.`);
         setReviewQueue([]); setMode('browse'); fetchQuestions();
@@ -564,6 +577,8 @@ const QuestionBankHome: React.FC = () => {
           console.warn('Exclusions fetch failed', e);
         }
       }
+
+      const fillPromptSetId = await resolveStoredPromptSetIdForKbGeneration(selectedKbId);
 
       for (let i = 0; i < chapterIds.length; i++) {
         if (stopForgingRef.current) {
@@ -632,6 +647,7 @@ const QuestionBankHome: React.FC = () => {
           source_figure_url: q.sourceFigureDataUrl,
           column_a: q.columnA,
           column_b: q.columnB,
+          prompt_set_id: fillPromptSetId,
         }));
 
         if (rows.length > 0) {
@@ -969,6 +985,7 @@ const QuestionBankHome: React.FC = () => {
                                 <div className="flex items-center gap-1.5 border-l border-zinc-200 pl-4 ml-2"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
                                 <button onClick={() => { setBrowseFilters({...browseFilters, hasFigure: !browseFilters.hasFigure}); setCurrentPage(1); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.hasFigure ? 'bg-rose-500 border-rose-500 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-outline" /> Figure Only</button>
                                 <button onClick={() => { setBrowseFilters({...browseFilters, showSource: !browseFilters.showSource}); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.showSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Source</button>
+                                <button type="button" onClick={() => { setBrowseFilters({ ...browseFilters, showPromptSet: !browseFilters.showPromptSet }); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.showPromptSet ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:text-box-multiple-outline" /> Prompt set</button>
                             </>
                         )}
                         {mode === 'review' && (
@@ -1659,6 +1676,8 @@ const QuestionBankHome: React.FC = () => {
                                     }}
                                     showExplanation={mode === 'review' && reviewShowExplanations}
                                     showSource={(mode === 'browse' && browseFilters.showSource) || (mode === 'review' && reviewShowSource)}
+                                    showPromptSet={mode === 'browse' && browseFilters.showPromptSet}
+                                    promptSetName={q.prompt_set_name ?? null}
                                     isSelected={selectedIds.has(String(q.id))}
                                     onToggleSelect={(id) => handleToggleSelect(String(id))}
                                     onFlagOutOfSyllabus={mode === 'browse' ? handleFlagOutOfSyllabus : undefined}

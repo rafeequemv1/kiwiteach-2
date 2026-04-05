@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { ArrowLeft } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { landingTheme } from '../Landing/theme';
 import { fetchPostBySlug, fetchPublishedPosts } from './blogApi';
 import type { BlogFaqItem, BlogPost } from './types';
@@ -193,25 +196,25 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center pt-20 sm:pt-24" style={{ backgroundColor: landingTheme.colors.page }}>
-        <div className="w-10 h-10 border-2 border-zinc-200 border-t-zinc-600 rounded-full animate-spin" />
+      <div className="flex min-h-screen items-center justify-center bg-muted/30 pt-20 sm:pt-24">
+        <div className="size-10 animate-spin rounded-full border-2 border-muted border-t-primary" aria-hidden />
       </div>
     );
   }
 
   if (!post) {
     return (
-      <div className="min-h-screen pt-20 sm:pt-24 px-4 sm:px-6 text-center" style={{ backgroundColor: landingTheme.colors.page }}>
-        <p className="text-zinc-600 mb-6">Article not found.</p>
-        <button type="button" onClick={onBack} className="text-indigo-700 font-bold underline">
+      <div className="min-h-screen bg-muted/30 px-4 pt-20 text-center sm:px-6 sm:pt-24">
+        <p className="mb-6 text-muted-foreground">Article not found.</p>
+        <Button variant="link" className="font-semibold" onClick={onBack}>
           Back to journal
-        </button>
+        </Button>
       </div>
     );
   }
 
   return (
-    <article className="min-h-screen pt-20 sm:pt-24 pb-24 px-4 sm:px-6" style={{ backgroundColor: landingTheme.colors.page }}>
+    <article className="min-h-screen bg-muted/30 px-4 pb-24 pt-20 sm:px-6 sm:pt-24">
       {seo && (
         <Helmet>
           <title>{seo.title}</title>
@@ -236,32 +239,28 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
       {structuredData ? (
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData }} />
       ) : null}
-      <div className="max-w-6xl mx-auto">
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex items-center gap-2 text-sm font-bold text-zinc-500 hover:text-zinc-900 mb-10 transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
+      <div className="mx-auto max-w-6xl">
+        <Button variant="ghost" size="sm" className="-ml-2 mb-10 gap-2 text-muted-foreground hover:text-foreground" onClick={onBack}>
+          <ArrowLeft className="size-4" aria-hidden />
           Journal
-        </button>
+        </Button>
 
         <div className="flex gap-10">
-          <aside className="hidden xl:block w-[240px] shrink-0">
+          <aside className="hidden w-[240px] shrink-0 xl:block">
             <div className="sticky top-24">
-              <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400">On this page</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">On this page</p>
               <div className="mt-3 space-y-2">
                 {toc.items.length === 0 ? (
-                  <p className="text-xs text-zinc-500">No sections detected.</p>
+                  <p className="text-xs text-muted-foreground">No sections detected.</p>
                 ) : (
                   toc.items.map((item) => (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => scrollToId(item.id)}
-                      className={`block w-full text-left text-xs font-semibold transition-colors ${
-                        item.level === 3 ? 'pl-3 text-zinc-600' : 'text-zinc-700'
-                      } hover:text-zinc-900`}
+                      className={`block w-full text-left text-xs font-medium transition-colors hover:text-foreground ${
+                        item.level === 3 ? 'pl-3 text-muted-foreground' : 'text-foreground/90'
+                      }`}
                     >
                       {item.text}
                     </button>
@@ -271,101 +270,99 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
             </div>
           </aside>
 
-          <div className="min-w-0 flex-1 max-w-3xl">
+          <div className="min-w-0 max-w-3xl flex-1">
             {post.cover_image_url && (
-              <div className="rounded-2xl overflow-hidden mb-10 border border-zinc-200/80" style={{ boxShadow: landingTheme.shadow.soft }}>
-                <img
-                  src={post.cover_image_url}
-                  alt={post.title}
-                  className="w-full max-h-[420px] object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
+              <Card className="mb-10 overflow-hidden border-border/80 shadow-sm">
+                <CardContent className="p-0">
+                  <img
+                    src={post.cover_image_url}
+                    alt={post.title}
+                    className="max-h-[420px] w-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </CardContent>
+              </Card>
             )}
 
             <header className="mb-12">
-              <div className="flex flex-wrap items-center gap-3 mb-6">
-                <span
-                  className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full"
+              <div className="mb-6 flex flex-wrap items-center gap-3">
+                <Badge
+                  variant="secondary"
+                  className="text-[10px] font-semibold uppercase tracking-wider"
                   style={{
-                    background: `${landingTheme.colors.navy}12`,
+                    backgroundColor: `${landingTheme.colors.navy}14`,
                     color: landingTheme.colors.navy,
                   }}
                 >
                   {post.category}
-                </span>
-                <time className="text-sm text-zinc-500">{formatDate(post.published_at)}</time>
+                </Badge>
+                <time className="text-sm text-muted-foreground">{formatDate(post.published_at)}</time>
               </div>
-              <h1
-                className={`${landingTheme.fonts.heading} text-4xl md:text-5xl lg:text-[3.25rem] text-zinc-900 leading-[1.08] tracking-tight`}
-              >
+              <h1 className="font-heading text-4xl font-semibold leading-[1.08] tracking-tight text-foreground md:text-5xl lg:text-[3.25rem]">
                 {post.title}
               </h1>
               {post.author_name && (
-                <p className="mt-6 text-zinc-500 text-sm">
-                  By <span className="font-semibold text-zinc-700">{post.author_name}</span>
+                <p className="mt-6 text-sm text-muted-foreground">
+                  By <span className="font-semibold text-foreground">{post.author_name}</span>
                 </p>
               )}
             </header>
 
             <div
-              className="blog-prose font-serif text-[1.125rem] leading-[1.85] text-zinc-800 space-y-6"
+              className="blog-prose space-y-6 font-serif text-[1.125rem] leading-[1.85] text-foreground/90"
               dangerouslySetInnerHTML={{ __html: toc.html || post.content }}
             />
 
             {faqs.length > 0 ? (
-              <section className="mt-16 border-t border-zinc-200 pt-12" aria-labelledby="blog-faq-heading">
-                <h2
-                  id="blog-faq-heading"
-                  className={`${landingTheme.fonts.heading} text-2xl md:text-3xl text-zinc-900 tracking-tight mb-6`}
-                >
+              <section className="mt-16 border-t border-border pt-12" aria-labelledby="blog-faq-heading">
+                <h2 id="blog-faq-heading" className="mb-6 font-heading text-2xl font-semibold tracking-tight text-foreground md:text-3xl">
                   Frequently asked questions
                 </h2>
-                <dl className="space-y-6">
+                <dl className="space-y-4">
                   {faqs.map((f, i) => (
-                    <div key={`${i}-${f.question.slice(0, 24)}`} className="rounded-xl border border-zinc-200 bg-white/80 px-4 py-4 shadow-sm">
-                      <dt className="text-base font-semibold text-zinc-900">{f.question}</dt>
-                      <dd className="mt-2 text-[1.05rem] leading-relaxed text-zinc-700">{f.answer}</dd>
-                    </div>
+                    <Card key={`${i}-${f.question.slice(0, 24)}`} className="border-border/80 shadow-sm">
+                      <CardContent className="px-4 py-4">
+                        <dt className="text-base font-semibold text-foreground">{f.question}</dt>
+                        <dd className="mt-2 text-[1.05rem] leading-relaxed text-muted-foreground">{f.answer}</dd>
+                      </CardContent>
+                    </Card>
                   ))}
                 </dl>
               </section>
             ) : null}
           </div>
 
-          <aside className="hidden lg:block w-[280px] shrink-0">
+          <aside className="hidden w-[280px] shrink-0 lg:block">
             <div className="sticky top-24">
-              <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400">Read next</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Read next</p>
               <div className="mt-3 space-y-3">
                 {relatedPosts.length === 0 ? (
-                  <p className="text-xs text-zinc-500">No related articles found.</p>
+                  <p className="text-xs text-muted-foreground">No related articles found.</p>
                 ) : (
                   relatedPosts.map((p) => (
-                    <button
+                    <Card
                       key={p.id}
-                      type="button"
+                      className="cursor-pointer border-border/80 transition-colors hover:bg-muted/50"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => onSelectPost?.(p.slug)}
-                      className="w-full text-left rounded-2xl border border-zinc-200 bg-white px-3 py-3 hover:border-zinc-300 transition-colors"
+                      onKeyDown={(e) => e.key === 'Enter' && onSelectPost?.(p.slug)}
                     >
-                      <div className="flex items-start gap-3">
-                        <div className="shrink-0 w-[54px] h-[54px] rounded-xl overflow-hidden border border-zinc-200 bg-zinc-50">
-                          {p.cover_image_url ? (
-                            <img src={p.cover_image_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                          ) : null}
+                      <CardContent className="p-3">
+                        <div className="flex items-start gap-3">
+                          <div className="h-[54px] w-[54px] shrink-0 overflow-hidden rounded-lg border border-border bg-muted">
+                            {p.cover_image_url ? (
+                              <img src={p.cover_image_url} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                            ) : null}
+                          </div>
+                          <div className="min-w-0 text-left">
+                            <p className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{p.category}</p>
+                            <p className="mt-1 line-clamp-2 text-sm font-semibold text-foreground">{p.title}</p>
+                            {p.excerpt ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{p.excerpt}</p> : null}
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400 truncate">
-                            {p.category}
-                          </p>
-                          <p className="mt-1 text-sm font-semibold text-zinc-900 line-clamp-2">
-                            {p.title}
-                          </p>
-                          {p.excerpt ? (
-                            <p className="mt-1 text-xs text-zinc-600 line-clamp-2">{p.excerpt}</p>
-                          ) : null}
-                        </div>
-                      </div>
-                    </button>
+                      </CardContent>
+                    </Card>
                   ))
                 )}
               </div>

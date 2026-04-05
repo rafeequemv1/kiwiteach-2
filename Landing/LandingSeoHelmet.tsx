@@ -17,13 +17,13 @@ interface LandingSeoHelmetProps {
 }
 
 const NEET_DESCRIPTION =
-  'NEET-oriented practice workflows, syllabus-aware question tooling, and institute-ready assessment patterns with KiwiTeach — built for serious medical entrance prep.';
+  'NEET practice for teachers: syllabus-aligned MCQs, previous-year style workflows, and tests you can run online or on paper — so your batch gets reps that match the real exam.';
 
 const TEST_PREP_DESCRIPTION =
-  'Design high-quality test papers, mix question types, and scale online exams for your cohort. KiwiTeach streamlines authoring and delivery for teachers and coaching centres.';
+  'For teachers who run test series: pick chapters, balance difficulty, generate papers fast, and run secure online exams or print-ready sets for your NEET batch.';
 
 const PRICING_DESCRIPTION =
-  'KiwiTeach pricing for institutes (B2B) and students (B2C): transparent feature bundles for test generation, online exams, and question management.';
+  'Simple KiwiTeach plans for teachers and teams: test generation, online exams, and question workflows — pay only for what your classroom needs.';
 
 const BLOG_INDEX_DESCRIPTION =
   'KiwiTeach journal: ideas for assessment design, classroom rhythm, AI-assisted quiz workflows, and GEO-friendly teaching notes for educators.';
@@ -39,14 +39,14 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
     switch (activeTab) {
       case 'neet':
         return {
-          title: `NEET test prep & assessments | ${SITE_NAME}`,
+          title: `NEET practice tests for teachers | ${SITE_NAME}`,
           description: NEET_DESCRIPTION,
           keywords: `${HOME_KEYWORDS}, NEET, medical entrance, biology chemistry physics`,
           canonical: `${origin}/`,
         };
       case 'test-prep':
         return {
-          title: `Test paper & online exam tools for teachers | ${SITE_NAME}`,
+          title: `Test papers & mocks for NEET teachers | ${SITE_NAME}`,
           description: TEST_PREP_DESCRIPTION,
           keywords: `${HOME_KEYWORDS}, test prep, coaching centre, exam software`,
           canonical: `${origin}/`,

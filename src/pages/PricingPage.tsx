@@ -28,13 +28,13 @@ const PricingPage: React.FC<PricingPageProps> = ({ embedded = false }) => {
       <div
         className={`mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 ${embedded ? 'py-4 md:py-6' : 'py-12'}`}
       >
-        <div className="mx-auto max-w-3xl animate-pulse space-y-6 rounded-2xl border border-zinc-200 bg-white p-8">
-          <div className="mx-auto h-8 w-48 rounded-md bg-zinc-200" />
-          <div className="mx-auto h-4 w-full max-w-md rounded bg-zinc-100" />
+        <div className="mx-auto max-w-3xl animate-pulse space-y-6 rounded-xl border border-border bg-card p-8 shadow-sm">
+          <div className="mx-auto h-8 w-48 rounded-md bg-muted" />
+          <div className="mx-auto h-4 w-full max-w-md rounded bg-muted" />
           <div className="grid gap-4 pt-6 md:grid-cols-3">
-            <div className="h-72 rounded-2xl bg-zinc-100" />
-            <div className="h-72 rounded-2xl bg-zinc-100" />
-            <div className="h-72 rounded-2xl bg-zinc-100" />
+            <div className="h-72 rounded-xl bg-muted" />
+            <div className="h-72 rounded-xl bg-muted" />
+            <div className="h-72 rounded-xl bg-muted" />
           </div>
         </div>
       </div>
@@ -44,7 +44,7 @@ const PricingPage: React.FC<PricingPageProps> = ({ embedded = false }) => {
   return (
     <div className={`mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 ${embedded ? 'py-4 md:py-6' : 'py-12'}`}>
       {!embedded && (
-        <h1 className="mb-8 text-center text-4xl font-bold tracking-tight text-zinc-900">
+        <h1 className="mb-8 text-center font-heading text-4xl font-semibold tracking-tight text-foreground">
           Our pricing plans
         </h1>
       )}

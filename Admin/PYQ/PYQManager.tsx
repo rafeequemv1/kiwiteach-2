@@ -187,7 +187,15 @@ async function ensurePyqImagePublicUrl(
         : mimeRaw;
 
   const ext =
-    mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png';
+    mime.includes('png')
+      ? 'png'
+      : mime.includes('webp')
+        ? 'webp'
+        : mime.includes('gif')
+          ? 'gif'
+          : mime.includes('jpeg') || mime.includes('jpg')
+            ? 'jpg'
+            : 'png';
 
   const path = `${uploadSetId}/${slug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -210,33 +218,86 @@ function buildPyqMetadata(d: Draft): Record<string, unknown> {
   return meta;
 }
 
-const csvSplit = (line: string): string[] => {
-  const out: string[] = [];
-  let cur = '';
-  let q = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (q && line[i + 1] === '"') {
-        cur += '"';
-        i += 1;
-      } else {
-        q = !q;
+/**
+ * RFC-style CSV: quoted fields may contain commas and newlines (required for data:image/...;base64,... in one cell).
+ */
+function parseCsvMatrix(text: string): string[][] {
+  const s = text.replace(/^\uFEFF/, '');
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let i = 0;
+  let inQ = false;
+
+  const pushField = () => {
+    row.push(field.trim());
+    field = '';
+  };
+
+  while (i < s.length) {
+    const c = s[i];
+    if (inQ) {
+      if (c === '"') {
+        if (s[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        }
+        inQ = false;
+        i++;
+        continue;
       }
+      field += c;
+      i++;
       continue;
     }
-    if (ch === ',' && !q) {
-      out.push(cur.trim());
-      cur = '';
+    if (c === '"') {
+      inQ = true;
+      i++;
       continue;
     }
-    cur += ch;
+    if (c === ',') {
+      pushField();
+      i++;
+      continue;
+    }
+    if (c === '\r') {
+      i++;
+      continue;
+    }
+    if (c === '\n') {
+      pushField();
+      rows.push(row);
+      row = [];
+      i++;
+      continue;
+    }
+    field += c;
+    i++;
   }
-  out.push(cur.trim());
-  return out;
-};
+  pushField();
+  rows.push(row);
+
+  return rows.filter((r) => {
+    if (!r.some((cell) => String(cell).trim().length > 0)) return false;
+    const first = String(r[0] ?? '').trim();
+    if (first.startsWith('#')) return false;
+    return true;
+  });
+}
 
 const normalizeHeader = (h: string) => h.trim().toLowerCase().replace(/\s+/g, '_');
+
+/** After CSV import: embedded http(s) or data:image URLs should use figure format when still "text". */
+function ensureFigureFormatForEmbeddedImage(d: Draft): Draft {
+  const iu = d.image_url.trim();
+  if (!iu) return d;
+  if (iu.startsWith('data:image') || /^https?:\/\//i.test(iu)) {
+    const qf = (d.question_format || 'text').toLowerCase();
+    if (qf === 'text' || qf === '') return { ...d, question_format: 'figure' };
+  }
+  return d;
+}
 
 const toOptionArray = (d: Draft) => [d.option_a, d.option_b, d.option_c, d.option_d].filter((x) => x.trim().length > 0);
 
@@ -287,7 +348,16 @@ const applyMapped = (base: Draft, mapped: Record<string, string>) => ({
   year: mapped.year || '',
   source_exam: mapped.source_exam || mapped.exam || 'NEET',
   paper_code: mapped.paper_code || mapped.paper || '',
-  image_url: mapped.image_url || mapped.figure_url || '',
+  image_url: (() => {
+    const urlPart = (mapped.image_url || mapped.figure_url || '').trim();
+    if (urlPart) return urlPart;
+    const b64 = (mapped.image_base64 || mapped.image_data || '').replace(/\s+/g, '');
+    if (!b64) return '';
+    let mime = (mapped.image_mime || mapped.image_type || 'image/png').trim().toLowerCase();
+    if (mime && !mime.includes('/')) mime = `image/${mime.replace(/^image\//i, '')}`;
+    if (!mime || mime === 'image/') mime = 'image/png';
+    return `data:${mime};base64,${b64}`;
+  })(),
   doc_image_index: (() => {
     const raw = mapped.doc_image_index ?? mapped.image_index ?? '';
     if (raw === '' || raw == null) return null;
@@ -1396,26 +1466,29 @@ const PYQManager: React.FC = () => {
 
   const handleCsv = async (file: File) => {
     const txt = await file.text();
-    const lines = txt.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    if (lines.length < 2) {
-      alert('CSV is empty');
+    const matrix = parseCsvMatrix(txt);
+    if (matrix.length < 2) {
+      alert('CSV is empty or only has a header row.');
       return;
     }
-    const headers = csvSplit(lines[0]).map(normalizeHeader);
+    const headers = matrix[0].map(normalizeHeader);
     const parsed: Draft[] = [];
-    for (let i = 1; i < lines.length; i += 1) {
-      const cells = csvSplit(lines[i]);
+    for (let r = 1; r < matrix.length; r += 1) {
+      const cells = matrix[r];
       const mapped: Record<string, string> = {};
       headers.forEach((h, idx) => {
-        mapped[h] = cells[idx] || '';
+        mapped[h] = idx < cells.length ? cells[idx] ?? '' : '';
       });
-      const d = ensureSourceQuestionNumberFromStem(applyMapped(emptyDraft, mapped));
+      const d = ensureFigureFormatForEmbeddedImage(
+        ensureSourceQuestionNumberFromStem(applyMapped(emptyDraft, mapped))
+      );
       if (d.question_text.trim()) parsed.push(d);
     }
     if (parsed.length === 0) {
       alert('No questions found in CSV.');
       return;
     }
+
     setActiveUploadSetId(null);
     setPendingCommit({ files: [file], kind: 'csv' });
     setPyqParseSanityWarnings([]);
@@ -1700,6 +1773,9 @@ const PYQManager: React.FC = () => {
     !!filterExam;
 
   const downloadCsvTemplate = () => {
+    /** 1×1 PNG — replace image_base64 with your own base64 from a local file export. */
+    const tinyPngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
     const headers = [
       'question_text',
       'question_format',
@@ -1722,8 +1798,10 @@ const PYQManager: React.FC = () => {
       'paper_part',
       'source_question_number',
       'image_url',
+      'image_base64',
+      'image_mime',
     ];
-    const sample = [
+    const sampleUrlRow = [
       'Assertion reason question sample',
       'text',
       'Option A',
@@ -1745,10 +1823,40 @@ const PYQManager: React.FC = () => {
       'Section A',
       '1',
       'https://example.com/image.png',
+      '',
+      '',
+    ];
+    const sampleEmbeddedFigureRow = [
+      'Which curve shows first-order decay? (see figure)',
+      'figure',
+      'Curve A',
+      'Curve B',
+      'Curve C',
+      'Curve D',
+      'A',
+      '0',
+      'Local image via image_base64 + image_mime (leave image_url empty).',
+      'mcq',
+      'medium',
+      'Chemistry',
+      'Chemical kinetics',
+      'Rate laws',
+      'NEET',
+      '2025',
+      'NEET',
+      'SET-A',
+      'Section B',
+      '15',
+      '',
+      tinyPngBase64,
+      'image/png',
     ];
     const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
-    const csv = `${headers.map(esc).join(',')}\n${sample.map(esc).join(',')}\n`;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const csv =
+      `${headers.map(esc).join(',')}\n` +
+      `${sampleUrlRow.map(esc).join(',')}\n` +
+      `${sampleEmbeddedFigureRow.map(esc).join(',')}\n`;
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1795,9 +1903,11 @@ const PYQManager: React.FC = () => {
       <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-base font-semibold text-zinc-900">PYQ import</h3>
         <p className="mt-1 max-w-3xl text-[13px] leading-snug text-zinc-500">
-          For documents: add files and <strong>Parse all locally</strong> (no AI on import). Set <strong>year</strong> (e.g. 2025) before save; multi-part papers use{' '}
-          <strong>paper_part</strong> and <strong>source_question_number</strong>. Then <strong>Save to bank</strong>. Imports merge into{' '}
-          <strong>one batch per exam year</strong>. Difficulty stays blank unless you add it in CSV or use <strong>Fill blank difficulties</strong> (Gemini) on a batch.
+          For documents: add files and <strong>Parse all locally</strong> (no AI on import). For <strong>CSV</strong>: put images <strong>inside the sheet</strong>—either a quoted{' '}
+          <span className="font-mono">data:image/…;base64,…</span> in <strong>image_url</strong>, or raw base64 in <strong>image_base64</strong> plus <strong>image_mime</strong> (e.g.{' '}
+          <span className="font-mono">image/png</span>). On save, embedded images upload to the <strong>pyq-images</strong> bucket and the row stores the public URL. Remote{' '}
+          <span className="font-mono">https://</span> links are kept as-is. Set <strong>year</strong> before save; multi-part papers use <strong>paper_part</strong> and{' '}
+          <strong>source_question_number</strong>. Then <strong>Save to bank</strong>. Imports merge into <strong>one batch per exam year</strong>.
         </p>
 
         {previewRows.length === 0 ? (
@@ -1806,7 +1916,9 @@ const PYQManager: React.FC = () => {
               <div className="flex flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-zinc-50/60 p-5 transition-colors hover:border-indigo-200 hover:bg-indigo-50/40">
                 <iconify-icon icon="mdi:table-arrow-down" width="28" className="text-indigo-500" />
                 <p className="mt-2 text-sm font-semibold text-zinc-900">CSV template</p>
-                <p className="mt-1 text-[11px] leading-snug text-zinc-500">Download the column layout, fill your sheet, then import.</p>
+                <p className="mt-1 text-[11px] leading-snug text-zinc-500">
+                  Columns <span className="font-mono">image_base64</span> + <span className="font-mono">image_mime</span> for pasted local images; or quoted <span className="font-mono">image_url</span> data URLs.
+                </p>
                 <button
                   type="button"
                   onClick={downloadCsvTemplate}
@@ -1820,7 +1932,10 @@ const PYQManager: React.FC = () => {
               <label className="flex cursor-pointer flex-col rounded-xl border-2 border-dashed border-zinc-200 bg-white p-5 transition-colors hover:border-emerald-300 hover:bg-emerald-50/30">
                 <iconify-icon icon="mdi:file-delimited-outline" width="28" className="text-emerald-600" />
                 <p className="mt-2 text-sm font-semibold text-zinc-900">Import CSV</p>
-                <p className="mt-1 text-[11px] leading-snug text-zinc-500">Comma-separated file with PYQ columns.</p>
+                <p className="mt-1 text-[11px] leading-snug text-zinc-500">
+                  Images live <strong>in the CSV</strong>: use <span className="font-mono">image_base64</span> + <span className="font-mono">image_mime</span>, or one quoted cell{' '}
+                  <span className="font-mono">data:image/png;base64,…</span> (comma inside quotes). Parser supports multiline quoted fields.
+                </p>
                 <span className="mt-4 inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-[12px] font-semibold text-white pointer-events-none">
                   Choose CSV file
                 </span>
@@ -1831,6 +1946,7 @@ const PYQManager: React.FC = () => {
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) void handleCsv(f);
+                    e.target.value = '';
                   }}
                 />
               </label>

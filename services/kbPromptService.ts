@@ -104,6 +104,20 @@ export async function fetchKbPromptGenerationPrefs(knowledgeBaseId: string): Pro
   };
 }
 
+/** Value for `question_bank_neet.prompt_set_id` when generation used the active cloud prompt set. */
+export async function resolveStoredPromptSetIdForKbGeneration(
+  knowledgeBaseId: string | null | undefined
+): Promise<string | null> {
+  if (!knowledgeBaseId) return null;
+  try {
+    const prefs = await fetchKbPromptGenerationPrefs(knowledgeBaseId);
+    if (!prefs || prefs.generationSource !== 'cloud_set') return null;
+    return prefs.activePromptSetId;
+  } catch {
+    return null;
+  }
+}
+
 /** @deprecated Use fetchKbPromptGenerationPrefs */
 export async function fetchKbPromptPreferences(knowledgeBaseId: string): Promise<string | null> {
   const p = await fetchKbPromptGenerationPrefs(knowledgeBaseId);

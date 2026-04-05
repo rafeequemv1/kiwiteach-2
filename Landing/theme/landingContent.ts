@@ -7,16 +7,21 @@ export const landingNavLinks = [
   { id: 'blog', label: 'Blog' },
 ];
 
+/** Marketing ICP + hero promise (single user, single outcome) */
+export const LANDING_ICP_LINE =
+  'Built for NEET & board-science teachers — in schools and coaching centres.';
+export const LANDING_HERO_OUTCOME = 'Exam-ready practice tests in minutes';
+
 export const homePills = [
-  'Lesson Plan',
-  'Assessments',
-  'Feedback AI',
+  'Syllabus-linked questions',
+  'Easy · Medium · Hard control',
+  'Online exams & paper tests',
 ];
 
 export const footerColumns = [
   {
     title: 'Product',
-    links: ['Features', 'Pricing', 'Testimonials', 'FAQ'],
+    links: ['Home', 'NEET', 'Test prep', 'Pricing'],
   },
   {
     title: 'Company',

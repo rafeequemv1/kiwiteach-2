@@ -1,5 +1,6 @@
 import '../types';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { supabase } from './client';
 import { landingTheme } from '../Landing/theme';
 import { Button } from '@/components/ui/button';
@@ -35,6 +36,11 @@ const AuthUI: React.FC<AuthUIProps> = ({
   const [error, setError] = useState<string | null>(initialError ?? null);
   const [message, setMessage] = useState<string | null>(null);
   const [signupRole, setSignupRole] = useState<SignupRole>('student');
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    setShowPassword(false);
+  }, [mode]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -200,16 +206,28 @@ const AuthUI: React.FC<AuthUIProps> = ({
                     </button>
                   )}
                 </div>
-                <Input
-                  id="auth-password"
-                  type="password"
-                  required
-                  autoComplete={mode === 'reset-password' ? 'new-password' : 'current-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="h-9"
-                />
+                <div className="relative">
+                  <Input
+                    id="auth-password"
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    autoComplete={mode === 'reset-password' ? 'new-password' : 'current-password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="h-9 pr-10"
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    tabIndex={0}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" strokeWidth={2} /> : <Eye className="h-4 w-4" strokeWidth={2} />}
+                  </button>
+                </div>
                 {mode === 'reset-password' && (
                   <p className="text-[11px] text-muted-foreground leading-snug">
                     If this link expired, request a fresh reset email.
