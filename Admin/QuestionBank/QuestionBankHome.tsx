@@ -759,7 +759,7 @@ const QuestionBankHome: React.FC = () => {
     </div>
   );
 
-  /** Compact shadcn-like numeric row: − | value | + */
+  /** Compact numeric row (fill modal only — always light surface for OS dark mode). */
   const FillNumericRow = ({
     value,
     onChange,
@@ -772,13 +772,13 @@ const QuestionBankHome: React.FC = () => {
     min?: number;
   }) => (
     <div className="space-y-1.5">
-      <label className="block text-xs font-medium leading-none text-zinc-500 dark:text-zinc-400">{label}</label>
-      <div className="flex h-11 min-w-0 items-stretch overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 [color-scheme:light] dark:[color-scheme:dark]">
+      <label className="block text-xs font-medium leading-none text-zinc-500">{label}</label>
+      <div className="flex h-11 min-w-0 items-stretch overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm [color-scheme:light]">
         <button
           type="button"
           aria-label={`Decrease ${label}`}
           onClick={() => onChange(Math.max(min, value - 1))}
-          className="inline-flex w-11 shrink-0 items-center justify-center border-r border-zinc-200 bg-transparent text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+          className="inline-flex w-11 shrink-0 items-center justify-center border-r border-zinc-200 bg-white text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
         >
           <Minus className="size-4 shrink-0" strokeWidth={2} aria-hidden />
         </button>
@@ -792,13 +792,13 @@ const QuestionBankHome: React.FC = () => {
             onChange(Number.isFinite(n) ? Math.max(min, n) : min);
           }}
           onFocus={(e) => e.currentTarget.select()}
-          className="min-w-[3.25rem] flex-1 border-0 bg-transparent px-2 text-center text-xl font-semibold tabular-nums text-zinc-900 outline-none ring-offset-white transition-shadow focus-visible:ring-2 focus-visible:ring-zinc-950/15 focus-visible:ring-offset-0 dark:text-zinc-50 dark:ring-offset-zinc-950 dark:focus-visible:ring-zinc-50/20 sm:min-w-[4rem] sm:text-2xl [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          className="min-w-[3.25rem] flex-1 border-0 bg-white px-2 text-center text-xl font-semibold tabular-nums text-zinc-900 outline-none ring-offset-white transition-shadow focus-visible:ring-2 focus-visible:ring-zinc-950/15 focus-visible:ring-offset-0 sm:min-w-[4rem] sm:text-2xl [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
         <button
           type="button"
           aria-label={`Increase ${label}`}
           onClick={() => onChange(value + 1)}
-          className="inline-flex w-11 shrink-0 items-center justify-center border-l border-zinc-200 bg-transparent text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+          className="inline-flex w-11 shrink-0 items-center justify-center border-l border-zinc-200 bg-white text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
         >
           <Plus className="size-4 shrink-0" strokeWidth={2} aria-hidden />
         </button>
@@ -1744,20 +1744,20 @@ const QuestionBankHome: React.FC = () => {
                               }}
                             >
                               <Dialog.Portal>
-                                <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 dark:bg-black/55" />
-                                <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(88vh,620px)] w-[calc(100vw-1.5rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-2xl focus:outline-none sm:max-w-lg">
-                                  <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6 custom-scrollbar">
-                                    <Dialog.Title className="text-base font-semibold leading-none tracking-tight text-zinc-900 dark:text-zinc-50">
+                                <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+                                <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(88vh,620px)] w-[calc(100vw-1.5rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white p-0 text-zinc-900 shadow-lg duration-200 [color-scheme:light] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 focus:outline-none sm:max-w-lg">
+                                  <div className="min-h-0 flex-1 overflow-y-auto bg-white px-5 py-5 sm:px-6 sm:py-6 custom-scrollbar">
+                                    <Dialog.Title className="text-base font-semibold leading-none tracking-tight text-zinc-900">
                                       Chapter fill
                                     </Dialog.Title>
-                                    <Dialog.Description className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                                    <Dialog.Description className="mt-2 text-xs leading-relaxed text-zinc-500">
                                       Same difficulty and style mix for all selected chapters. Weights set MCQ vs assertion, matching, and
                                       statements (counts are derived). Text-only, no figures. Saves one chapter at a time.
                                     </Dialog.Description>
 
                                     <div className="mt-5 space-y-6">
                                       <section className="space-y-3">
-                                        <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">Difficulty counts</h3>
+                                        <h3 className="text-sm font-medium text-zinc-900">Difficulty counts</h3>
                                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-4">
                                           <FillNumericRow
                                             label="Easy"
@@ -1777,17 +1777,17 @@ const QuestionBankHome: React.FC = () => {
                                         </div>
                                       </section>
 
-                                      <section className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
+                                      <section className="space-y-3 border-t border-zinc-200 pt-6">
                                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                                           <div className="space-y-1">
-                                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">Style weights</h3>
-                                            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                            <h3 className="text-sm font-medium text-zinc-900">Style weights</h3>
+                                            <p className="text-xs text-zinc-500">
                                               Positive integers as relative weights (e.g. like percentages).
                                             </p>
                                           </div>
                                           <button
                                             type="button"
-                                            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md px-2.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                                            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md px-2.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
                                             onClick={() =>
                                               setFillUniformStyleWeights({ mcq: 60, reasoning: 20, matching: 10, statements: 10 })
                                             }
@@ -1826,13 +1826,13 @@ const QuestionBankHome: React.FC = () => {
                                           />
                                         </div>
                                         {fillStyleWeightsSum <= 0 ? (
-                                          <p className="text-center text-xs text-zinc-500 dark:text-zinc-400">
+                                          <p className="text-center text-xs text-zinc-500">
                                             Add at least one style weight.
                                           </p>
                                         ) : (
-                                          <p className="text-center text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                                          <p className="text-center text-xs leading-relaxed text-zinc-500">
                                             Per chapter:{' '}
-                                            <span className="font-medium text-zinc-900 dark:text-zinc-50">
+                                            <span className="font-medium text-zinc-900">
                                               {fillStyleTypeCounts.mcq} MCQ · {fillStyleTypeCounts.reasoning} assertion ·{' '}
                                               {fillStyleTypeCounts.matching} matching · {fillStyleTypeCounts.statements} statements
                                             </span>
@@ -1842,12 +1842,12 @@ const QuestionBankHome: React.FC = () => {
                                     </div>
                                   </div>
 
-                                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-200 bg-zinc-50/80 px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900/50 sm:px-6">
+                                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
                                     <Dialog.Close asChild>
                                       <button
                                         type="button"
                                         disabled={isFillBatch}
-                                        className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3.5 text-sm font-medium text-zinc-900 shadow-sm transition-colors hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-800"
+                                        className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3.5 text-sm font-medium text-zinc-900 shadow-sm transition-colors hover:bg-zinc-50 disabled:opacity-50"
                                       >
                                         Close
                                       </button>
@@ -1864,7 +1864,7 @@ const QuestionBankHome: React.FC = () => {
                                         setFillSettingsOpen(false);
                                         void handleRunFillMode();
                                       }}
-                                      className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-3.5 text-sm font-medium text-zinc-50 shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                                      className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-3.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50"
                                     >
                                       Run fill
                                     </button>
