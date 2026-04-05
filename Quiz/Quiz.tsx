@@ -384,9 +384,20 @@ const Quiz: React.FC = () => {
     didInitRouteRef.current = true;
   }, [session?.user, appRole]);
 
+  // Logged-out users should not keep /dashboard/* in the address bar while the marketing shell is shown.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (session) return;
+    const path = window.location.pathname.split('?')[0].split('#')[0].replace(/\/+$/, '') || '/';
+    const dash = DASHBOARD_BASE.replace(/\/+$/, '');
+    if (path === dash || path.startsWith(`${dash}/`)) {
+      window.history.replaceState(null, '', '/');
+    }
+  }, [session]);
+
   // Keep URL slug + basic SEO tags in sync with active dashboard view.
   useEffect(() => {
-    if (!session?.user) return;
+    if (!session?.user || showLanding) return;
     const view = activeView as DashboardView;
     if (!VIEW_TO_SLUG[view]) return;
     const targetPath = pathForView(view);
@@ -402,7 +413,7 @@ const Quiz: React.FC = () => {
       document.head.appendChild(meta);
     }
     meta.content = seo.description;
-  }, [session?.user, activeView]);
+  }, [session?.user, activeView, showLanding]);
 
   // Handle browser back/forward between dashboard slugs.
   useEffect(() => {
@@ -1244,6 +1255,7 @@ const Quiz: React.FC = () => {
           appRole={appRole}
           onHomeClick={() => {
             setShowLanding(true);
+            window.history.pushState(null, '', '/');
             if (!dashSidebarLg) setMobileDrawerOpen(false);
           }}
           onSignOut={() => supabase.auth.signOut()}

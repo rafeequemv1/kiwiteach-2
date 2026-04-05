@@ -2,7 +2,14 @@ import React from 'react';
 import { BookOpen, ClipboardCheck, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import { LANDING_NEET_COMMAND_IMAGE, LANDING_WORKFLOW_STEP_IMAGES } from './theme';
+import { LandingKeywordLine } from './LandingCtaButton';
+import {
+  LANDING_NEET_COMMAND_ALT,
+  LANDING_NEET_COMMAND_IMAGE,
+  LANDING_WORKFLOW_STEP_ALTS,
+  LANDING_WORKFLOW_STEP_IMAGES,
+  landingTheme,
+} from './theme';
 
 const steps = [
   {
@@ -13,6 +20,7 @@ const steps = [
       'No more "generic NEET PDFs" that skip what you just finished. Pick the exact chapters and lines you covered so every question matches this week\'s class, not last year\'s booklet.',
     icon: BookOpen,
     imageSrc: LANDING_WORKFLOW_STEP_IMAGES[0],
+    imageAlt: LANDING_WORKFLOW_STEP_ALTS[0],
     imageLabel: 'Syllabus & topics',
   },
   {
@@ -23,6 +31,7 @@ const steps = [
       "Your batch isn't everyone else's batch. Control Easy / Medium / Hard, pick question styles that match your board, or start from ready-made templates in Test Studio—so every paper feels intentional, not generic.",
     icon: SlidersHorizontal,
     imageSrc: LANDING_WORKFLOW_STEP_IMAGES[1],
+    imageAlt: LANDING_WORKFLOW_STEP_ALTS[1],
     imageLabel: 'Test Studio — styles & templates',
   },
   {
@@ -33,6 +42,7 @@ const steps = [
       'KiwiTeach builds a balanced paper from your rules. You review, tweak odd lines if you want, then ship, instead of burning Sunday night typing MCQs.',
     icon: Sparkles,
     imageSrc: LANDING_WORKFLOW_STEP_IMAGES[2],
+    imageAlt: LANDING_WORKFLOW_STEP_ALTS[2],
     imageLabel: 'Generate paper',
   },
   {
@@ -43,6 +53,7 @@ const steps = [
       'Same paper: assign on screen for the batch or print for the hall. Results land where you can actually use them, so the next class fixes weak spots, not guesswork.',
     icon: ClipboardCheck,
     imageSrc: LANDING_WORKFLOW_STEP_IMAGES[3],
+    imageAlt: LANDING_WORKFLOW_STEP_ALTS[3],
     imageLabel: 'Deliver & review',
   },
 ] as const;
@@ -65,21 +76,26 @@ function StepVisual({
   stepNum,
   label,
   imageSrc,
+  imageAlt,
 }: {
   stepNum: string;
   label: string;
   imageSrc: string | null;
+  imageAlt: string;
 }) {
   if (imageSrc) {
     return (
       <div className="overflow-hidden rounded-2xl border border-border/80 bg-card shadow-sm">
         <img
           src={imageSrc}
-          alt={`${label} — workflow step ${stepNum}`}
+          alt={imageAlt}
+          title={`KiwiTeach NEET prep — step ${stepNum}: ${label}`}
           className="aspect-[4/3] w-full object-cover"
-          width={960}
-          height={720}
+          width={1280}
+          height={960}
+          sizes="(max-width: 768px) 100vw, min(640px, 50vw)"
           decoding="async"
+          loading="lazy"
         />
       </div>
     );
@@ -105,7 +121,8 @@ export function LandingHowItWorksSection({ sectionId = 'how-it-works' }: { secti
             id="landing-how-it-works-heading"
             className="font-heading text-3xl font-semibold tracking-tight text-foreground md:text-4xl"
           >
-            From &ldquo;what we taught this week&rdquo; to a mock they can sit tomorrow
+            From &ldquo;what we taught this week&rdquo; to a <LandingKeywordLine>mock</LandingKeywordLine> they can sit
+            tomorrow
           </h2>
           <p className="mt-3 text-base text-muted-foreground md:text-lg">
             You&apos;re not short on dedication. You&apos;re short on hours. KiwiTeach removes the busywork between your lesson
@@ -127,18 +144,27 @@ export function LandingHowItWorksSection({ sectionId = 'how-it-works' }: { secti
               return (
                 <li key={s.key} className="relative">
                   <span
-                    className="absolute left-[1.125rem] top-10 z-[1] size-3.5 -translate-x-1/2 rounded-full border-[3px] border-background bg-primary shadow-sm md:left-1/2"
+                    className="absolute left-[1.125rem] top-10 z-[1] size-3.5 -translate-x-1/2 rounded-full border-[3px] border-background shadow-sm md:left-1/2"
+                    style={{
+                      backgroundColor: landingTheme.colors.accent,
+                      boxShadow: `0 0 0 1px ${landingTheme.colors.accentWarm}66`,
+                    }}
                     aria-hidden
                   />
 
                   <div className="grid gap-8 pl-10 md:grid-cols-2 md:items-center md:gap-12 md:pl-0">
                     <div className={`min-w-0 ${!isEven ? 'md:order-2' : ''}`}>
-                      <StepVisual stepNum={s.step} label={s.imageLabel} imageSrc={s.imageSrc} />
+                      <StepVisual
+                        stepNum={s.step}
+                        label={s.imageLabel}
+                        imageSrc={s.imageSrc}
+                        imageAlt={s.imageAlt}
+                      />
                     </div>
 
                     <div className={`min-w-0 space-y-4 ${!isEven ? 'md:order-1' : ''}`}>
                       <div className="flex items-center gap-3">
-                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-foreground text-background shadow-sm">
+                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-foreground text-background shadow-sm ring-2 ring-[#f2c44e]/30">
                           <Icon className="size-5" strokeWidth={2} aria-hidden />
                         </div>
                         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -173,15 +199,21 @@ export function LandingHowItWorksSection({ sectionId = 'how-it-works' }: { secti
               </p>
               <ul className="mt-6 space-y-3 text-sm text-foreground">
                 <li className="flex gap-2">
-                  <span className="mt-0.5 text-muted-foreground">✓</span>
+                  <span className="mt-0.5 font-semibold" style={{ color: landingTheme.colors.accentWarm }}>
+                    ✓
+                  </span>
                   <span>Batch and paper in one view: assign or print without re-formatting.</span>
                 </li>
                 <li className="flex gap-2">
-                  <span className="mt-0.5 text-muted-foreground">✓</span>
+                  <span className="mt-0.5 font-semibold" style={{ color: landingTheme.colors.accentWarm }}>
+                    ✓
+                  </span>
                   <span>Syllabus filters so &ldquo;NEET prep&rdquo; stays tied to what you actually taught.</span>
                 </li>
                 <li className="flex gap-2">
-                  <span className="mt-0.5 text-muted-foreground">✓</span>
+                  <span className="mt-0.5 font-semibold" style={{ color: landingTheme.colors.accentWarm }}>
+                    ✓
+                  </span>
                   <span>Less admin, more teaching: the painkiller for crowded prep seasons.</span>
                 </li>
               </ul>
@@ -189,11 +221,14 @@ export function LandingHowItWorksSection({ sectionId = 'how-it-works' }: { secti
             <div className="overflow-hidden rounded-xl border border-border/80 bg-muted/20 shadow-sm">
               <img
                 src={LANDING_NEET_COMMAND_IMAGE}
-                alt="Teacher hub with laptop and printed tests in one organized workspace"
+                alt={LANDING_NEET_COMMAND_ALT}
+                title="KiwiTeach NEET command centre for teachers"
                 className="aspect-[4/3] w-full object-cover md:aspect-auto md:min-h-[280px] md:max-h-[340px]"
-                width={960}
-                height={720}
+                width={1280}
+                height={960}
+                sizes="(max-width: 768px) 100vw, min(640px, 50vw)"
                 decoding="async"
+                loading="lazy"
               />
             </div>
           </CardContent>

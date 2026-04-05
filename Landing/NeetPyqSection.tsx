@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../supabase/client';
 import InteractiveQuizSession from '../Quiz/components/InteractiveQuizSession';
 import type { Question, QuestionType } from '../Quiz/types';
-import { Button } from '@/components/ui/button';
+import { LandingCtaButton } from './LandingCtaButton';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -181,9 +181,9 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
               <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm">
                 <p className="font-medium text-foreground">Sign in to practice</p>
                 <p className="mt-1 text-xs text-muted-foreground">Uses your KiwiTeach account.</p>
-                <Button size="sm" className="mt-3 font-semibold" onClick={onLoginClick}>
+                <LandingCtaButton className="mt-3 !h-9 !px-5 !text-sm" onClick={onLoginClick}>
                   Sign in
-                </Button>
+                </LandingCtaButton>
               </div>
             )}
 
@@ -235,14 +235,14 @@ const NeetPyqSection: React.FC<NeetPyqSectionProps> = ({ isLoggedIn, onLoginClic
 
             {error && <p className="text-xs font-medium text-destructive">{error}</p>}
 
-            <Button
+            <LandingCtaButton
               type="button"
-              className="w-full font-semibold"
+              className="w-full !text-base"
               onClick={() => void startPractice()}
               disabled={loadingStart || loadingMeta}
             >
               {loadingStart ? 'Loading…' : 'Start practice'}
-            </Button>
+            </LandingCtaButton>
           </CardContent>
         </Card>
       </div>

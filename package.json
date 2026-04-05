@@ -10,7 +10,8 @@
     "dev:5174": "vite --port 5174",
     "lint": "tsc --noEmit",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "optimize:landing-images": "node scripts/optimize-landing-images.mjs"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.3",
@@ -47,6 +48,7 @@
     "autoprefixer": "^10.4.27",
     "playwright": "^1.58.2",
     "postcss": "^8.5.8",
+    "sharp": "^0.34.5",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.3.3",
     "vite": "^5.1.4"

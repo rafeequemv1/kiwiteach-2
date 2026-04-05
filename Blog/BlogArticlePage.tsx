@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { landingTheme } from '../Landing/theme';
+import { pathForMarketingTab } from '../Landing/marketingRoutes';
 import { fetchPostBySlug, fetchPublishedPosts } from './blogApi';
 import type { BlogFaqItem, BlogPost } from './types';
 import {
@@ -96,6 +97,11 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
       .replace(/^-+|-+$/g, '');
 
   const faqs = useMemo(() => normalizeFaqs(post?.faqs), [post?.faqs]);
+
+  const tocExtraItems = useMemo(() => {
+    if (faqs.length === 0) return [] as { id: string; text: string; level: 2 | 3 }[];
+    return [{ id: 'blog-faq-heading', text: 'Frequently asked questions', level: 2 as const }];
+  }, [faqs]);
 
   const seo = useMemo(() => {
     if (!post) return null;
@@ -194,6 +200,38 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
     return { items, html: doc.body.innerHTML };
   }, [post?.content]);
 
+  const tocAllItems = useMemo(
+    () => [...toc.items, ...tocExtraItems],
+    [toc.items, tocExtraItems]
+  );
+
+  const [activeTocId, setActiveTocId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!post || tocAllItems.length === 0) return;
+    const ids = tocAllItems.map((i) => i.id);
+    const elements = ids
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => !!el);
+    if (elements.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
+        if (visible[0]?.target.id) setActiveTocId(visible[0].target.id);
+      },
+      { root: null, rootMargin: '-12% 0px -55% 0px', threshold: [0, 0.25, 0.5, 1] }
+    );
+
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [post, tocAllItems, toc.html]);
+
+  useEffect(() => {
+    if (tocAllItems.length && !activeTocId) setActiveTocId(tocAllItems[0].id);
+  }, [tocAllItems, activeTocId]);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-muted/30 pt-20 sm:pt-24">
@@ -239,34 +277,46 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
       {structuredData ? (
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData }} />
       ) : null}
-      <div className="mx-auto max-w-6xl">
-        <Button variant="ghost" size="sm" className="-ml-2 mb-10 gap-2 text-muted-foreground hover:text-foreground" onClick={onBack}>
+      <div className="mx-auto max-w-7xl">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-ml-2 mb-6 gap-2 text-muted-foreground hover:text-foreground"
+          onClick={onBack}
+        >
           <ArrowLeft className="size-4" aria-hidden />
           Journal
         </Button>
 
-        <div className="flex gap-10">
-          <aside className="hidden w-[240px] shrink-0 xl:block">
-            <div className="sticky top-24">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">On this page</p>
-              <div className="mt-3 space-y-2">
-                {toc.items.length === 0 ? (
+        <div className="flex flex-col gap-10 lg:flex-row lg:items-start lg:gap-8">
+          <aside className="hidden w-[min(100%,13.5rem)] shrink-0 lg:block">
+            <div className="sticky top-24 rounded-xl border border-border/80 bg-card/95 p-4 shadow-sm backdrop-blur-sm">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">In this article</p>
+              <nav className="mt-3 max-h-[min(70vh,32rem)] space-y-1 overflow-y-auto pr-1" aria-label="Article sections">
+                {tocAllItems.length === 0 ? (
                   <p className="text-xs text-muted-foreground">No sections detected.</p>
                 ) : (
-                  toc.items.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => scrollToId(item.id)}
-                      className={`block w-full text-left text-xs font-medium transition-colors hover:text-foreground ${
-                        item.level === 3 ? 'pl-3 text-muted-foreground' : 'text-foreground/90'
-                      }`}
-                    >
-                      {item.text}
-                    </button>
-                  ))
+                  tocAllItems.map((item) => {
+                    const active = activeTocId === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => scrollToId(item.id)}
+                        className={`block w-full border-l-2 py-1.5 text-left text-[11px] font-medium transition-colors ${
+                          item.level === 3 ? 'pl-3' : 'pl-2'
+                        } ${
+                          active
+                            ? 'border-primary text-foreground'
+                            : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+                        }`}
+                      >
+                        {item.text}
+                      </button>
+                    );
+                  })
                 )}
-              </div>
+              </nav>
             </div>
           </aside>
 
@@ -332,7 +382,7 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
             ) : null}
           </div>
 
-          <aside className="hidden w-[280px] shrink-0 lg:block">
+          <aside className="hidden w-[min(100%,17.5rem)] shrink-0 xl:block">
             <div className="sticky top-24">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Read next</p>
               <div className="mt-3 space-y-3">
@@ -340,29 +390,32 @@ const BlogArticlePage: React.FC<BlogArticlePageProps> = ({ slug, onBack, onSelec
                   <p className="text-xs text-muted-foreground">No related articles found.</p>
                 ) : (
                   relatedPosts.map((p) => (
-                    <Card
+                    <a
                       key={p.id}
-                      className="cursor-pointer border-border/80 transition-colors hover:bg-muted/50"
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => onSelectPost?.(p.slug)}
-                      onKeyDown={(e) => e.key === 'Enter' && onSelectPost?.(p.slug)}
+                      href={pathForMarketingTab('blog-post', p.slug)}
+                      className="block no-underline"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        onSelectPost?.(p.slug);
+                      }}
                     >
-                      <CardContent className="p-3">
-                        <div className="flex items-start gap-3">
-                          <div className="h-[54px] w-[54px] shrink-0 overflow-hidden rounded-lg border border-border bg-muted">
-                            {p.cover_image_url ? (
-                              <img src={p.cover_image_url} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                            ) : null}
+                      <Card className="cursor-pointer border-border/80 transition-colors hover:bg-muted/50">
+                        <CardContent className="p-3">
+                          <div className="flex items-start gap-3">
+                            <div className="h-[54px] w-[54px] shrink-0 overflow-hidden rounded-lg border border-border bg-muted">
+                              {p.cover_image_url ? (
+                                <img src={p.cover_image_url} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 text-left">
+                              <p className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{p.category}</p>
+                              <p className="mt-1 line-clamp-2 text-sm font-semibold text-foreground">{p.title}</p>
+                              {p.excerpt ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{p.excerpt}</p> : null}
+                            </div>
                           </div>
-                          <div className="min-w-0 text-left">
-                            <p className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{p.category}</p>
-                            <p className="mt-1 line-clamp-2 text-sm font-semibold text-foreground">{p.title}</p>
-                            {p.excerpt ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{p.excerpt}</p> : null}
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
+                        </CardContent>
+                      </Card>
+                    </a>
                   ))
                 )}
               </div>

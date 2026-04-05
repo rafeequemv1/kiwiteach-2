@@ -1,12 +1,23 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowRight, BookOpen, CheckCircle2, ClipboardList, Layout, Menu, Sparkles, Target, Zap, X } from 'lucide-react';
+import {
+  ArrowRight,
+  BookOpen,
+  CheckCircle2,
+  ClipboardList,
+  Layout,
+  Menu,
+  Sparkles,
+  Star,
+  Target,
+  Zap,
+  X,
+} from 'lucide-react';
 import { KiwiTeachLogoMark } from './KiwiTeachLogoMark';
 import { LandingHowItWorksSection } from './LandingHowItWorksSection';
 import { BlogArticlePage, BlogIndexPage } from '../Blog';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import PricingPage from '../src/pages/PricingPage';
 import {
@@ -16,14 +27,25 @@ import {
   landingNavLinks,
   landingTheme,
   LANDING_FOOTER_BLURB,
-  LANDING_HOME_COMMAND_SLIDES,
+  LANDING_HOME_COMMAND_CAROUSEL,
+  LANDING_HOME_HERO_ALT,
   LANDING_HOME_HERO_IMAGE,
   LANDING_HERO_OUTCOME,
   LANDING_ICP_LINE,
+  NEET_PREP_HERO_ALTS,
   NEET_TEST_PREP_HERO_SLIDES,
 } from './theme';
+import { LandingCtaAnchor, LandingCtaButton, LandingKeywordLine } from './LandingCtaButton';
+import { LandingFooterSocial } from './LandingFooterSocial';
 import { LandingSeoHelmet } from './LandingSeoHelmet';
 import NeetPyqSection from './NeetPyqSection';
+import {
+  isRecognizedMarketingPath,
+  MARKETING_PATH,
+  parseMarketingPath,
+  pathForMarketingTab,
+  type LandingMarketingTab,
+} from './marketingRoutes';
 
 const HERO_FLOATING_INSIGHTS = [
   {
@@ -45,17 +67,123 @@ const HERO_FLOATING_INSIGHTS = [
   },
 ] as const;
 
-const HOME_COMMAND_ALTS = [
-  'Indian male teacher planning at laptop — your classroom command center',
-  'Four educators collaborating — two men and two women around lesson materials',
+const HERO_HOME_STACK_CARDS = [
+  {
+    title: 'Lesson plan generated',
+    sub: 'Saved 2 hours of prep time',
+    Icon: BookOpen,
+  },
+  {
+    title: 'Class quiz ready',
+    sub: 'Aligned to this week’s chapter',
+    Icon: ClipboardList,
+  },
+  {
+    title: 'Feedback drafted',
+    sub: 'Personalised notes for your batch',
+    Icon: Sparkles,
+  },
 ] as const;
 
-const NEET_HERO_ALTS = [
-  'Teacher organizing NEET practice papers and laptop — calm exam prep',
-  'Hand filling bubbles on an OMR answer sheet for a competitive exam',
-] as const;
+function HomeHeroStackCards() {
+  const [idx, setIdx] = useState(0);
+  const [tickPulse, setTickPulse] = useState(0);
 
-type LandingTab = 'home' | 'neet' | 'test-prep' | 'pricing' | 'blog' | 'blog-post';
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setIdx((i) => (i + 1) % HERO_HOME_STACK_CARDS.length);
+      setTickPulse((p) => p + 1);
+    }, 4200);
+    return () => clearInterval(id);
+  }, []);
+
+  const active = HERO_HOME_STACK_CARDS[idx];
+  const Icon = active.Icon;
+
+  return (
+    <div className="pointer-events-none absolute bottom-5 left-5 w-[min(100%,17rem)] sm:w-[min(100%,20rem)]">
+      <div
+        className="absolute bottom-0 left-2 right-0 top-2 translate-x-2 translate-y-2 rounded-xl border border-zinc-200/60 bg-white/50 shadow-md"
+        aria-hidden
+      />
+      <div
+        className="absolute bottom-0 left-1 right-0 top-1 translate-x-1 translate-y-1 rounded-xl border border-zinc-200/70 bg-white/70 shadow-md"
+        aria-hidden
+      />
+      <AnimatePresence initial={false} mode="wait">
+        <motion.div
+          key={active.title}
+          initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
+          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+          exit={{ opacity: 0, y: -6, filter: 'blur(3px)' }}
+          transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+          className="relative rounded-xl border border-zinc-100 bg-white p-3 shadow-lg"
+          style={{ boxShadow: landingTheme.shadow.card }}
+        >
+          <div className="flex items-start gap-3">
+            <div className="relative shrink-0">
+              <div
+                className="grid size-10 place-items-center rounded-lg"
+                style={{ backgroundColor: `${landingTheme.colors.accent}22`, color: landingTheme.colors.accent }}
+              >
+                <Icon className="size-5" strokeWidth={2} aria-hidden />
+              </div>
+              <motion.span
+                key={tickPulse}
+                className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full border-2 border-white bg-white shadow-sm"
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: 'spring', stiffness: 520, damping: 22 }}
+                aria-hidden
+              >
+                <CheckCircle2 className="size-4 text-emerald-600" strokeWidth={2.5} />
+              </motion.span>
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-zinc-900">{active.title}</p>
+              <p className="mt-0.5 text-xs text-zinc-500">{active.sub}</p>
+            </div>
+          </div>
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function initialMarketingFromWindow(): { tab: LandingMarketingTab; blogSlug: string | null } {
+  if (typeof window === 'undefined') return { tab: 'home', blogSlug: null };
+  return parseMarketingPath(window.location.pathname);
+}
+
+function landingNavIdToHref(id: string): string {
+  switch (id) {
+    case 'home':
+      return pathForMarketingTab('home');
+    case 'test-prep':
+      return pathForMarketingTab('test-prep');
+    case 'neet':
+      return pathForMarketingTab('neet');
+    case 'pricing':
+      return pathForMarketingTab('pricing');
+    case 'blog':
+      return pathForMarketingTab('blog');
+    default:
+      return pathForMarketingTab('home');
+  }
+}
+
+function footerLinkToMarketing(link: string): { href: string; tab: LandingMarketingTab } | null {
+  const map: Record<string, LandingMarketingTab> = {
+    Home: 'home',
+    'NEET Test Prep': 'test-prep',
+    'NEET PYQ': 'neet',
+    Pricing: 'pricing',
+    Blog: 'blog',
+  };
+  const tab = map[link];
+  if (!tab) return null;
+  return { href: pathForMarketingTab(tab), tab };
+}
 
 interface LandingPageProps {
   onLoginClick: () => void;
@@ -70,12 +198,40 @@ const LandingPage: React.FC<LandingPageProps> = ({
   isLoggedIn,
   onDashboardClick,
 }) => {
-  const [activeTab, setActiveTab] = useState<LandingTab>('home');
-  const [blogSlug, setBlogSlug] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<LandingMarketingTab>(() => initialMarketingFromWindow().tab);
+  const [blogSlug, setBlogSlug] = useState<string | null>(() => initialMarketingFromWindow().blogSlug);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [heroInsightIdx, setHeroInsightIdx] = useState(0);
   const [homeCommandSlideIdx, setHomeCommandSlideIdx] = useState(0);
   const [neetHeroSlideIdx, setNeetHeroSlideIdx] = useState(0);
+
+  const pushMarketingRoute = useCallback((tab: LandingMarketingTab, slug: string | null = null) => {
+    const nextSlug = tab === 'blog-post' ? slug : null;
+    setBlogSlug(nextSlug);
+    setActiveTab(tab);
+    const path = pathForMarketingTab(tab, nextSlug);
+    window.history.pushState(null, '', path);
+    setNavDrawerOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isRecognizedMarketingPath(window.location.pathname)) {
+      window.history.replaceState(null, '', pathForMarketingTab('home'));
+      setActiveTab('home');
+      setBlogSlug(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      const { tab, blogSlug: slug } = parseMarketingPath(window.location.pathname);
+      setActiveTab(tab);
+      setBlogSlug(slug);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   useEffect(() => {
     if (activeTab !== 'test-prep') return;
@@ -88,7 +244,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
   useEffect(() => {
     if (activeTab !== 'home') return;
     const id = window.setInterval(() => {
-      setHomeCommandSlideIdx((i) => (i + 1) % LANDING_HOME_COMMAND_SLIDES.length);
+      setHomeCommandSlideIdx((i) => (i + 1) % LANDING_HOME_COMMAND_CAROUSEL.length);
     }, 5500);
     return () => clearInterval(id);
   }, [activeTab]);
@@ -102,13 +258,11 @@ const LandingPage: React.FC<LandingPageProps> = ({
   }, [activeTab]);
 
   const goToTab = (tabId: string) => {
-    setBlogSlug(null);
-    if (tabId === 'test-prep') setActiveTab('test-prep');
-    else if (tabId === 'blog') setActiveTab('blog');
-    else if (tabId === 'pricing') setActiveTab('pricing');
-    else if (tabId === 'neet') setActiveTab('neet');
-    else setActiveTab('home');
-    setNavDrawerOpen(false);
+    if (tabId === 'test-prep') pushMarketingRoute('test-prep');
+    else if (tabId === 'blog') pushMarketingRoute('blog');
+    else if (tabId === 'pricing') pushMarketingRoute('pricing');
+    else if (tabId === 'neet') pushMarketingRoute('neet');
+    else pushMarketingRoute('home');
   };
 
   const isLandingNavLinkActive = (linkId: string) =>
@@ -166,6 +320,251 @@ const LandingPage: React.FC<LandingPageProps> = ({
     }
   };
 
+  const renderPrivacy = () => (
+    <motion.div
+      key="privacy"
+      initial="hidden"
+      animate="visible"
+      exit={{ opacity: 0, y: -20 }}
+      variants={containerVariants}
+      className="w-full"
+    >
+      <section className="border-b border-border bg-background px-4 pb-20 pt-28 md:px-6 md:pt-24">
+        <div className="mx-auto max-w-3xl space-y-10">
+          <a
+            href={pathForMarketingTab('home')}
+            onClick={(e) => {
+              e.preventDefault();
+              pushMarketingRoute('home');
+            }}
+            className="inline-flex text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Back to home
+          </a>
+          <header>
+            <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground md:text-4xl">Privacy policy</h1>
+            <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+              Last updated: April 2026. This summary explains how KiwiTeach Learning (&ldquo;we&rdquo;, &ldquo;us&rdquo;)
+              handles information when you use our websites and teaching tools. It is not legal advice; have qualified counsel
+              review before you rely on it in contracts or compliance filings.
+            </p>
+          </header>
+
+          <div className="space-y-8 text-sm leading-relaxed text-muted-foreground">
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Who we are</h2>
+              <p className="mt-3">
+                KiwiTeach provides software for educators and institutions—test creation, online exams, lesson workflows,
+                and related features. Our services are used by teachers, students, and administrators in schools and coaching
+                centres, including in India.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Information we collect</h2>
+              <ul className="mt-3 list-disc space-y-2 pl-5">
+                <li>
+                  <strong className="text-foreground">Account data:</strong> name, email, role, and institute or class
+                  associations you provide when you sign up or are invited.
+                </li>
+                <li>
+                  <strong className="text-foreground">Content you create:</strong> tests, questions, assignments, files you
+                  upload, and messages or metadata needed to run the product.
+                </li>
+                <li>
+                  <strong className="text-foreground">Usage and technical data:</strong> device/browser type, approximate
+                  location from IP, log data, cookies or similar technologies used for security, preferences, and product
+                  improvement.
+                </li>
+              </ul>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">How we use information</h2>
+              <p className="mt-3">
+                We use data to provide and secure the service, authenticate users, personalise your workspace, analyse
+                reliability and performance, communicate about your account, comply with law, and improve features. We do
+                not sell your personal information.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Sharing</h2>
+              <p className="mt-3">
+                We share data with subprocessors that host infrastructure, email, analytics, or payments—only as needed to
+                operate KiwiTeach and under appropriate agreements. We may disclose information if required by law or to
+                protect rights and safety.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Retention &amp; security</h2>
+              <p className="mt-3">
+                We keep information for as long as your account is active and as needed for backups, disputes, and legal
+                obligations. We use industry-standard safeguards, but no method of transmission over the Internet is
+                perfectly secure.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Your choices</h2>
+              <p className="mt-3">
+                You may access, correct, or delete certain account information in the product or by contacting us. You can
+                opt out of non-essential communications. Where applicable law grants additional rights (including in India),
+                we will honour requests in line with those rules.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Children</h2>
+              <p className="mt-3">
+                Our services may be used in educational settings. Schools and institutions are responsible for obtaining
+                any required consent for student use. If you believe we have collected a child&apos;s data improperly,
+                contact us so we can address it.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Contact</h2>
+              <p className="mt-3">
+                Questions about this policy: use the contact options listed on the KiwiTeach website or your
+                administrator&apos;s support channel.
+              </p>
+            </section>
+            <p className="rounded-lg border border-border bg-muted/40 p-4 text-xs text-muted-foreground">
+              <strong className="text-foreground">Note:</strong> Replace contact details, entity name, and jurisdiction
+              with counsel-approved wording before publication.
+            </p>
+          </div>
+        </div>
+      </section>
+    </motion.div>
+  );
+
+  const renderTerms = () => (
+    <motion.div
+      key="terms"
+      initial="hidden"
+      animate="visible"
+      exit={{ opacity: 0, y: -20 }}
+      variants={containerVariants}
+      className="w-full"
+    >
+      <section className="border-b border-border bg-background px-4 pb-20 pt-28 md:px-6 md:pt-24">
+        <div className="mx-auto max-w-3xl space-y-10">
+          <a
+            href={pathForMarketingTab('home')}
+            onClick={(e) => {
+              e.preventDefault();
+              pushMarketingRoute('home');
+            }}
+            className="inline-flex text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Back to home
+          </a>
+          <header>
+            <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
+              Terms of service
+            </h1>
+            <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+              Last updated: April 2026. These terms govern use of KiwiTeach websites and software. They are a practical
+              outline for early users—have qualified counsel adapt them for your entity, products, and regions before you
+              treat them as binding legal text.
+            </p>
+          </header>
+
+          <div className="space-y-8 text-sm leading-relaxed text-muted-foreground">
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Agreement</h2>
+              <p className="mt-3">
+                By accessing or using KiwiTeach, you agree to these terms. If you use the service on behalf of an
+                organisation, you confirm you have authority to bind that organisation.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">The service</h2>
+              <p className="mt-3">
+                We provide online tools for teaching and assessment. Features may change; we may add, modify, or retire
+                functionality with reasonable notice where practical. We aim for high availability but do not guarantee
+                uninterrupted access.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Accounts &amp; eligibility</h2>
+              <p className="mt-3">
+                You must provide accurate registration information and keep credentials secure. You are responsible for
+                activity under your account. We may suspend or terminate accounts that violate these terms or pose risk to
+                the platform or other users.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Acceptable use</h2>
+              <ul className="mt-3 list-disc space-y-2 pl-5">
+                <li>No unlawful, harmful, or deceptive activity; no attempt to disrupt, scrape, or overload systems.</li>
+                <li>No uploading malware or content you do not have rights to use.</li>
+                <li>Respect intellectual property and privacy of students, staff, and third parties.</li>
+              </ul>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Content &amp; intellectual property</h2>
+              <p className="mt-3">
+                You retain rights to content you create. You grant us a limited licence to host, process, and display that
+                content to operate the service. KiwiTeach name, branding, and software are protected; do not copy or
+                reverse engineer except as allowed by law.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Subscriptions &amp; fees</h2>
+              <p className="mt-3">
+                Paid plans, taxes, and billing cycles are described at checkout or in your order. Failure to pay may
+                result in restricted access. Refunds follow the policy shown at purchase unless law requires otherwise.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Disclaimers</h2>
+              <p className="mt-3">
+                The service is provided &ldquo;as is&rdquo; to the extent permitted by law. We disclaim implied warranties
+                where allowed. Educational outcomes depend on many factors beyond software; we are not responsible for exam
+                results or institutional decisions.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Limitation of liability</h2>
+              <p className="mt-3">
+                To the maximum extent permitted by law, our total liability for claims arising from these terms or the
+                service is limited to the greater of amounts you paid us in the twelve months before the claim or a modest
+                fixed sum. We are not liable for indirect or consequential damages.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Termination</h2>
+              <p className="mt-3">
+                You may stop using KiwiTeach at any time. We may suspend or end access for breach, risk, or business reasons
+                with notice where reasonable. Provisions that should survive (e.g. liability limits) continue after
+                termination.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Changes</h2>
+              <p className="mt-3">
+                We may update these terms. We will post the new date and, for material changes, provide notice through the
+                product or email. Continued use after changes means you accept the updated terms.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Governing law &amp; disputes</h2>
+              <p className="mt-3">
+                Specify your chosen courts and law with counsel—for example, courts in India or another jurisdiction where
+                your company is organised. Until then, this section is intentionally generic.
+              </p>
+            </section>
+            <section>
+              <h2 className="font-heading text-lg font-semibold text-foreground">Contact</h2>
+              <p className="mt-3">For legal or contractual notices, use the official contact published on kiwiteach.com.</p>
+            </section>
+            <p className="rounded-lg border border-border bg-muted/40 p-4 text-xs text-muted-foreground">
+              <strong className="text-foreground">Note:</strong> Insert governing law, dispute resolution, company legal
+              name, and registered address after legal review.
+            </p>
+          </div>
+        </div>
+      </section>
+    </motion.div>
+  );
+
   const renderHome = () => (
     <motion.div
       key="home"
@@ -177,12 +576,38 @@ const LandingPage: React.FC<LandingPageProps> = ({
     >
       <section
         id="features"
-        className="relative border-b border-emerald-100/40 bg-gradient-to-br from-emerald-50/85 via-white to-amber-50/50 px-4 pb-20 pt-32 md:px-6 md:pb-28 md:pt-28"
+        className="relative border-b border-emerald-100/40 bg-gradient-to-br from-emerald-50/90 via-white to-amber-50/60 px-4 pb-20 pt-32 md:px-6 md:pb-28 md:pt-28"
       >
         <div
-          className="pointer-events-none absolute inset-0 opacity-50"
+          className="pointer-events-none absolute inset-0 opacity-[0.85]"
+          style={{ background: landingTheme.gradients.homeHeroWash }}
+        />
+        <div
+          className="pointer-events-none absolute inset-0 opacity-40"
           style={{ background: landingTheme.gradients.glow }}
         />
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+          <Star
+            className="absolute right-[8%] top-[14%] size-4 fill-[#f2c44e]/25 text-[#f2c44e]/40 sm:size-5"
+            strokeWidth={1}
+          />
+          <Star
+            className="absolute right-[22%] top-[26%] size-3 fill-[#f2c44e]/20 text-[#f2c44e]/35"
+            strokeWidth={1}
+          />
+          <Star
+            className="absolute left-[6%] top-[38%] size-3.5 fill-[#f2c44e]/22 text-[#f2c44e]/38"
+            strokeWidth={1}
+          />
+          <Star
+            className="absolute bottom-[28%] left-[12%] size-4 fill-[#f2c44e]/18 text-[#f2c44e]/32 sm:bottom-[32%]"
+            strokeWidth={1}
+          />
+          <Star
+            className="absolute bottom-[20%] right-[18%] size-3 fill-[#f2c44e]/18 text-[#f2c44e]/30"
+            strokeWidth={1}
+          />
+        </div>
         <div className="relative mx-auto grid max-w-7xl items-center gap-12 lg:grid-cols-2 lg:gap-16">
           <div className="space-y-8">
             <Badge
@@ -198,8 +623,8 @@ const LandingPage: React.FC<LandingPageProps> = ({
               <span style={{ color: landingTheme.colors.accent }}>Reignite teaching.</span>
             </h1>
             <p className="max-w-lg text-lg leading-relaxed text-zinc-600 md:text-xl">
-              We build intelligent tools that help educators create lesson plans, automate exam prep, and deliver feedback
-              in a fraction of the time.
+              We build intelligent tools that help educators create <LandingKeywordLine>lesson plans</LandingKeywordLine>,
+              automate exam prep, and deliver <LandingKeywordLine>feedback</LandingKeywordLine> in a fraction of the time.
             </p>
             <div className="flex flex-wrap gap-2">
               {homeBroadPills.map((pill) => (
@@ -208,49 +633,31 @@ const LandingPage: React.FC<LandingPageProps> = ({
                   className="inline-flex items-center gap-2 rounded-full border border-zinc-200/90 bg-white px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm"
                 >
                   {pill}
-                  <CheckCircle2 className="size-4 shrink-0 text-sky-600" aria-hidden />
+                  <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-hidden />
                 </span>
               ))}
             </div>
-            <Button
-              size="lg"
-              className="h-12 gap-2 rounded-xl px-8 text-base font-semibold shadow-md"
-              style={{ backgroundColor: landingTheme.colors.navy, color: '#fff' }}
-              onClick={isLoggedIn ? onDashboardClick : onSignUpClick}
-            >
+            <LandingCtaButton onClick={isLoggedIn ? onDashboardClick : onSignUpClick}>
               Start for free
               <ArrowRight className="size-4" aria-hidden />
-            </Button>
+            </LandingCtaButton>
           </div>
 
           <div className="relative mx-auto w-full max-w-xl lg:max-w-none">
             <div className="overflow-hidden rounded-2xl border border-zinc-200/80 bg-white p-2 shadow-lg shadow-zinc-200/40">
               <img
                 src={LANDING_HOME_HERO_IMAGE}
-                alt="Indian teacher in a bright modern classroom, welcoming and ready to teach"
+                alt={LANDING_HOME_HERO_ALT}
                 className="h-[300px] w-full rounded-xl object-cover md:h-[420px]"
-                width={1200}
-                height={900}
+                width={1280}
+                height={960}
+                sizes="(max-width: 1024px) 100vw, 50vw"
                 decoding="async"
+                fetchPriority="high"
+                loading="eager"
               />
             </div>
-            <div
-              className="absolute bottom-5 left-5 max-w-[14.5rem] rounded-xl border border-zinc-100 bg-white p-3 shadow-lg sm:max-w-xs"
-              style={{ boxShadow: landingTheme.shadow.card }}
-            >
-              <div className="flex items-start gap-3">
-                <div
-                  className="grid size-10 shrink-0 place-items-center rounded-lg"
-                  style={{ backgroundColor: `${landingTheme.colors.accent}22`, color: landingTheme.colors.accent }}
-                >
-                  <BookOpen className="size-5" strokeWidth={2} aria-hidden />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-zinc-900">Lesson plan generated</p>
-                  <p className="mt-0.5 text-xs text-zinc-500">Saved 2 hours of prep time</p>
-                </div>
-              </div>
-            </div>
+            <HomeHeroStackCards />
           </div>
         </div>
       </section>
@@ -261,7 +668,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
       >
         <div className="mx-auto max-w-3xl text-center">
           <h2 className="font-heading text-3xl font-bold tracking-tight text-white md:text-5xl lg:text-[2.75rem]">
-            Your classroom{' '}
+            Your <LandingKeywordLine tone="light">classroom</LandingKeywordLine>{' '}
             <span style={{ color: landingTheme.colors.accent }}>command center</span>
           </h2>
           <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-white/80 md:text-lg">
@@ -277,25 +684,44 @@ const LandingPage: React.FC<LandingPageProps> = ({
               <AnimatePresence initial={false} mode="wait">
                 <motion.img
                   key={homeCommandSlideIdx}
-                  src={LANDING_HOME_COMMAND_SLIDES[homeCommandSlideIdx]}
-                  alt={HOME_COMMAND_ALTS[homeCommandSlideIdx]}
+                  src={LANDING_HOME_COMMAND_CAROUSEL[homeCommandSlideIdx].src}
+                  alt={LANDING_HOME_COMMAND_CAROUSEL[homeCommandSlideIdx].alt}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
                   className="absolute inset-2 h-[calc(100%-1rem)] w-[calc(100%-1rem)] rounded-xl object-cover"
-                  width={1200}
-                  height={675}
+                  width={1280}
+                  height={720}
+                  sizes="(max-width: 896px) 100vw, 896px"
                   decoding="async"
+                  loading="lazy"
                 />
               </AnimatePresence>
             </div>
+            <div className="mx-auto mt-5 min-h-[4.25rem] max-w-2xl md:min-h-[4.5rem]">
+              <AnimatePresence initial={false} mode="wait">
+                <motion.p
+                  key={homeCommandSlideIdx}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                  className="text-center text-sm leading-relaxed text-white/88 md:text-base"
+                >
+                  <LandingKeywordLine className="font-semibold text-white">
+                    {LANDING_HOME_COMMAND_CAROUSEL[homeCommandSlideIdx].captionLead}
+                  </LandingKeywordLine>
+                  <span className="text-white/80">{LANDING_HOME_COMMAND_CAROUSEL[homeCommandSlideIdx].captionRest}</span>
+                </motion.p>
+              </AnimatePresence>
+            </div>
             <div className="mt-4 flex justify-center gap-2">
-              {LANDING_HOME_COMMAND_SLIDES.map((_, i) => (
+              {LANDING_HOME_COMMAND_CAROUSEL.map((slide, i) => (
                 <button
-                  key={LANDING_HOME_COMMAND_SLIDES[i]}
+                  key={slide.src}
                   type="button"
-                  aria-label={`Show slide ${i + 1} of ${LANDING_HOME_COMMAND_SLIDES.length}`}
+                  aria-label={`Show slide ${i + 1} of ${LANDING_HOME_COMMAND_CAROUSEL.length}`}
                   aria-current={i === homeCommandSlideIdx ? 'true' : undefined}
                   onClick={() => setHomeCommandSlideIdx(i)}
                   className="h-2.5 w-2.5 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/80"
@@ -319,17 +745,19 @@ const LandingPage: React.FC<LandingPageProps> = ({
             <span style={{ color: landingTheme.colors.accentWarm }}>classroom?</span>
           </h3>
           <p className="mx-auto mt-5 max-w-2xl text-base text-white/85 md:text-lg">
-            Join thousands of teachers who are reclaiming their time and focusing on what matters most.
+            Join thousands of teachers who are reclaiming their{' '}
+            <LandingKeywordLine tone="light">time</LandingKeywordLine> and focusing on what matters most.
           </p>
-          <Button
-            size="lg"
-            className="mt-9 h-12 gap-2 rounded-full border-0 px-10 text-base font-semibold text-white shadow-lg"
-            style={{ background: landingTheme.gradients.button }}
-            onClick={isLoggedIn ? onDashboardClick : onSignUpClick}
-          >
-            Start saving time
-            <ArrowRight className="size-4" aria-hidden />
-          </Button>
+          <div className="mt-9 flex justify-center">
+            <LandingCtaButton
+              className="!text-white"
+              style={{ background: landingTheme.gradients.button }}
+              onClick={isLoggedIn ? onDashboardClick : onSignUpClick}
+            >
+              Start saving time
+              <ArrowRight className="size-4" aria-hidden />
+            </LandingCtaButton>
+          </div>
           <p className="mt-5 text-sm text-white/60">No credit card required. Free forever plan available.</p>
         </div>
       </section>
@@ -347,17 +775,25 @@ const LandingPage: React.FC<LandingPageProps> = ({
     >
       <section
         id="test-prep-hero"
-        className="relative border-b border-border bg-gradient-to-br from-muted/80 via-background to-muted/40 px-4 pb-16 pt-32 md:px-6 md:pb-24 md:pt-28"
+        className="relative border-b border-border bg-gradient-to-br from-muted/80 via-background to-amber-50/30 px-4 pb-16 pt-32 md:px-6 md:pb-24 md:pt-28"
       >
         <div
-          className="pointer-events-none absolute inset-0 opacity-40"
+          className="pointer-events-none absolute inset-0 opacity-[0.9]"
+          style={{ background: landingTheme.gradients.testPrepHeroWash }}
+        />
+        <div
+          className="pointer-events-none absolute inset-0 opacity-35"
           style={{ background: landingTheme.gradients.glow }}
         />
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+          <Star className="absolute right-[10%] top-[18%] size-3 fill-[#f2c44e]/22 text-[#f2c44e]/38" strokeWidth={1} />
+          <Star className="absolute bottom-[40%] left-[4%] size-3.5 fill-[#f2c44e]/18 text-[#f2c44e]/32" strokeWidth={1} />
+        </div>
         <div className="relative mx-auto grid max-w-7xl items-center gap-14 lg:grid-cols-2">
           <div className="space-y-7">
             <Badge
               variant="outline"
-              className="h-auto max-w-full flex-wrap gap-1.5 border-border/80 bg-background/90 px-3 py-2 text-[10px] font-semibold uppercase leading-snug tracking-wider text-muted-foreground shadow-sm sm:text-[11px]"
+              className="h-auto max-w-full flex-wrap gap-1.5 rounded-full border-border/80 bg-background/90 px-3 py-2 text-[10px] font-semibold uppercase leading-snug tracking-wider text-muted-foreground shadow-sm sm:text-[11px]"
             >
               <Sparkles className="size-3.5 shrink-0 text-emerald-600/90" aria-hidden />
               <span>NEET prep · schools &amp; coaching centres</span>
@@ -367,7 +803,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
               <br />
               <span className="mt-1 block text-lg font-normal leading-snug tracking-tight text-muted-foreground sm:text-xl md:text-2xl lg:max-w-xl lg:text-[1.35rem]">
                 Pick chapters and topics from what you taught. Choose how many Easy, Medium, and Hard questions you want.
-                Then get NEET-style MCQs for{' '}
+                Then get <LandingKeywordLine>NEET-style MCQs</LandingKeywordLine> for{' '}
                 <span className="font-medium text-foreground/90">online class mocks</span> or{' '}
                 <span className="font-medium text-foreground/90">print-ready paper tests</span>.
               </span>
@@ -378,22 +814,17 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 <Badge
                   key={pill}
                   variant="secondary"
-                  className="h-auto gap-2 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-medium text-foreground"
+                  className="h-auto gap-2 rounded-full border border-border/60 bg-background px-3 py-2 text-sm font-medium text-foreground"
                 >
                   {pill}
                   <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-hidden />
                 </Badge>
               ))}
             </div>
-            <Button
-              size="lg"
-              className="h-12 gap-2 rounded-lg px-8 text-base font-semibold shadow-sm"
-              style={{ backgroundColor: landingTheme.colors.navy, color: '#fff' }}
-              onClick={isLoggedIn ? onDashboardClick : onLoginClick}
-            >
+            <LandingCtaButton onClick={isLoggedIn ? onDashboardClick : onLoginClick}>
               Build tests free
               <ArrowRight className="size-4" aria-hidden />
-            </Button>
+            </LandingCtaButton>
           </div>
 
           <div className="relative">
@@ -409,15 +840,18 @@ const LandingPage: React.FC<LandingPageProps> = ({
                     <motion.img
                       key={neetHeroSlideIdx}
                       src={NEET_TEST_PREP_HERO_SLIDES[neetHeroSlideIdx]}
-                      alt={NEET_HERO_ALTS[neetHeroSlideIdx]}
+                      alt={NEET_PREP_HERO_ALTS[neetHeroSlideIdx]}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
                       transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
                       className="absolute inset-0 h-full w-full rounded-xl object-cover"
-                      width={1200}
-                      height={900}
+                      width={1280}
+                      height={960}
+                      sizes="(max-width: 1024px) 100vw, 50vw"
                       decoding="async"
+                      fetchPriority="high"
+                      loading="eager"
                     />
                   </AnimatePresence>
                 </div>
@@ -455,7 +889,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
                         transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
                         className="flex items-start gap-2.5"
                       >
-                        <div className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-foreground">
+                        <div className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-foreground ring-1 ring-[#f2c44e]/35">
                           <Hi className="size-4" strokeWidth={2} aria-hidden />
                         </div>
                         <div className="min-w-0">
@@ -474,30 +908,28 @@ const LandingPage: React.FC<LandingPageProps> = ({
 
       <LandingHowItWorksSection />
 
-      <section className="border-b border-border bg-background px-4 py-16 md:px-6 md:py-24">
-        <Card className="mx-auto max-w-5xl overflow-hidden border-0 bg-primary text-primary-foreground shadow-lg">
+      <section className="border-b border-zinc-200 bg-white px-4 py-16 md:px-6 md:py-24">
+        <Card
+          className="mx-auto max-w-5xl overflow-hidden border-0 text-white shadow-lg"
+          style={{ backgroundColor: landingTheme.colors.navy }}
+        >
           <CardContent className="px-6 py-12 text-center md:px-10 md:py-16">
             <h3 className="font-heading text-3xl font-semibold leading-tight md:text-5xl lg:text-6xl">
               Same-day tests.
               <br />
-              <span className="text-primary-foreground/85">Sane prep weeks.</span>
+              <span className="text-white/90">Sane prep weeks.</span>
             </h3>
-            <p className="mx-auto mb-9 mt-5 max-w-3xl text-lg text-primary-foreground/85 md:text-xl">
+            <p className="mx-auto mb-9 mt-5 max-w-3xl text-lg text-white/90 md:text-xl">
               When the hall is booked and the batch is waiting, you shouldn&apos;t still be fixing margins and hunting
               MCQs. Your goal stays simple:{' '}
-              <span className="font-medium text-primary-foreground">{LANDING_HERO_OUTCOME.toLowerCase()}.</span> Start free,
-              run your next practice paper from KiwiTeach, and skip the Sunday-night scramble.
+              <span className="font-medium text-white">{LANDING_HERO_OUTCOME.toLowerCase()}.</span> Start free, run your
+              next practice paper from KiwiTeach, and skip the Sunday-night scramble.
             </p>
-            <Button
-              variant="secondary"
-              size="lg"
-              className="h-12 gap-2 rounded-lg px-10 text-base font-semibold shadow-sm"
-              onClick={isLoggedIn ? onDashboardClick : onLoginClick}
-            >
+            <LandingCtaButton variant="white" onClick={isLoggedIn ? onDashboardClick : onLoginClick}>
               Start building tests
               <ArrowRight className="size-4" aria-hidden />
-            </Button>
-            <p className="mt-5 text-sm text-primary-foreground/70">No credit card to try. Free tier available.</p>
+            </LandingCtaButton>
+            <p className="mt-5 text-sm text-white/75">No credit card to try. Free tier available.</p>
           </CardContent>
         </Card>
       </section>
@@ -516,8 +948,12 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 <div className="mx-auto h-32 w-32 overflow-hidden rounded-full border border-border bg-muted">
                   <img
                     src="https://picsum.photos/seed/rafeeque/200/200"
-                    alt="Rafeeque Mavoor"
+                    alt="Rafeeque Mavoor, CEO and co-founder of KiwiTeach"
                     className="h-full w-full object-cover"
+                    width={200}
+                    height={200}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                   />
                 </div>
@@ -537,8 +973,12 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 <div className="mx-auto h-32 w-32 overflow-hidden rounded-full border border-border bg-muted">
                   <img
                     src="https://picsum.photos/seed/favaz/200/200"
-                    alt="Favaz Ahammed"
+                    alt="Favaz Ahammed, CTO and co-founder of KiwiTeach"
                     className="h-full w-full object-cover"
+                    width={200}
+                    height={200}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                   />
                 </div>
@@ -570,26 +1010,46 @@ const LandingPage: React.FC<LandingPageProps> = ({
         className="relative overflow-hidden border-b border-border pt-32 pb-14 md:pt-28 md:pb-20"
         style={{ background: landingTheme.gradients.testPrepHero }}
       >
+        <div
+          className="pointer-events-none absolute inset-0 opacity-100"
+          style={{ background: landingTheme.gradients.neetHeroWash }}
+        />
         <div className="absolute top-1/2 left-0 h-[40vw] max-h-[420px] w-[40vw] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/25 blur-[100px]" />
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+          <Star className="absolute right-[12%] top-[22%] size-3 fill-[#f2c44e]/28 text-[#f2c44e]/45" strokeWidth={1} />
+          <Star className="absolute left-[15%] top-[35%] size-2.5 fill-[#f2c44e]/22 text-[#f2c44e]/40" strokeWidth={1} />
+          <Star className="absolute bottom-[25%] right-[20%] size-3 fill-[#f2c44e]/20 text-[#f2c44e]/35" strokeWidth={1} />
+        </div>
         <div className="relative z-10 mx-auto max-w-4xl px-4 text-center md:px-6">
-          <Badge variant="outline" className="border-white/25 bg-white/10 text-[11px] font-semibold uppercase tracking-wider text-indigo-100">
+          <Badge
+            variant="outline"
+            className="rounded-full border-white/25 bg-white/10 text-[11px] font-semibold uppercase tracking-wider text-indigo-100"
+          >
             NEET PYQ
           </Badge>
           <h1 className="mt-6 font-heading text-4xl font-semibold tracking-tight text-white md:text-6xl">
             Practice that matches the exam you&apos;re training for
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-white/75">
-            For teachers: align drills and full papers with NEET-style rigour using the same question workflows as the rest
-            of KiwiTeach: PYQs, syllabus filters, and batches you already manage.
+            For teachers: align drills and full papers with <LandingKeywordLine tone="light">NEET-style</LandingKeywordLine>{' '}
+            rigour using the same question workflows as the rest of KiwiTeach: PYQs, syllabus filters, and batches you
+            already manage.
           </p>
-          <Button
-            variant="outline"
-            size="lg"
-            className="mt-10 h-11 rounded-lg border-white/25 bg-white/10 px-8 text-sm font-semibold text-white backdrop-blur-sm hover:bg-white/15"
-            asChild
-          >
-            <a href="#pyqs">Jump to PYQs</a>
-          </Button>
+          <div className="mt-10 flex justify-center">
+            <LandingCtaAnchor
+              variant="outlineLight"
+              href={`${MARKETING_PATH.neetPyq}#pyqs`}
+              onClick={(e) => {
+                e.preventDefault();
+                pushMarketingRoute('neet');
+                window.requestAnimationFrame(() => {
+                  document.getElementById('pyqs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+              }}
+            >
+              Jump to PYQs
+            </LandingCtaAnchor>
+          </div>
         </div>
       </section>
       <NeetPyqSection isLoggedIn={!!isLoggedIn} onLoginClick={onLoginClick} />
@@ -607,7 +1067,10 @@ const LandingPage: React.FC<LandingPageProps> = ({
     >
       <section className="border-b border-border bg-gradient-to-b from-muted/50 to-background px-4 pb-8 pt-32 md:px-6 md:pb-10 md:pt-28">
         <div className="mx-auto max-w-5xl text-center">
-          <Badge variant="secondary" className="mb-4 text-[11px] font-semibold uppercase tracking-wider">
+          <Badge
+            variant="secondary"
+            className="mb-4 rounded-full text-[11px] font-semibold uppercase tracking-wider ring-1 ring-[#f2c44e]/25"
+          >
             Pricing
           </Badge>
           <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground md:text-5xl">
@@ -625,41 +1088,47 @@ const LandingPage: React.FC<LandingPageProps> = ({
   );
 
   return (
-    <div className="theme min-h-screen bg-white font-sans text-foreground antialiased selection:bg-primary/15 selection:text-foreground">
+    <div className="theme landing-marketing-scope min-h-screen bg-white font-sans text-foreground antialiased selection:bg-primary/15 selection:text-foreground">
       <LandingSeoHelmet activeTab={activeTab} />
       {/* Navigation: solid white bar; centered links on lg+; hamburger on smaller screens */}
       <nav className="fixed top-0 z-50 w-full border-b border-zinc-200/90 bg-white shadow-[0_1px_0_0_rgba(0,0,0,0.03)]">
         <div className="relative mx-auto flex min-h-[3.75rem] w-full max-w-7xl items-center justify-between gap-3 px-3 sm:px-4 md:px-6 py-2">
-          <div
-            className="relative z-[1] flex min-w-0 shrink-0 cursor-pointer items-center gap-2 sm:gap-3"
-            onClick={() => {
-              setActiveTab('home');
-              setBlogSlug(null);
+          <a
+            href={pathForMarketingTab('home')}
+            aria-current={activeTab === 'home' ? 'page' : undefined}
+            onClick={(e) => {
+              e.preventDefault();
+              pushMarketingRoute('home');
             }}
+            className="relative z-[1] flex min-w-0 shrink-0 cursor-pointer items-center gap-2 sm:gap-3 no-underline"
           >
             <KiwiTeachLogoMark decorative className="h-9 w-9 sm:h-10 sm:w-10" />
             <span className="truncate text-lg font-semibold tracking-tight text-zinc-900 sm:text-xl">
               KiwiTeach
             </span>
-          </div>
+          </a>
 
           <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 lg:flex">
             <div className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-zinc-200/80 bg-zinc-50/80 px-1 py-1 shadow-sm">
               {landingNavLinks.map((link) => {
                 const active = isLandingNavLinkActive(link.id);
                 return (
-                  <button
+                  <a
                     key={link.id}
-                    type="button"
-                    onClick={() => goToTab(link.id)}
-                    className={`rounded-full px-3.5 py-2 text-sm font-medium transition-colors ${
+                    href={landingNavIdToHref(link.id)}
+                    aria-current={active ? 'page' : undefined}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      goToTab(link.id);
+                    }}
+                    className={`rounded-full px-3.5 py-2 text-sm font-medium transition-colors no-underline ${
                       active
                         ? 'bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200/80'
-                        : 'text-zinc-600 hover:bg-white/80 hover:text-zinc-900'
+                        : 'text-zinc-600 hover:bg-white/80 hover:text-zinc-900 hover:ring-1 hover:ring-[#f2c44e]/35'
                     }`}
                   >
                     {link.label}
-                  </button>
+                  </a>
                 );
               })}
             </div>
@@ -671,29 +1140,25 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 <button
                   type="button"
                   onClick={onLoginClick}
-                  className="shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 hover:text-zinc-900 sm:px-2.5 sm:text-sm"
+                  className="shrink-0 whitespace-nowrap rounded-full border border-zinc-200/90 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-[#f2c44e]/50 hover:bg-amber-50/40 hover:text-zinc-900 sm:px-3.5 sm:text-sm"
                 >
                   Sign in
                 </button>
-                <button
-                  type="button"
+                <LandingCtaButton
                   onClick={onSignUpClick}
-                  className="shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-95 sm:px-5 sm:text-sm"
-                  style={{ backgroundColor: landingTheme.colors.navy }}
+                  className="!h-10 !px-5 !text-xs sm:!h-11 sm:!px-6 sm:!text-sm"
                 >
                   Get started
-                </button>
+                </LandingCtaButton>
               </>
             ) : (
-              <button
-                type="button"
+              <LandingCtaButton
                 onClick={() => onDashboardClick?.()}
-                className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-opacity hover:opacity-95 sm:gap-1.5 sm:px-3 sm:text-sm"
-                style={{ backgroundColor: landingTheme.colors.navy, borderColor: landingTheme.colors.navySoft }}
+                className="!h-9 gap-1 !px-3 !text-xs sm:!h-10 sm:gap-1.5 sm:!px-4 sm:!text-sm"
               >
-                <Layout className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+                <Layout className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" aria-hidden />
                 Dashboard
-              </button>
+              </LandingCtaButton>
             )}
             <button
               type="button"
@@ -750,16 +1215,20 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 {landingNavLinks.map((link) => {
                   const isActive = isLandingNavLinkActive(link.id);
                   return (
-                    <button
+                    <a
                       key={link.id}
-                      type="button"
-                      onClick={() => goToTab(link.id)}
-                      className={`rounded-lg px-4 py-3.5 text-left text-base font-medium transition-colors ${
+                      href={landingNavIdToHref(link.id)}
+                      aria-current={isActive ? 'page' : undefined}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        goToTab(link.id);
+                      }}
+                      className={`rounded-lg px-4 py-3.5 text-left text-base font-medium transition-colors no-underline ${
                         isActive ? 'bg-primary text-primary-foreground' : 'text-zinc-900 hover:bg-zinc-100'
                       }`}
                     >
                       {link.label}
-                    </button>
+                    </a>
                   );
                 })}
               </nav>
@@ -774,6 +1243,8 @@ const LandingPage: React.FC<LandingPageProps> = ({
           {activeTab === 'neet' && renderNeet()}
           {activeTab === 'test-prep' && renderTestPrep()}
           {activeTab === 'pricing' && renderPricing()}
+          {activeTab === 'privacy' && renderPrivacy()}
+          {activeTab === 'terms' && renderTerms()}
           {activeTab === 'blog' && (
             <motion.div
               key="blog"
@@ -784,10 +1255,11 @@ const LandingPage: React.FC<LandingPageProps> = ({
               className="w-full"
             >
               <BlogIndexPage
-                onBack={() => { setActiveTab('home'); setBlogSlug(null); }}
+                onBack={() => {
+                  pushMarketingRoute('home');
+                }}
                 onSelectPost={(slug) => {
-                  setBlogSlug(slug);
-                  setActiveTab('blog-post');
+                  pushMarketingRoute('blog-post', slug);
                 }}
               />
             </motion.div>
@@ -804,12 +1276,10 @@ const LandingPage: React.FC<LandingPageProps> = ({
               <BlogArticlePage
                 slug={blogSlug}
                 onBack={() => {
-                  setActiveTab('blog');
-                  setBlogSlug(null);
+                  pushMarketingRoute('blog');
                 }}
                 onSelectPost={(nextSlug) => {
-                  setBlogSlug(nextSlug);
-                  setActiveTab('blog-post');
+                  pushMarketingRoute('blog-post', nextSlug);
                 }}
               />
             </motion.div>
@@ -826,38 +1296,39 @@ const LandingPage: React.FC<LandingPageProps> = ({
                 <span className="text-2xl font-semibold tracking-tight">KiwiTeach</span>
               </div>
               <p className="max-w-md text-lg leading-relaxed text-muted-foreground">{LANDING_FOOTER_BLURB}</p>
+              <div>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Follow us</p>
+                <LandingFooterSocial />
+              </div>
             </div>
             {footerColumns.map((column) => (
               <div key={column.title} className="space-y-4">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{column.title}</p>
                 <ul className="space-y-3">
-                  {column.links.map((link) => (
-                    <li key={link}>
-                      {link === 'Blog' ||
-                      link === 'Pricing' ||
-                      link === 'Home' ||
-                      link === 'NEET Test Prep' ||
-                      link === 'NEET PYQ' ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (link === 'Blog') goToTab('blog');
-                            else if (link === 'Pricing') goToTab('pricing');
-                            else if (link === 'Home') goToTab('home');
-                            else if (link === 'NEET Test Prep') goToTab('test-prep');
-                            else if (link === 'NEET PYQ') goToTab('neet');
-                          }}
-                          className="text-left text-muted-foreground transition-colors hover:text-foreground"
-                        >
-                          {link}
-                        </button>
-                      ) : (
-                        <a href="#" className="text-muted-foreground transition-colors hover:text-foreground">
-                          {link}
-                        </a>
-                      )}
-                    </li>
-                  ))}
+                  {column.links.map((link) => {
+                    const m = footerLinkToMarketing(link);
+                    if (m) {
+                      return (
+                        <li key={link}>
+                          <a
+                            href={m.href}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              pushMarketingRoute(m.tab);
+                            }}
+                            className="text-muted-foreground transition-colors hover:text-foreground no-underline"
+                          >
+                            {link}
+                          </a>
+                        </li>
+                      );
+                    }
+                    return (
+                      <li key={link}>
+                        <span className="text-muted-foreground">{link}</span>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ))}
@@ -866,8 +1337,26 @@ const LandingPage: React.FC<LandingPageProps> = ({
           <div className="flex flex-col items-center justify-between gap-6 border-t border-border pt-8 md:flex-row">
             <p className="text-sm font-medium text-muted-foreground">© 2026 KiwiTeach Learning. All rights reserved.</p>
             <div className="flex flex-wrap justify-center gap-8">
-              <a href="#" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground">Privacy Policy</a>
-              <a href="#" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground">Terms of Service</a>
+              <a
+                href={pathForMarketingTab('privacy')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  pushMarketingRoute('privacy');
+                }}
+                className="text-xs font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground no-underline"
+              >
+                Privacy Policy
+              </a>
+              <a
+                href={pathForMarketingTab('terms')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  pushMarketingRoute('terms');
+                }}
+                className="text-xs font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground no-underline"
+              >
+                Terms of Service
+              </a>
             </div>
           </div>
         </div>

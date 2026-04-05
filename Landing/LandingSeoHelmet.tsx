@@ -9,8 +9,10 @@ import {
   SITE_NAME,
   SITE_TAGLINE,
 } from '../seo/siteConfig';
+import { LANDING_HOME_HERO_IMAGE, NEET_TEST_PREP_HERO_SLIDES } from './theme';
+import { pathForMarketingTab, type LandingMarketingTab } from './marketingRoutes';
 
-export type LandingSeoTab = 'home' | 'neet' | 'test-prep' | 'pricing' | 'blog' | 'blog-post';
+export type LandingSeoTab = LandingMarketingTab;
 
 interface LandingSeoHelmetProps {
   activeTab: LandingSeoTab;
@@ -28,6 +30,12 @@ const PRICING_DESCRIPTION =
 const BLOG_INDEX_DESCRIPTION =
   'KiwiTeach journal: ideas for assessment design, classroom rhythm, AI-assisted quiz workflows, and GEO-friendly teaching notes for educators.';
 
+const PRIVACY_DESCRIPTION =
+  'How KiwiTeach collects, uses, and protects data for schools and teachers in India. Draft policy — replace with counsel-approved text before relying on it.';
+
+const TERMS_DESCRIPTION =
+  'Terms of use for the KiwiTeach teaching, assessment, and exam platform. Draft terms — replace with counsel-approved text before relying on them.';
+
 export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab }) => {
   const origin = getSiteOrigin() || PRODUCTION_SITE_ORIGIN;
   const ogImage = getDefaultOgImageUrl();
@@ -36,41 +44,64 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
     if (activeTab === 'blog-post') {
       return null;
     }
+    const abs = (path: string) => `${origin}${path}`;
+
     switch (activeTab) {
       case 'neet':
         return {
           title: `NEET PYQ for teachers | ${SITE_NAME}`,
           description: NEET_DESCRIPTION,
           keywords: `${HOME_KEYWORDS}, NEET PYQ, previous year questions, medical entrance, biology chemistry physics`,
-          canonical: `${origin}/`,
+          canonical: abs(pathForMarketingTab('neet')),
+          ogImageAlt: 'KiwiTeach NEET previous-year questions practice for teachers in India',
         };
       case 'test-prep':
         return {
           title: `NEET test prep & mock papers for teachers | ${SITE_NAME}`,
           description: TEST_PREP_DESCRIPTION,
           keywords: `${HOME_KEYWORDS}, NEET test prep, coaching centre, exam software`,
-          canonical: `${origin}/`,
+          canonical: abs(pathForMarketingTab('test-prep')),
+          ogImageAlt: 'NEET test prep and mock papers for coaching centres — KiwiTeach',
         };
       case 'pricing':
         return {
           title: `Pricing & plans | ${SITE_NAME}`,
           description: PRICING_DESCRIPTION,
           keywords: `${HOME_KEYWORDS}, pricing, B2B education SaaS, institute software`,
-          canonical: `${origin}/`,
+          canonical: abs(pathForMarketingTab('pricing')),
+          ogImageAlt: 'KiwiTeach pricing for teachers and institutes',
         };
       case 'blog':
         return {
           title: `Journal & teaching ideas | ${SITE_NAME}`,
           description: BLOG_INDEX_DESCRIPTION,
           keywords: `${HOME_KEYWORDS}, teacher blog, assessment design, AI quizzes, FAQ, classroom technology`,
-          canonical: `${origin}/blog`,
+          canonical: abs(pathForMarketingTab('blog')),
+          ogImageAlt: 'KiwiTeach journal — teaching and assessment ideas',
+        };
+      case 'privacy':
+        return {
+          title: `Privacy policy | ${SITE_NAME}`,
+          description: PRIVACY_DESCRIPTION,
+          keywords: `${HOME_KEYWORDS}, privacy policy, data protection, schools India`,
+          canonical: abs(pathForMarketingTab('privacy')),
+          ogImageAlt: 'KiwiTeach privacy policy',
+        };
+      case 'terms':
+        return {
+          title: `Terms of service | ${SITE_NAME}`,
+          description: TERMS_DESCRIPTION,
+          keywords: `${HOME_KEYWORDS}, terms of service, user agreement`,
+          canonical: abs(pathForMarketingTab('terms')),
+          ogImageAlt: 'KiwiTeach terms of service',
         };
       default:
         return {
           title: `${SITE_NAME} | ${SITE_TAGLINE}`,
           description: HOME_DESCRIPTION,
           keywords: HOME_KEYWORDS,
-          canonical: `${origin}/`,
+          canonical: abs(pathForMarketingTab('home')),
+          ogImageAlt: 'KiwiTeach — AI tools for teachers, lesson plans, and NEET exam prep',
         };
     }
   }, [activeTab, origin]);
@@ -105,7 +136,7 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
           operatingSystem: 'Web',
           url: origin,
           description: HOME_DESCRIPTION,
-          offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock' },
+          offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
         },
       ],
     });
@@ -126,6 +157,7 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
         <meta property="og:url" content={pack.canonical} />
         <meta property="og:type" content="website" />
         <meta property="og:image" content={ogImage} />
+        <meta property="og:image:alt" content={pack.ogImageAlt} />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
         <meta property="og:locale" content="en_IN" />
@@ -133,7 +165,14 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
         <meta name="twitter:title" content={pack.title} />
         <meta name="twitter:description" content={pack.description} />
         <meta name="twitter:image" content={ogImage} />
+        <meta name="twitter:image:alt" content={pack.ogImageAlt} />
         <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+        {activeTab === 'home' ? (
+          <link rel="preload" href={`${origin}${LANDING_HOME_HERO_IMAGE}`} as="image" type="image/webp" />
+        ) : null}
+        {activeTab === 'test-prep' ? (
+          <link rel="preload" href={`${origin}${NEET_TEST_PREP_HERO_SLIDES[0]}`} as="image" type="image/webp" />
+        ) : null}
       </Helmet>
       {jsonLd ? <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} /> : null}
     </>
