@@ -75,46 +75,6 @@ const STUDIO_MODEL_META: Record<(typeof STUDIO_MODEL_IDS)[number], { label: stri
   'gemini-flash-lite-latest': { label: 'Flash Lite', icon: 'mdi:feather' },
 };
 
-/** Scale Easy/Medium/Hard template counts to sum exactly to `total` (preserves ratio; largest remainder). */
-function scaleDifficultyToTotal(
-  template: { easy: number; medium: number; hard: number },
-  total: number
-): { easy: number; medium: number; hard: number } {
-  const wE = Math.max(0, Math.floor(template.easy));
-  const wM = Math.max(0, Math.floor(template.medium));
-  const wH = Math.max(0, Math.floor(template.hard));
-  const sumW = wE + wM + wH;
-  if (total <= 0) return { easy: 0, medium: 0, hard: 0 };
-  if (sumW <= 0) return { easy: 0, medium: total, hard: 0 };
-
-  const exact = [(wE / sumW) * total, (wM / sumW) * total, (wH / sumW) * total];
-  const floor = exact.map((x) => Math.floor(x));
-  let rem = total - floor.reduce((a, b) => a + b, 0);
-  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
-  const out = [...floor];
-  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
-  return { easy: out[0], medium: out[1], hard: out[2] };
-}
-
-/** Scale MCQ / assertion / matching / statements template counts to sum exactly to `total`. */
-function scaleTypesToTotal(
-  template: { mcq: number; reasoning: number; matching: number; statements: number },
-  total: number
-): { mcq: number; reasoning: number; matching: number; statements: number } {
-  const keys = ['mcq', 'reasoning', 'matching', 'statements'] as const;
-  const weights = keys.map((k) => Math.max(0, Math.floor(Number(template[k]) || 0)));
-  const sumW = weights.reduce((a, b) => a + b, 0);
-  if (total <= 0) return { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
-  if (sumW === 0) return { mcq: total, reasoning: 0, matching: 0, statements: 0 };
-  const exact = weights.map((wi) => (wi / sumW) * total);
-  const floor = exact.map((x) => Math.floor(x));
-  let rem = total - floor.reduce((a, b) => a + b, 0);
-  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
-  const out = [...floor];
-  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
-  return { mcq: out[0], reasoning: out[1], matching: out[2], statements: out[3] };
-}
-
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
   const [kbChapterCounts, setKbChapterCounts] = useState<Record<string, number>>({});
@@ -310,6 +270,72 @@ const QuestionBankHome: React.FC = () => {
       modelLabel: STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel,
     };
   }, [grandTotals.questions, selectedModel]);
+
+  const selectedChapterIdsKey = useMemo(
+    () => Array.from(selectedChapterIds).sort().join(','),
+    [selectedChapterIds]
+  );
+
+  const activeStandardSyncSig =
+    activeEditingChapterId &&
+    chapterConfigs[activeEditingChapterId]?.synthesisMode === 'standard'
+      ? (() => {
+          const c = chapterConfigs[activeEditingChapterId];
+          if (!c) return '';
+          return `${c.diff.easy},${c.diff.medium},${c.diff.hard},${c.types.mcq},${c.types.reasoning},${c.types.matching},${c.types.statements},${c.isProportional ? 1 : 0},${c.total}`;
+        })()
+      : '';
+
+  /** When on, keep every selected *standard* chapter’s diff, types, total, and proportional flag in sync with the active chapter. */
+  useEffect(() => {
+    if (!applyActiveStandardMixToAllChapters || !activeEditingChapterId) return;
+    setChapterConfigs((prev) => {
+      const src = prev[activeEditingChapterId!];
+      if (!src || src.synthesisMode !== 'standard') return prev;
+      const total = Object.values(src.types).reduce((a: number, b: number) => a + b, 0);
+      const next = { ...prev };
+      let changed = false;
+      for (const rid of selectedChapterIds) {
+        const id = String(rid);
+        if (id === String(activeEditingChapterId)) continue;
+        const t = next[id];
+        if (!t || t.synthesisMode !== 'standard') continue;
+        if (
+          t.diff.easy === src.diff.easy &&
+          t.diff.medium === src.diff.medium &&
+          t.diff.hard === src.diff.hard &&
+          t.types.mcq === src.types.mcq &&
+          t.types.reasoning === src.types.reasoning &&
+          t.types.matching === src.types.matching &&
+          t.types.statements === src.types.statements &&
+          t.total === total &&
+          t.isProportional === src.isProportional
+        ) {
+          continue;
+        }
+        next[id] = {
+          ...t,
+          diff: { ...src.diff },
+          types: { ...src.types },
+          total,
+          isProportional: src.isProportional,
+        };
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [
+    applyActiveStandardMixToAllChapters,
+    activeEditingChapterId,
+    selectedChapterIdsKey,
+    activeStandardSyncSig,
+  ]);
+
+  useEffect(() => {
+    if (!applyActiveStandardMixToAllChapters || !activeEditingChapterId) return;
+    const c = chapterConfigs[activeEditingChapterId];
+    if (c && c.synthesisMode !== 'standard') setApplyActiveStandardMixToAllChapters(false);
+  }, [activeEditingChapterId, applyActiveStandardMixToAllChapters, chapterConfigs]);
 
   useEffect(() => {
       if (mode === 'browse') {
@@ -546,17 +572,8 @@ const QuestionBankHome: React.FC = () => {
                       }
                   } else {
                       config.total = Object.values(config.types).reduce((a: number, b: number) => a + b, 0);
-                      let diffForGen = config.diff;
-                      let typesForGen = { ...config.types };
-                      if (
-                        applyActiveStandardMixToAllChapters &&
-                        activeEditingChapterId &&
-                        chapterConfigs[activeEditingChapterId]
-                      ) {
-                        const tmpl = chapterConfigs[activeEditingChapterId];
-                        diffForGen = scaleDifficultyToTotal(tmpl.diff, config.total);
-                        typesForGen = scaleTypesToTotal(tmpl.types, config.total);
-                      }
+                      const diffForGen = config.diff;
+                      const typesForGen = { ...config.types };
                       let figureCount = 0; let sourceImages: {data: string, mimeType: string}[] = [];
                       if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null); } else figureCount = config.syntheticFigureCount || 0;
                       
@@ -1417,20 +1434,9 @@ const QuestionBankHome: React.FC = () => {
                                                         ) : null}
                                                         <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
                                                         <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
-                                                        <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-amber-100 bg-amber-50/50 px-3 py-2.5">
-                                                          <input
-                                                            type="checkbox"
-                                                            className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-amber-600 focus:ring-amber-500"
-                                                            checked={applyActiveStandardMixToAllChapters}
-                                                            onChange={(e) => setApplyActiveStandardMixToAllChapters(e.target.checked)}
-                                                          />
-                                                          <span className="min-w-0">
-                                                            <span className="block text-[9px] font-black uppercase tracking-wide text-amber-950">Apply difficulty + styles to all chapters</span>
-                                                            <span className="mt-0.5 block text-[8px] font-medium leading-snug text-zinc-600">
-                                                              At forge time, each <strong className="font-semibold text-zinc-800">standard</strong> chapter uses this chapter&apos;s Easy/Medium/Hard and MCQ/assertion/matching/statements <em className="not-italic font-semibold text-zinc-700">ratios</em>, scaled to that chapter&apos;s own total count. Syllabus chapters unchanged.
-                                                            </span>
-                                                          </span>
-                                                        </label>
+                                                        <p className="rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-[8px] font-medium leading-snug text-zinc-600">
+                                                          To mirror these counts to every standard chapter in the batch, use the toggle next to <strong className="font-semibold text-zinc-800">Selected batch</strong> on the main screen.
+                                                        </p>
                                                     </>
                                                 )}
                                             </div>
@@ -1459,7 +1465,7 @@ const QuestionBankHome: React.FC = () => {
                                             </p>
                                             {applyActiveStandardMixToAllChapters && (
                                               <p className="mt-1 text-[9px] font-semibold text-amber-200/90">
-                                                Shared E/M/H + style mix at forge (standard chapters)
+                                                Standard chapters share the active chapter’s counts (updated live)
                                               </p>
                                             )}
                                           </div>
@@ -1480,9 +1486,31 @@ const QuestionBankHome: React.FC = () => {
                                     </div>
                                     <div className="flex flex-col gap-3">
                                       <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm flex-1 overflow-hidden min-h-0">
-                                        <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 mb-4">
-                                          <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
-                                        </h3>
+                                        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                          <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 shrink-0">
+                                            <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
+                                          </h3>
+                                          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5 sm:max-w-[min(100%,280px)]">
+                                            <input
+                                              type="checkbox"
+                                              className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-amber-600 focus:ring-amber-500 disabled:opacity-40"
+                                              checked={applyActiveStandardMixToAllChapters}
+                                              disabled={
+                                                !activeEditingChapterId ||
+                                                chapterConfigs[activeEditingChapterId]?.synthesisMode !== 'standard'
+                                              }
+                                              onChange={(e) => setApplyActiveStandardMixToAllChapters(e.target.checked)}
+                                            />
+                                            <span className="min-w-0">
+                                              <span className="block text-[9px] font-black uppercase tracking-wide text-amber-950">
+                                                Same counts for all standard chapters
+                                              </span>
+                                              <span className="mt-0.5 block text-[8px] font-medium leading-snug text-zinc-600">
+                                                Copies the <strong className="font-semibold text-zinc-800">active</strong> chapter’s total, Easy/Medium/Hard, and style numbers to every other selected standard chapter. Syllabus rows are skipped.
+                                              </span>
+                                            </span>
+                                          </label>
+                                        </div>
                                         <div className="flex flex-col gap-2 overflow-y-auto custom-scrollbar max-h-[min(360px,50vh)] pr-1">
                                           {Array.from(selectedChapterIds).map((id: string) => {
                                             const chapter = chapters.find(c => c.id === id);
@@ -1493,20 +1521,8 @@ const QuestionBankHome: React.FC = () => {
                                               const topics = Object.values(config.topicCounts || {}) as { count: number; enabled: boolean }[];
                                               chapterTotalCount = topics.reduce((sum, t) => sum + (t.enabled ? t.count : 0), 0);
                                             } else chapterTotalCount = config?.total || 0;
-                                            const isStd = config?.synthesisMode === 'standard';
-                                            let rowDiff = config?.diff ?? { easy: 0, medium: 0, hard: 0 };
-                                            let rowTypes = config?.types ?? { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
-                                            if (
-                                              applyActiveStandardMixToAllChapters &&
-                                              isStd &&
-                                              activeEditingChapterId &&
-                                              chapterConfigs[activeEditingChapterId]?.synthesisMode === 'standard' &&
-                                              chapterTotalCount > 0
-                                            ) {
-                                              const tmpl = chapterConfigs[activeEditingChapterId];
-                                              rowDiff = scaleDifficultyToTotal(tmpl.diff, chapterTotalCount);
-                                              rowTypes = scaleTypesToTotal(tmpl.types, chapterTotalCount);
-                                            }
+                                            const rowDiff = config?.diff ?? { easy: 0, medium: 0, hard: 0 };
+                                            const rowTypes = config?.types ?? { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
                                             return (
                                               <div
                                                 key={id}
@@ -1527,18 +1543,18 @@ const QuestionBankHome: React.FC = () => {
                                                       <span className="text-[8px] font-semibold text-rose-600 bg-rose-50 px-1 py-0.5 rounded uppercase">Syllabus</span>
                                                     ) : (
                                                       <>
-                                                        <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded" title="Easy (forge preview)">
+                                                        <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded" title="Easy">
                                                           E:{rowDiff.easy}
                                                         </span>
-                                                        <span className="text-[8px] font-semibold text-amber-800 bg-amber-50 px-1 py-0.5 rounded" title="Medium (forge preview)">
+                                                        <span className="text-[8px] font-semibold text-amber-800 bg-amber-50 px-1 py-0.5 rounded" title="Medium">
                                                           M:{rowDiff.medium}
                                                         </span>
-                                                        <span className="text-[8px] font-semibold text-rose-700 bg-rose-50 px-1 py-0.5 rounded" title="Hard (forge preview)">
+                                                        <span className="text-[8px] font-semibold text-rose-700 bg-rose-50 px-1 py-0.5 rounded" title="Hard">
                                                           H:{rowDiff.hard}
                                                         </span>
                                                         <span
                                                           className="text-[7px] font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded border border-indigo-100 max-w-full truncate"
-                                                          title="Style counts at forge (MCQ · Assertion · Matching · Statements)"
+                                                          title="MCQ · Assertion · Matching · Statements"
                                                         >
                                                           M{rowTypes.mcq}·A{rowTypes.reasoning}·m{rowTypes.matching}·S{rowTypes.statements}
                                                         </span>
