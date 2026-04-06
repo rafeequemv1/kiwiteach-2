@@ -7,8 +7,10 @@ import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, gen
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
 import {
   listKbPromptSets,
-  resolveStoredPromptSetIdForKbGeneration,
+  resolveForgePromptProvenance,
+  labelPromptGenerationSource,
   type KbPromptSetRow,
+  type KbGenerationPromptSource,
 } from '../../services/kbPromptService';
 import { QuestionType, Question } from '../../Quiz/types';
 
@@ -225,8 +227,11 @@ type ForgeDetailState = {
 function questionsToNeetBankRows(
   chapter: { id: string; name: string; subject_name: string; class_name: string },
   qs: Question[],
-  promptSetId: string | null | undefined
+  promptSetId: string | null | undefined,
+  promptGenerationSource: KbGenerationPromptSource,
+  generationModel: string
 ) {
+  const modelId = (generationModel || '').trim() || null;
   return qs.map((q) => ({
     chapter_id: chapter.id,
     chapter_name: chapter.name,
@@ -244,6 +249,8 @@ function questionsToNeetBankRows(
     column_a: q.columnA,
     column_b: q.columnB,
     prompt_set_id: promptSetId ?? null,
+    prompt_generation_source: promptGenerationSource,
+    generation_model: modelId,
   }));
 }
 
@@ -692,6 +699,7 @@ const QuestionBankHome: React.FC = () => {
                       : Array.isArray(nested) && nested[0]
                         ? (nested[0] as { name?: string }).name
                         : undefined;
+              const srcLabel = labelPromptGenerationSource(item.prompt_generation_source);
               return {
                   ...item,
                   id: item.id,
@@ -703,7 +711,7 @@ const QuestionBankHome: React.FC = () => {
                   figureDataUrl: item.figure_url,
                   sourceFigureDataUrl: item.source_figure_url,
                   topic_tag: item.topic_tag || 'General',
-                  prompt_set_name: promptSetName ?? null,
+                  prompt_set_name: promptSetName ?? srcLabel ?? null,
               };
           });
           setQuestions(cleanData);
@@ -826,9 +834,9 @@ const QuestionBankHome: React.FC = () => {
               `Exclusions active — model must not use these topic_tags: ${excludedTopicLabelsNormalized.slice(0, 6).join(', ')}${excludedTopicLabelsNormalized.length > 6 ? '…' : ''}`
             );
           }
-          const batchPromptSetId =
-            forgePromptSetOverrideId ??
-            (await resolveStoredPromptSetIdForKbGeneration(selectedKbId));
+          const forgeProvenance = await resolveForgePromptProvenance(selectedKbId, forgePromptSetOverrideId);
+          const batchPromptSetId = forgeProvenance.promptSetId;
+          const batchPromptGenerationSource = forgeProvenance.generationSource;
           for (let i = 0; i < chapterIds.length; i++) {
               if (stopForgingRef.current) break;
               const chapId = chapterIds[i];
@@ -1142,7 +1150,13 @@ const QuestionBankHome: React.FC = () => {
                       }
                   }
                   if (chapterGeneratedQs.length > 0) {
-                    const rows = questionsToNeetBankRows(chapter, chapterGeneratedQs, batchPromptSetId);
+                    const rows = questionsToNeetBankRows(
+                      chapter,
+                      chapterGeneratedQs,
+                      batchPromptSetId,
+                      batchPromptGenerationSource,
+                      selectedModel
+                    );
                     const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
                     if (insertErr) {
                       throw new Error(
@@ -1230,7 +1244,7 @@ const QuestionBankHome: React.FC = () => {
     setIsSaving(true);
     setForgeProgress('Cloud Sync...');
     try {
-        const { error } = await supabase.from('question_bank_neet').insert(reviewQueue.map(item => ({ chapter_id: item.chapter_id, chapter_name: item.chapter_name, subject_name: item.subject_name, class_name: item.class_name, question_text: item.question_text, options: item.options, correct_index: item.correct_index, explanation: item.explanation, difficulty: item.difficulty, question_type: item.question_type, topic_tag: item.topic_tag || 'General', figure_url: item.figure_url, source_figure_url: item.source_figure_url, column_a: item.column_a, column_b: item.column_b, prompt_set_id: item.prompt_set_id ?? null })));
+        const { error } = await supabase.from('question_bank_neet').insert(reviewQueue.map(item => ({ chapter_id: item.chapter_id, chapter_name: item.chapter_name, subject_name: item.subject_name, class_name: item.class_name, question_text: item.question_text, options: item.options, correct_index: item.correct_index, explanation: item.explanation, difficulty: item.difficulty, question_type: item.question_type, topic_tag: item.topic_tag || 'General', figure_url: item.figure_url, source_figure_url: item.source_figure_url, column_a: item.column_a, column_b: item.column_b, prompt_set_id: item.prompt_set_id ?? null, prompt_generation_source: item.prompt_generation_source ?? null, generation_model: item.generation_model ?? null })));
         if (error) throw error;
         alert(`Synced ${reviewQueue.length} items.`);
         setReviewQueue([]); setMode('browse'); fetchQuestions();

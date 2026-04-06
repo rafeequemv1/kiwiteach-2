@@ -132,14 +132,60 @@ export async function fetchKbPromptGenerationPrefs(knowledgeBaseId: string): Pro
 export async function resolveStoredPromptSetIdForKbGeneration(
   knowledgeBaseId: string | null | undefined
 ): Promise<string | null> {
-  if (!knowledgeBaseId) return null;
-  try {
-    const prefs = await fetchKbPromptGenerationPrefs(knowledgeBaseId);
-    if (!prefs || prefs.generationSource !== 'cloud_set') return null;
-    return prefs.activePromptSetId;
-  } catch {
-    return null;
+  const p = await resolveForgePromptProvenance(knowledgeBaseId, null);
+  return p.generationSource === 'cloud_set' ? p.promptSetId : null;
+}
+
+/** Provenance for hub rows: UUID when a cloud set was used; generation source always set when forging from Neural Studio. */
+export type ForgePromptProvenance = {
+  promptSetId: string | null;
+  generationSource: KbGenerationPromptSource;
+};
+
+export async function resolveForgePromptProvenance(
+  knowledgeBaseId: string | null | undefined,
+  forgePromptSetOverrideId: string | null | undefined
+): Promise<ForgePromptProvenance> {
+  if (!knowledgeBaseId?.trim()) {
+    return { promptSetId: null, generationSource: 'browser_local' };
   }
+  const kb = knowledgeBaseId.trim();
+  const override = forgePromptSetOverrideId?.trim();
+  if (override) {
+    const { data: row, error } = await supabase
+      .from('kb_prompt_sets')
+      .select('id')
+      .eq('id', override)
+      .eq('knowledge_base_id', kb)
+      .maybeSingle();
+    if (!error && row?.id) {
+      return { promptSetId: row.id, generationSource: 'cloud_set' };
+    }
+    return { promptSetId: null, generationSource: 'browser_local' };
+  }
+  try {
+    const prefs = await fetchKbPromptGenerationPrefs(kb);
+    if (!prefs) {
+      return { promptSetId: null, generationSource: 'browser_local' };
+    }
+    if (prefs.generationSource === 'cloud_set') {
+      return {
+        promptSetId: prefs.activePromptSetId ?? null,
+        generationSource: 'cloud_set',
+      };
+    }
+    return { promptSetId: null, generationSource: prefs.generationSource };
+  } catch {
+    return { promptSetId: null, generationSource: 'browser_local' };
+  }
+}
+
+/** Display when no kb_prompt_sets name join (builtin / browser). */
+export function labelPromptGenerationSource(source: string | null | undefined): string | null {
+  if (!source) return null;
+  if (source === 'builtin_default') return 'Built-in defaults';
+  if (source === 'browser_local') return 'Browser / local prompts';
+  return null;
 }
 
 /** @deprecated Use fetchKbPromptGenerationPrefs */
