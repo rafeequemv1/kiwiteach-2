@@ -5,8 +5,45 @@ import { Dialog } from 'radix-ui';
 import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
-import { resolveStoredPromptSetIdForKbGeneration } from '../../services/kbPromptService';
+import {
+  listKbPromptSets,
+  resolveStoredPromptSetIdForKbGeneration,
+  type KbPromptSetRow,
+} from '../../services/kbPromptService';
 import { QuestionType, Question } from '../../Quiz/types';
+
+/** Scale Easy/Medium/Hard template to sum exactly to `total` (largest remainder). Used when splitting forge into per-style API calls. */
+function scaleDifficultyToTotal(
+  template: { easy: number; medium: number; hard: number },
+  total: number
+): { easy: number; medium: number; hard: number } {
+  const wE = Math.max(0, Math.floor(template.easy));
+  const wM = Math.max(0, Math.floor(template.medium));
+  const wH = Math.max(0, Math.floor(template.hard));
+  const sumW = wE + wM + wH;
+  if (total <= 0) return { easy: 0, medium: 0, hard: 0 };
+  if (sumW <= 0) return { easy: 0, medium: total, hard: 0 };
+  const exact = [(wE / sumW) * total, (wM / sumW) * total, (wH / sumW) * total];
+  const floor = exact.map((x) => Math.floor(x));
+  let rem = total - floor.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
+  const out = [...floor];
+  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
+  return { easy: out[0], medium: out[1], hard: out[2] };
+}
+
+/** One Gemini call per style when all four styles and E/M/H are used — avoids one mega-prompt with coupled constraints. */
+function shouldSplitStandardForgeByStyle(
+  types: { mcq: number; reasoning: number; matching: number; statements: number },
+  diff: { easy: number; medium: number; hard: number },
+  figureCount: number
+): boolean {
+  if (figureCount > 0) return false;
+  const t = types;
+  if (t.mcq <= 0 || t.reasoning <= 0 || t.matching <= 0 || t.statements <= 0) return false;
+  if (diff.easy <= 0 || diff.medium <= 0 || diff.hard <= 0) return false;
+  return true;
+}
 import QuestionPaperItem, { QuestionFlagReason } from '../../Quiz/components/QuestionPaperItem';
 import { ChapterStatChips } from '../../Quiz/components/ChapterStatChips';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
@@ -130,6 +167,9 @@ const QuestionBankHome: React.FC = () => {
   /** When on, Forge uses the active chapter's E/M/H + style *ratios* scaled to each chapter's question total (standard only). */
   const [applyActiveStandardMixToAllChapters, setApplyActiveStandardMixToAllChapters] = useState(false);
   const [studioChapterConfigOpen, setStudioChapterConfigOpen] = useState(false);
+  /** null = use KB prompt preferences (builtin / local / active cloud set). UUID = force that cloud set for forge. */
+  const [forgePromptSetOverrideId, setForgePromptSetOverrideId] = useState<string | null>(null);
+  const [forgePromptSets, setForgePromptSets] = useState<KbPromptSetRow[]>([]);
 
   const [activeChapterSyllabus, setActiveChapterSyllabus] = useState<string[]>([]);
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
@@ -208,6 +248,26 @@ const QuestionBankHome: React.FC = () => {
     // Reset filters when switching knowledge base.
     setSelectedClassFilters(new Set());
     setSelectedSubjectFilters(new Set());
+  }, [selectedKbId]);
+
+  useEffect(() => {
+    if (!selectedKbId) {
+      setForgePromptSets([]);
+      setForgePromptSetOverrideId(null);
+      return;
+    }
+    let cancelled = false;
+    listKbPromptSets(selectedKbId)
+      .then((rows) => {
+        if (!cancelled) setForgePromptSets(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setForgePromptSets([]);
+      });
+    setForgePromptSetOverrideId(null);
+    return () => {
+      cancelled = true;
+    };
   }, [selectedKbId]);
 
   // ... (Configs and Chat effects remain same) ...
@@ -533,7 +593,9 @@ const QuestionBankHome: React.FC = () => {
                   console.warn('Exclusions fetch failed', e);
               }
           }
-          const batchPromptSetId = await resolveStoredPromptSetIdForKbGeneration(selectedKbId);
+          const batchPromptSetId =
+            forgePromptSetOverrideId ??
+            (await resolveStoredPromptSetIdForKbGeneration(selectedKbId));
           for (let i = 0; i < chapterIds.length; i++) {
               if (stopForgingRef.current) break;
               const chapId = chapterIds[i];
@@ -567,7 +629,7 @@ const QuestionBankHome: React.FC = () => {
                       for (const [topicName, topicConfig] of enabledTopics) {
                           if (stopForgingRef.current) break;
                           setForgeProgress(`${progressPrefix}: ${topicName}`);
-                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)], undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId);
+                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)], undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId, forgePromptSetOverrideId);
                           chapterGeneratedQs.push(...gen);
                       }
                   } else {
@@ -576,21 +638,86 @@ const QuestionBankHome: React.FC = () => {
                       const typesForGen = { ...config.types };
                       let figureCount = 0; let sourceImages: {data: string, mimeType: string}[] = [];
                       if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null); } else figureCount = config.syntheticFigureCount || 0;
-                      
-                      setForgeProgress(`${progressPrefix}: Synthesizing Questions...`);
-                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), diffForGen, config.total, { text: rawText, images: sourceImages }, typesForGen, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId);
-                      const figureQs = gen.filter(q => q.figurePrompt);
-                      if (figureQs.length > 0 && figureCount > 0) {
-                          setForgeProgress(`${progressPrefix}: Processing Visuals...`);
-                          if (config.visualMode === 'image') {
-                              if (sourceImages.length > 0) {
-                                  const sourceEditGroups: Record<number, Question[]> = {};
-                                  figureQs.forEach(q => { const sIdx = (q.sourceImageIndex !== undefined && sourceImages[q.sourceImageIndex]) ? q.sourceImageIndex : 0; const sourceImg = sourceImages[sIdx]; if (sourceImg?.data) q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`; if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = []; sourceEditGroups[sIdx].push(q); });
-                                  for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) { if (stopForgingRef.current) break; const imgIdx = parseInt(imgIdxStr); const sourceImg = sourceImages[imgIdx]; if (sourceImg?.data) { const prompts = groupQs.map(q => q.figurePrompt!).filter(Boolean); const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, prompts); groupQs.forEach((q, cIdx) => { if (images[cIdx]) q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; }); } }
-                              }
-                          } else { const images = await generateCompositeFigures(figureQs.map(q => q.figurePrompt!)); figureQs.forEach((q, idx) => { if (images[idx]) q.figureDataUrl = `data:image/png;base64,${images[idx]}`; }); }
+
+                      const runFigurePipeline = async (gen: Question[]) => {
+                          const figureQs = gen.filter(q => q.figurePrompt);
+                          if (figureQs.length > 0 && figureCount > 0) {
+                              setForgeProgress(`${progressPrefix}: Processing Visuals...`);
+                              if (config.visualMode === 'image') {
+                                  if (sourceImages.length > 0) {
+                                      const sourceEditGroups: Record<number, Question[]> = {};
+                                      figureQs.forEach(q => { const sIdx = (q.sourceImageIndex !== undefined && sourceImages[q.sourceImageIndex]) ? q.sourceImageIndex : 0; const sourceImg = sourceImages[sIdx]; if (sourceImg?.data) q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`; if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = []; sourceEditGroups[sIdx].push(q); });
+                                      for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) { if (stopForgingRef.current) break; const imgIdx = parseInt(imgIdxStr); const sourceImg = sourceImages[imgIdx]; if (sourceImg?.data) { const prompts = groupQs.map(q => q.figurePrompt!).filter(Boolean); const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, prompts); groupQs.forEach((q, cIdx) => { if (images[cIdx]) q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; }); } }
+                                  }
+                              } else { const images = await generateCompositeFigures(figureQs.map(q => q.figurePrompt!)); figureQs.forEach((q, idx) => { if (images[idx]) q.figureDataUrl = `data:image/png;base64,${images[idx]}`; }); }
+                          }
+                      };
+
+                      if (shouldSplitStandardForgeByStyle(typesForGen, diffForGen, figureCount)) {
+                          const styleOrder: QuestionType[] = ['mcq', 'reasoning', 'matching', 'statements'];
+                          const genParts: Question[] = [];
+                          let sub = 0;
+                          for (const styleKey of styleOrder) {
+                              if (stopForgingRef.current) break;
+                              const n = typesForGen[styleKey];
+                              if (n <= 0) continue;
+                              sub += 1;
+                              const diffSlice = scaleDifficultyToTotal(diffForGen, n);
+                              setForgeProgress(
+                                  `${progressPrefix}: AI ${sub}/4 · ${styleKey} (${n} Q, E${diffSlice.easy}/M${diffSlice.medium}/H${diffSlice.hard})…`
+                              );
+                              const part = await generateQuizQuestions(
+                                  String(chapter.name),
+                                  diffSlice,
+                                  n,
+                                  { text: rawText, images: sourceImages },
+                                  styleKey,
+                                  (status) =>
+                                      setForgeProgress(
+                                          `${progressPrefix}: ${styleKey} (${sub}/4) · ${status}`
+                                      ),
+                                  0,
+                                  false,
+                                  undefined,
+                                  selectedModel,
+                                  config.visualMode,
+                                  undefined,
+                                  undefined,
+                                  undefined,
+                                  undefined,
+                                  excludedTopicLabelsNormalized,
+                                  selectedKbId,
+                                  forgePromptSetOverrideId
+                              );
+                              genParts.push(...part);
+                          }
+                          await runFigurePipeline(genParts);
+                          chapterGeneratedQs = genParts;
+                      } else {
+                          setForgeProgress(`${progressPrefix}: Synthesizing Questions…`);
+                          const gen: Question[] = await generateQuizQuestions(
+                              String(chapter.name),
+                              diffForGen,
+                              config.total,
+                              { text: rawText, images: sourceImages },
+                              typesForGen,
+                              undefined,
+                              figureCount,
+                              false,
+                              JSON.stringify(config.selectedFigures || {}),
+                              selectedModel,
+                              config.visualMode,
+                              undefined,
+                              undefined,
+                              undefined,
+                              undefined,
+                              excludedTopicLabelsNormalized,
+                              selectedKbId,
+                              forgePromptSetOverrideId
+                          );
+                          await runFigurePipeline(gen);
+                          chapterGeneratedQs = gen;
                       }
-                      chapterGeneratedQs = gen;
                   }
                   setReviewQueue(prev => [...prev, ...chapterGeneratedQs.map((q, k) => ({ id: `review-${chapter.id}-${Date.now()}-${k}`, chapter_id: chapter.id, chapter_name: chapter.name, subject_name: chapter.subject_name, class_name: chapter.class_name, question_text: q.text, options: q.options, correct_index: q.correctIndex, explanation: q.explanation, difficulty: q.difficulty, question_type: q.type, topic_tag: q.topic_tag || 'General', figure_url: q.figureDataUrl, source_figure_url: q.sourceFigureDataUrl, column_a: q.columnA, column_b: q.columnB, prompt_set_id: batchPromptSetId }))]);
               } catch (chapErr) { console.error(`Chapter Error`, chapErr); }
@@ -1194,6 +1321,22 @@ const QuestionBankHome: React.FC = () => {
                                           </button>
                                         );
                                       })}
+                                    </div>
+                                    <div className="flex flex-col gap-2 w-full md:w-auto md:min-w-[200px]">
+                                      <label className="text-[9px] font-black uppercase tracking-wide text-zinc-500">Prompt set</label>
+                                      <select
+                                        value={forgePromptSetOverrideId ?? ''}
+                                        onChange={(e) => setForgePromptSetOverrideId(e.target.value ? e.target.value : null)}
+                                        disabled={!selectedKbId || isForgingBatch}
+                                        className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[11px] font-semibold text-zinc-800 outline-none focus:border-indigo-300 disabled:opacity-50"
+                                      >
+                                        <option value="">KB preference (default)</option>
+                                        {forgePromptSets.map((s) => (
+                                          <option key={s.id} value={s.id}>
+                                            {s.name} ({s.set_kind})
+                                          </option>
+                                        ))}
+                                      </select>
                                     </div>
                                     <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
                                       <button

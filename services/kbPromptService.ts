@@ -36,12 +36,42 @@ export type PromptReferenceLayerRow = {
   created_by: string | null;
 };
 
+function mergePromptSetJsonOverDefaults(fromDb: Record<string, unknown>): Record<string, string> {
+  const merged: Record<string, string> = { ...DEFAULT_PROMPTS };
+  for (const key of Object.keys(DEFAULT_PROMPTS)) {
+    const v = fromDb[key];
+    if (typeof v === 'string' && v.trim() !== '') merged[key] = v;
+  }
+  return merged;
+}
+
+export type FetchMergedPromptsOptions = {
+  /** If set, load this cloud prompt set for the same KB (ignores kb_prompt_preferences for merge source). */
+  promptSetIdOverride?: string | null;
+};
+
 /**
  * When `builtin_default`: return shipped DEFAULT_PROMPTS (deterministic).
  * When `browser_local` or no row: null → geminiService uses getSystemPrompt + reference block.
  * When `cloud_set`: merge active `kb_prompt_sets.prompts_json` over defaults.
+ * When `options.promptSetIdOverride`: merge that set’s JSON (must belong to this KB).
  */
-export async function fetchMergedPromptsForKbGeneration(knowledgeBaseId: string): Promise<Record<string, string> | null> {
+export async function fetchMergedPromptsForKbGeneration(
+  knowledgeBaseId: string,
+  options?: FetchMergedPromptsOptions
+): Promise<Record<string, string> | null> {
+  const overrideId = options?.promptSetIdOverride?.trim();
+  if (overrideId) {
+    const { data: setRow, error: oErr } = await supabase
+      .from('kb_prompt_sets')
+      .select('prompts_json, knowledge_base_id')
+      .eq('id', overrideId)
+      .maybeSingle();
+    if (oErr || !setRow || setRow.knowledge_base_id !== knowledgeBaseId) return null;
+    if (!setRow.prompts_json || typeof setRow.prompts_json !== 'object') return null;
+    return mergePromptSetJsonOverDefaults(setRow.prompts_json as Record<string, unknown>);
+  }
+
   const { data: pref, error: pErr } = await supabase
     .from('kb_prompt_preferences')
     .select('active_prompt_set_id, generation_prompt_source')
@@ -73,13 +103,7 @@ export async function fetchMergedPromptsForKbGeneration(knowledgeBaseId: string)
 
   if (sErr || !setRow?.prompts_json || typeof setRow.prompts_json !== 'object') return null;
 
-  const fromDb = setRow.prompts_json as Record<string, unknown>;
-  const merged: Record<string, string> = { ...DEFAULT_PROMPTS };
-  for (const key of Object.keys(DEFAULT_PROMPTS)) {
-    const v = fromDb[key];
-    if (typeof v === 'string' && v.trim() !== '') merged[key] = v;
-  }
-  return merged;
+  return mergePromptSetJsonOverDefaults(setRow.prompts_json as Record<string, unknown>);
 }
 
 export type KbPromptGenerationPrefs = {

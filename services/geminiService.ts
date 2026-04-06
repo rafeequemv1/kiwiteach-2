@@ -88,6 +88,33 @@ const repairMalformedJsonLatex = (jsonStr: string): string => {
         .replace(/(?<!\\)\\(rho|right)/g, '\\\\$1');
 };
 
+/** Same largest-remainder scaling as Neural Studio forge — maps template E/M/H to exact batch size. */
+function scaleDifficultyCountsToTotal(
+  template: { easy: number; medium: number; hard: number },
+  total: number
+): { easy: number; medium: number; hard: number } {
+  const wE = Math.max(0, Math.floor(template.easy));
+  const wM = Math.max(0, Math.floor(template.medium));
+  const wH = Math.max(0, Math.floor(template.hard));
+  const sumW = wE + wM + wH;
+  if (total <= 0) return { easy: 0, medium: 0, hard: 0 };
+  if (sumW <= 0) return { easy: 0, medium: total, hard: 0 };
+  const exact = [(wE / sumW) * total, (wM / sumW) * total, (wH / sumW) * total];
+  const floor = exact.map((x) => Math.floor(x));
+  let rem = total - floor.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
+  const out = [...floor];
+  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
+  return { easy: out[0], medium: out[1], hard: out[2] };
+}
+
+function capitalizeDifficultyMandate(d: string): "Easy" | "Medium" | "Hard" {
+  const raw = String(d).trim().toLowerCase();
+  if (raw === "easy" || raw === "e") return "Easy";
+  if (raw === "hard" || raw === "h") return "Hard";
+  return "Medium";
+}
+
 /** Legacy hook: Gemini runs on the server via /api/gemini; no browser API key. */
 export const ensureApiKey = async () => {};
 
@@ -349,12 +376,16 @@ export const generateQuizQuestions = async (
   isLengthy?: boolean,
   isConfusingChoices?: boolean,
   excludedTopicLabels?: string[],
-  knowledgeBaseId?: string | null
+  knowledgeBaseId?: string | null,
+  /** When set with knowledgeBaseId, merge this cloud prompt set instead of KB prefs alone. */
+  promptSetIdOverride?: string | null
 ): Promise<Question[]> => {
   const { fetchMergedPromptsForKbGeneration } = await import("./kbPromptService");
   const kbPromptMap =
     knowledgeBaseId && typeof knowledgeBaseId === "string" && knowledgeBaseId.trim()
-      ? await fetchMergedPromptsForKbGeneration(knowledgeBaseId.trim())
+      ? await fetchMergedPromptsForKbGeneration(knowledgeBaseId.trim(), {
+          promptSetIdOverride: promptSetIdOverride?.trim() || undefined,
+        })
       : null;
 
   const resolvePrompt = (key: string): string => {
@@ -395,6 +426,25 @@ export const generateQuizQuestions = async (
     - "Easy": Exactly ${difficulty.easy} items.
     - "Medium": Exactly ${difficulty.medium} items.
     - "Hard": Exactly ${difficulty.hard} items.`;
+
+  const scaledDifficultyForHint =
+    typeof difficulty === "object" && difficulty !== null && count > 0
+      ? scaleDifficultyCountsToTotal(difficulty, count)
+      : null;
+
+  const difficultyOrderHint =
+    scaledDifficultyForHint &&
+    scaledDifficultyForHint.easy + scaledDifficultyForHint.medium + scaledDifficultyForHint.hard === count
+      ? `
+    - **JSON "difficulty" (ORDER-LOCKED)**: Return exactly ${count} objects in array order. The "difficulty" string must follow position, not your guess of how hard the stem looks:
+      ${scaledDifficultyForHint.easy > 0 ? `- First ${scaledDifficultyForHint.easy} item(s): "Easy"` : ""}
+      ${scaledDifficultyForHint.medium > 0 ? `- Next ${scaledDifficultyForHint.medium} item(s): "Medium"` : ""}
+      ${scaledDifficultyForHint.hard > 0 ? `- Final ${scaledDifficultyForHint.hard} item(s): "Hard"` : ""}
+    - **Content** for each item must still match that tier per the Difficulty protocol (rigor / length / steps).`
+      : typeof difficulty === "string" && count > 0
+        ? `
+    - Every item's "difficulty" must be exactly "${capitalizeDifficultyMandate(difficulty)}".`
+        : "";
 
   const visualInstruction = figureCount > 0 
     ? `[VISUAL_MANDATE]:
@@ -441,6 +491,7 @@ export const generateQuizQuestions = async (
     
     ${styleInstruction}
     ${difficultyInstruction}
+    ${difficultyOrderHint}
     ${visualInstruction}
     ${syllabusInstruction}
     ${exclusionInstruction}
@@ -515,8 +566,9 @@ export const generateQuizQuestions = async (
     
     const rawData = JSON.parse(repairedText);
     const safeData = sanitizeResult(rawData);
+    const list = Array.isArray(safeData) ? safeData : [];
 
-    return safeData.map((q: any, index: number) => ({ 
+    return list.map((q: any, index: number) => ({ 
         id: `forge-${Date.now()}-${index}`, 
         ...q 
     }));

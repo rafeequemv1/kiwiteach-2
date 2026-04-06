@@ -58,7 +58,7 @@ export const NEURAL_STUDIO_FORGE_SECTIONS: NeuralDocSection[] = [
   },
   {
     title: '9. Response schema',
-    body: `Gemini is called with \`responseMimeType: application/json\` and a schema: an array of objects with fields text, type, difficulty, explanation, options, correctIndex, figurePrompt, sourceImageIndex, topic_tag, columnA, columnB. Required: text, difficulty, explanation, options, correctIndex, type, topic_tag.`,
+    body: `Gemini is called with \`responseMimeType: application/json\` and a schema: an array of objects with fields text, type, difficulty, explanation, options, correctIndex, figurePrompt, sourceImageIndex, topic_tag, columnA, columnB. Required: text, difficulty, explanation, options, correctIndex, type, topic_tag.\n\nAfter parsing, **difficulty labels are aligned to the forge recipe** (Easy/Medium/Hard counts and array order) so UI tags match chapter config; the model’s free-form difficulty field is not trusted for counts mode.`,
   },
   {
     title: 'Other Gemini calls',

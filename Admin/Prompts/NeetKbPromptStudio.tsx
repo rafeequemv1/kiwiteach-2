@@ -52,6 +52,7 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
   const [refModalTitle, setRefModalTitle] = useState('');
   const [refModalFile, setRefModalFile] = useState<File | null>(null);
   const [refUploadError, setRefUploadError] = useState<string | null>(null);
+  const [viewPromptSet, setViewPromptSet] = useState<KbPromptSetRow | null>(null);
 
   const syncLists = useCallback(async (id: string) => {
     try {
@@ -163,6 +164,15 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [refModalOpen, busy]);
+
+  useEffect(() => {
+    if (!viewPromptSet) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) setViewPromptSet(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [viewPromptSet, busy]);
 
   const handleActiveSourceChange = async (value: string) => {
     if (!kbId) return;
@@ -745,29 +755,120 @@ const NeetKbPromptStudio: React.FC<NeetKbPromptStudioProps> = ({ prompts, setPro
         </div>
       )}
 
-      {promptSets.length > 0 && (
-        <div className="rounded-lg border border-zinc-200 bg-white p-3">
-          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Saved prompt sets</p>
-          <ul className="space-y-1 text-[11px] text-zinc-700">
-            {promptSets.map((s) => (
-              <li key={s.id} className="flex items-center justify-between gap-2 rounded border border-zinc-100 px-2 py-1">
-                <span>
-                  {s.name}{' '}
-                  <span className="text-zinc-400">
-                    ({s.set_kind}){activeSource === s.id ? ' · active' : ''}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  className="shrink-0 text-[10px] text-red-600 hover:underline"
-                  disabled={!!busy}
-                  onClick={() => void removeSet(s.id)}
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
+      {kbId && (
+        <div className="rounded-lg border border-zinc-200 bg-white">
+          <div className="border-b border-zinc-100 bg-zinc-50 px-3 py-2">
+            <p className="text-[11px] font-semibold text-zinc-800">All saved prompt sets</p>
+            <p className="text-[10px] text-zinc-500">
+              {promptSets.length} set{promptSets.length === 1 ? '' : 's'} for this knowledge base. View JSON or remove.
+            </p>
+          </div>
+          {promptSets.length === 0 ? (
+            <p className="px-3 py-6 text-center text-[11px] text-zinc-500">
+              No cloud prompt sets yet. Save from the editor or from a reference layer.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] text-left text-[11px]">
+                <thead>
+                  <tr className="border-b border-zinc-100 text-[10px] uppercase tracking-wide text-zinc-500">
+                    <th className="px-3 py-2 font-medium">Name</th>
+                    <th className="px-3 py-2 font-medium">Kind</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promptSets.map((s) => (
+                    <tr key={s.id} className="border-b border-zinc-50">
+                      <td className="px-3 py-2 font-medium text-zinc-800">{s.name}</td>
+                      <td className="px-3 py-2 text-zinc-600">{s.set_kind}</td>
+                      <td className="px-3 py-2 text-zinc-600">
+                        {activeSource === s.id ? (
+                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
+                            Active for generation
+                          </span>
+                        ) : (
+                          <span className="text-zinc-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex flex-wrap justify-end gap-1">
+                          <button
+                            type="button"
+                            className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-[10px] font-medium text-zinc-800 hover:bg-zinc-50"
+                            onClick={() => setViewPromptSet(s)}
+                          >
+                            View
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-red-100 bg-white px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-40"
+                            disabled={!!busy}
+                            onClick={() => void removeSet(s.id)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewPromptSet && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-sm"
+          onClick={() => !busy && setViewPromptSet(null)}
+          role="presentation"
+        >
+          <div
+            className="flex max-h-[min(90vh,720px)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xl"
+            role="dialog"
+            aria-labelledby="view-prompt-set-title"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-100 px-4 py-3">
+              <div className="min-w-0">
+                <h4 id="view-prompt-set-title" className="text-sm font-semibold text-zinc-900">
+                  {viewPromptSet.name}
+                </h4>
+                <p className="mt-0.5 font-mono text-[10px] text-zinc-500 break-all">{viewPromptSet.id}</p>
+                <p className="mt-1 text-[10px] text-zinc-500">
+                  {viewPromptSet.set_kind}
+                  {activeSource === viewPromptSet.id ? ' · active for KB generation' : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="shrink-0 rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
+                onClick={() => setViewPromptSet(null)}
+                aria-label="Close"
+              >
+                <iconify-icon icon="mdi:close" width="22" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-zinc-500">prompts_json</p>
+              <pre className="max-h-[min(55vh,480px)] overflow-auto rounded-lg border border-zinc-100 bg-zinc-50 p-3 text-[10px] leading-relaxed text-zinc-800 whitespace-pre-wrap break-words">
+                {JSON.stringify(viewPromptSet.prompts_json ?? {}, null, 2)}
+              </pre>
+            </div>
+            <div className="shrink-0 border-t border-zinc-100 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setViewPromptSet(null)}
+                className="w-full rounded-lg border border-zinc-200 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>
