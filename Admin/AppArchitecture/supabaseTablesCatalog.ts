@@ -17,7 +17,7 @@ export const SUPABASE_TABLE_CATALOG: SupabaseTableRow[] = [
   { schema: 'public', name: 'kb_classes', purpose: 'Tracks/grades within a knowledge base (curriculum “class”, not org class).' },
   { schema: 'public', name: 'subjects', purpose: 'Subjects under a kb_class; parent of chapters.' },
   { schema: 'public', name: 'chapters', purpose: 'Chapter metadata, syllabus linkage, storage paths for source PDFs/DOCX.' },
-  { schema: 'public', name: 'question_bank_neet', purpose: 'Primary NEET-style question bank; keyed by chapter. prompt_set_id / prompt_generation_source for Neural Studio provenance; generation_model stores Gemini API id used for text synthesis.' },
+  { schema: 'public', name: 'question_bank_neet', purpose: 'Primary NEET-style question bank; keyed by chapter. prompt_set_id / prompt_generation_source for Neural Studio provenance; generation_model stores human-readable text model label (e.g. Gemini 3 Pro).' },
   { schema: 'public', name: 'folders', purpose: 'User-owned folders for organizing tests in the hub.' },
   { schema: 'public', name: 'tests', purpose: 'Assessments: drafts, generated papers, scheduling, class_ids, JSON questions.' },
   { schema: 'public', name: 'question_usage', purpose: 'Class-scoped usage of question_id to enforce no-repeat draws.' },

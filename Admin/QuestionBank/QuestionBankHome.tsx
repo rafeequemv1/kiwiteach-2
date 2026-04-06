@@ -12,6 +12,7 @@ import {
   type KbPromptSetRow,
   type KbGenerationPromptSource,
 } from '../../services/kbPromptService';
+import { bankLabelForTextGenerationModel } from '../../services/studioGenerationModelLabels';
 import { QuestionType, Question } from '../../Quiz/types';
 
 /** Scale Easy/Medium/Hard template to sum exactly to `total` (largest remainder). Used when splitting forge into per-style API calls. */
@@ -229,9 +230,9 @@ function questionsToNeetBankRows(
   qs: Question[],
   promptSetId: string | null | undefined,
   promptGenerationSource: KbGenerationPromptSource,
-  generationModel: string
+  generationModelApiId: string
 ) {
-  const modelId = (generationModel || '').trim() || null;
+  const modelLabel = bankLabelForTextGenerationModel(generationModelApiId);
   return qs.map((q) => ({
     chapter_id: chapter.id,
     chapter_name: chapter.name,
@@ -250,7 +251,7 @@ function questionsToNeetBankRows(
     column_b: q.columnB,
     prompt_set_id: promptSetId ?? null,
     prompt_generation_source: promptGenerationSource,
-    generation_model: modelId,
+    generation_model: modelLabel,
   }));
 }
 
