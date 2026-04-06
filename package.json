@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "optimize:landing-images": "node scripts/optimize-landing-images.mjs"
+    "optimize:landing-images": "node scripts/optimize-landing-images.mjs",
+    "compare-prompts": "npx tsx scripts/prompt-variant-compare.ts"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.3",

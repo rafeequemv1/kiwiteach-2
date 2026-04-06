@@ -262,6 +262,10 @@ function questionsToNeetBankRows(
   }));
 }
 
+/** Space out sequential chapter forges to reduce 429 bursts (with jitter). */
+function sleepForgeMs(baseMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, baseMs + Math.floor(Math.random() * 1600)));
+}
 
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
@@ -854,6 +858,7 @@ const QuestionBankHome: React.FC = () => {
       });
       setForgeProgress('Preparing forge…');
       let savedToHubThisRun = 0;
+      const failedForgeChapters: { name: string; error: string }[] = [];
       let suppressForgeSummaryAlert = false;
       try {
           let excludedTopicLabelsNormalized: string[] = [];
@@ -881,6 +886,13 @@ const QuestionBankHome: React.FC = () => {
           const batchPromptGenerationSource = forgeProvenance.generationSource;
           for (let i = 0; i < chapterIds.length; i++) {
               if (stopForgingRef.current) break;
+              if (i > 0) {
+                patchForgeDetail(
+                  { line: 'Brief pause before next chapter…', geminiLine: 'Spacing API calls' },
+                  '⏸ Between chapters'
+                );
+                await sleepForgeMs(1400);
+              }
               const chapId = chapterIds[i];
               const chapter = chapters.find(c => c.id === chapId);
               const config = { ...chapterConfigs[chapId] }; 
@@ -911,9 +923,24 @@ const QuestionBankHome: React.FC = () => {
                 `Chapter ${i + 1}/${chapterIds.length}: ${String(chapter.name)}`
               );
               setForgeProgress(`${progressPrefix}: Boundary Lookup...`);
-              
-              try {
-                  // ... (Syllabus boundary code) ...
+
+              for (
+                let chapterAttempt = 1;
+                chapterAttempt <= 2 && !stopForgingRef.current;
+                chapterAttempt++
+              ) {
+                if (chapterAttempt === 2) {
+                  patchForgeDetail(
+                    {
+                      line: `${progressPrefix}: retrying chapter (2nd attempt)…`,
+                      geminiLine: 'Backoff before full chapter retry…',
+                    },
+                    '↻ Chapter retry'
+                  );
+                  await sleepForgeMs(2800);
+                }
+                let producedBeforeInsert = 0;
+                try {
                   let boundariesContext = "";
                   try {
                     const boundaryTopics = await fetchSyllabusTopicsForChapter({
@@ -989,6 +1016,7 @@ const QuestionBankHome: React.FC = () => {
                               forgePromptSetOverrideId
                           );
                           chapterGeneratedQs.push(...gen);
+                          producedBeforeInsert += gen.length;
                           setForgeDetail((p) =>
                             p
                               ? {
@@ -1119,6 +1147,7 @@ const QuestionBankHome: React.FC = () => {
                                   forgePromptSetOverrideId
                               );
                               genParts.push(...part);
+                              producedBeforeInsert += part.length;
                               setForgeDetail((p) =>
                                 p
                                   ? {
@@ -1174,6 +1203,7 @@ const QuestionBankHome: React.FC = () => {
                               selectedKbId,
                               forgePromptSetOverrideId
                           );
+                          producedBeforeInsert += gen.length;
                           setForgeDetail((p) =>
                             p
                               ? {
@@ -1248,18 +1278,32 @@ const QuestionBankHome: React.FC = () => {
                       `Chapter skipped · 0 Q`
                     );
                   }
-                  chapterGeneratedQs.length = 0;
-              } catch (chapErr: unknown) {
-                console.error('Chapter forge error', chapErr);
-                suppressForgeSummaryAlert = true;
-                const msg = chapErr instanceof Error ? chapErr.message : String(chapErr);
-                alert(
-                  `Forge stopped on chapter "${String(chapter?.name || '')}": ${msg}` +
-                    (savedToHubThisRun > 0
-                      ? `\n\n${savedToHubThisRun} question(s) from earlier chapters were already saved to the hub.`
-                      : '')
-                );
-                break;
+                  break;
+                } catch (chapErr: unknown) {
+                  console.error('Chapter forge error', chapErr);
+                  const msg = chapErr instanceof Error ? chapErr.message : String(chapErr);
+                  patchForgeDetail(
+                    {
+                      line: `${progressPrefix}: error — ${msg.slice(0, 72)}${msg.length > 72 ? '…' : ''}`,
+                      geminiLine: msg.slice(0, 400),
+                      phase: 'done',
+                    },
+                    chapterAttempt === 1 && producedBeforeInsert === 0
+                      ? `⚠ ${String(chapter.name).slice(0, 40)}${String(chapter.name).length > 40 ? '…' : ''} · will retry`
+                      : `✗ ${String(chapter.name).slice(0, 40)}${String(chapter.name).length > 40 ? '…' : ''}`
+                  );
+                  if (producedBeforeInsert > 0) {
+                    failedForgeChapters.push({
+                      name: String(chapter.name),
+                      error: `${msg} (partial progress not saved — avoids duplicate rows)`,
+                    });
+                    break;
+                  }
+                  if (chapterAttempt >= 2) {
+                    failedForgeChapters.push({ name: String(chapter.name), error: msg });
+                    break;
+                  }
+                }
               }
           }
       } catch (e: any) {
@@ -1285,12 +1329,27 @@ const QuestionBankHome: React.FC = () => {
           if (selectedChapterIds.size > 0) void fetchBulkStats(Array.from(selectedChapterIds));
           if (!suppressForgeSummaryAlert) {
             const interrupted = stopForgingRef.current;
-            alert(
-              interrupted
-                ? `Forge interrupted. ${savedToHubThisRun} question(s) were already saved to the hub.`
-                : `Forge finished. ${savedToHubThisRun} question(s) saved to the hub.`
-            );
+            const failBlock =
+              failedForgeChapters.length > 0
+                ? `\n\nFailed chapters (${failedForgeChapters.length}):\n${failedForgeChapters
+                    .map((f) => `• ${f.name}: ${f.error.slice(0, 240)}${f.error.length > 240 ? '…' : ''}`)
+                    .join('\n')}`
+                : '';
+            if (failedForgeChapters.length > 0 || interrupted || savedToHubThisRun > 0) {
+              alert(
+                `Forge summary${interrupted ? ' · interrupted' : ''}\n\n` +
+                  `✓ Saved ${savedToHubThisRun} question(s) to the hub.` +
+                  failBlock +
+                  (interrupted ? '\n\nRemaining chapters were not started or were skipped.' : '')
+              );
+            }
           }
+        } else if (!suppressForgeSummaryAlert && failedForgeChapters.length > 0) {
+          alert(
+            `Forge finished with no questions saved.\n\nFailed chapters (${failedForgeChapters.length}):\n${failedForgeChapters
+              .map((f) => `• ${f.name}: ${f.error.slice(0, 240)}${f.error.length > 240 ? '…' : ''}`)
+              .join('\n')}`
+          );
         }
       }
     };
@@ -1818,7 +1877,7 @@ const QuestionBankHome: React.FC = () => {
                   </button>
                 )}
                 <p className="mt-4 text-[9px] text-zinc-400 text-center max-w-sm">
-                  Forge batches to review; interrupt stops before the next chapter or topic.
+                  One chapter error retries once if no questions were produced yet; otherwise the chapter is skipped and forge continues. Interrupt stops before the next chapter or topic.
                 </p>
             </div>
             )

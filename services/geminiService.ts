@@ -32,10 +32,18 @@ function isRetryableGeminiError(error: any): boolean {
   return false;
 }
 
+function isRateLimitGeminiError(error: any): boolean {
+  const st = typeof error?.status === 'number' ? error.status : undefined;
+  if (st === 429) return true;
+  const msg = String(error?.message || '');
+  return /429|rate limit|resource exhausted|quota|too many requests/i.test(msg);
+}
+
+/** Exponential backoff with jitter; longer waits on HTTP 429 / rate-limit style errors. */
 const retryWithBackoff = async <T>(
   operation: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelay: number = 1000
+  maxRetries: number = 5,
+  baseDelay: number = 1500
 ): Promise<T> => {
   let lastError: any;
   for (let i = 0; i < maxRetries; i++) {
@@ -46,7 +54,11 @@ const retryWithBackoff = async <T>(
       const retryable = isRetryableGeminiError(error);
 
       if (retryable && i < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, i);
+        const rateLimited = isRateLimitGeminiError(error);
+        const mult = rateLimited ? 2.75 : 1;
+        const exp = baseDelay * mult * Math.pow(2, i);
+        const jitter = exp * (0.2 + Math.random() * 0.45);
+        const delay = Math.min(90000, Math.floor(exp + jitter));
         console.warn(
           `Gemini request failed (${error?.message || error}). Retrying in ${delay}ms (${i + 1}/${maxRetries})…`
         );
@@ -113,13 +125,22 @@ const repairInvalidJsonUnicodeEscapes = (jsonStr: string): string =>
 const repairJsonLatexNewlineFalsePositive = (jsonStr: string): string =>
     jsonStr.replace(/(?<!\\)\\n(?=[a-zA-Z])/g, "\\\\n");
 
-/** Forge JSON can be huge (many questions × LaTeX). API default maxOutputTokens is often ~8192 — raise caps. */
+/**
+ * Forge JSON can be huge (many questions × LaTeX × long explanations).
+ * If the model returns finishReason=MAX_TOKENS, JSON.parse fails ("Unterminated string" etc.).
+ * Request the highest output budget the model tier allows; large batches need Pro or split-by-style.
+ */
 function computeForgeMaxOutputTokens(questionCount: number, modelName: string): number {
   const n = Math.max(1, questionCount);
-  const perQuestion = modelName.includes("lite") ? 1600 : modelName.includes("pro") ? 2800 : 2000;
-  const budget = n * perQuestion + 12000;
-  const cap = modelName.includes("pro") ? 65536 : modelName.includes("lite") ? 16384 : 32768;
-  return Math.min(cap, Math.max(16384, budget));
+  const largeBatch = n >= 14;
+  const perQuestion = modelName.includes("lite")
+    ? largeBatch ? 1900 : 1600
+    : modelName.includes("pro")
+      ? largeBatch ? 3600 : 3000
+      : largeBatch ? 2800 : 2200;
+  const budget = n * perQuestion + (largeBatch ? 20000 : 14000);
+  const cap = modelName.includes("lite") ? 24576 : 65536;
+  return Math.min(cap, Math.max(20480, budget));
 }
 
 function forgeJsonParseHint(
