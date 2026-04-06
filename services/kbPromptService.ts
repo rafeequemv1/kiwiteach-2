@@ -188,6 +188,25 @@ export function labelPromptGenerationSource(source: string | null | undefined): 
   return null;
 }
 
+/**
+ * What `question_bank_neet.prompt_generation_source` means (for tooltips / admin help).
+ * - `builtin_default`: shipped DEFAULT_PROMPTS in code (KB pref “built-in”).
+ * - `browser_local`: this browser’s Prompts + localStorage (+ optional reference layer).
+ * - `cloud_set`: merged `kb_prompt_sets` row; `prompt_set_id` names which set.
+ */
+export function describePromptGenerationSource(source: string | null | undefined): string {
+  if (source === 'builtin_default') {
+    return 'prompt_generation_source: built-in — app DEFAULT_PROMPTS (no cloud prompt set).';
+  }
+  if (source === 'browser_local') {
+    return 'prompt_generation_source: browser/local — Admin → Prompts on this device (localStorage), optional NEET reference layer.';
+  }
+  if (source === 'cloud_set') {
+    return 'prompt_generation_source: cloud_set — merged from kb_prompt_sets; name/UUID on the row.';
+  }
+  return 'prompt_generation_source: not recorded (legacy row or non–Neural Studio insert).';
+}
+
 /** @deprecated Use fetchKbPromptGenerationPrefs */
 export async function fetchKbPromptPreferences(knowledgeBaseId: string): Promise<string | null> {
   const p = await fetchKbPromptGenerationPrefs(knowledgeBaseId);

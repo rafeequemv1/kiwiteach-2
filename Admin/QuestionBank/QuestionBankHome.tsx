@@ -9,6 +9,7 @@ import {
   listKbPromptSets,
   resolveForgePromptProvenance,
   labelPromptGenerationSource,
+  describePromptGenerationSource,
   type KbPromptSetRow,
   type KbGenerationPromptSource,
 } from '../../services/kbPromptService';
@@ -294,13 +295,19 @@ const QuestionBankHome: React.FC = () => {
       difficulty: 'all' as string,
       style: 'all' as string,
       hasFigure: false,
-      showSource: false,
-      showPromptSet: false,
   });
 
-  const [reviewShowSource, setReviewShowSource] = useState(false);
-  const [reviewShowChoices, setReviewShowChoices] = useState(true);
-  const [reviewShowExplanations, setReviewShowExplanations] = useState(true);
+  /** Browse + review: what to show on each question card (does not refetch). */
+  const [questionCardDisplay, setQuestionCardDisplay] = useState({
+    showSourceFigure: false,
+    showPromptSource: false,
+    showGenerationModel: false,
+    showChapter: false,
+    showTopic: true,
+    showOptions: true,
+    showCorrectAnswer: false,
+    showExplanation: false,
+  });
   const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
   const [flagReasonsByQuestionId, setFlagReasonsByQuestionId] = useState<Record<string, string>>({});
 
@@ -701,6 +708,13 @@ const QuestionBankHome: React.FC = () => {
                         ? (nested[0] as { name?: string }).name
                         : undefined;
               const srcLabel = labelPromptGenerationSource(item.prompt_generation_source);
+              let promptDisplay = promptSetName ?? srcLabel ?? null;
+              if (!promptDisplay && item.prompt_generation_source === 'cloud_set') {
+                promptDisplay = 'Cloud prompt set';
+              }
+              const promptSourceTooltip =
+                describePromptGenerationSource(item.prompt_generation_source) +
+                (promptDisplay ? ` Card label: “${promptDisplay}”.` : '');
               return {
                   ...item,
                   id: item.id,
@@ -712,7 +726,9 @@ const QuestionBankHome: React.FC = () => {
                   figureDataUrl: item.figure_url,
                   sourceFigureDataUrl: item.source_figure_url,
                   topic_tag: item.topic_tag || 'General',
-                  prompt_set_name: promptSetName ?? srcLabel ?? null,
+                  prompt_set_name: promptDisplay,
+                  prompt_source_tooltip: promptSourceTooltip,
+                  generation_model: item.generation_model ?? null,
               };
           });
           setQuestions(cleanData);
@@ -1734,29 +1750,98 @@ const QuestionBankHome: React.FC = () => {
                 )}
             </div>
             {(mode === 'browse' || mode === 'review') && (
-                <div className="bg-zinc-50/90 border-t border-zinc-100 px-3 sm:px-6 py-2 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 md:gap-4">
-                    <div className="flex items-center gap-4 overflow-x-auto no-scrollbar">
+                <div className="bg-zinc-50/90 border-t border-zinc-100 px-3 sm:px-6 py-2 flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                         <button onClick={handleSelectAllOnPage} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'}`}><iconify-icon icon={selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? "mdi:check-circle" : "mdi:circle-outline"} /> Select All</button>
                         {mode === 'browse' && (
                             <>
-                                <div className="w-px h-6 bg-zinc-200 mx-2" />
-                                <div className="flex items-center gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest mr-1">Rigor:</span>{(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (<button key={d} onClick={() => { setBrowseFilters({...browseFilters, difficulty: d}); setCurrentPage(1); }} className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all border ${browseFilters.difficulty === d ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}>{d}</button>))}</div>
-                                <div className="flex items-center gap-1.5 border-l border-zinc-200 pl-4 ml-2"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
+                                <div className="hidden h-6 w-px bg-zinc-200 sm:block" />
+                                <div className="flex flex-wrap items-center gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest mr-1">Rigor:</span>{(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (<button key={d} onClick={() => { setBrowseFilters({...browseFilters, difficulty: d}); setCurrentPage(1); }} className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all border ${browseFilters.difficulty === d ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}>{d}</button>))}</div>
+                                <div className="flex items-center gap-1.5 border-l border-zinc-200 pl-3"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
                                 <button onClick={() => { setBrowseFilters({...browseFilters, hasFigure: !browseFilters.hasFigure}); setCurrentPage(1); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.hasFigure ? 'bg-rose-500 border-rose-500 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-outline" /> Figure Only</button>
-                                <button onClick={() => { setBrowseFilters({...browseFilters, showSource: !browseFilters.showSource}); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.showSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Source</button>
-                                <button type="button" onClick={() => { setBrowseFilters({ ...browseFilters, showPromptSet: !browseFilters.showPromptSet }); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.showPromptSet ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:text-box-multiple-outline" /> Prompt set</button>
                             </>
                         )}
-                        {mode === 'review' && (
-                             <>
-                                <div className="w-px h-6 bg-zinc-200 mx-2" />
-                                <button onClick={() => setReviewShowSource(!reviewShowSource)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowSource ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-search-outline" /> Show Reference</button>
-                                <button onClick={() => setReviewShowChoices(!reviewShowChoices)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowChoices ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:format-list-numbered" /> Show Choices</button>
-                                <button onClick={() => setReviewShowExplanations(!reviewShowExplanations)} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${reviewShowExplanations ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:lightbulb-on-outline" /> Show Solution</button>
-                             </>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 border-t border-zinc-200/80 pt-2">
+                        <span className="w-full text-[7px] font-bold uppercase tracking-widest text-zinc-400 sm:w-auto sm:mr-1">Cards:</span>
+                        <button
+                          type="button"
+                          title="Reference figure used for image-style questions"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showSourceFigure: !p.showSourceFigure }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showSourceFigure ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:image-search-outline" width="14" /> Source fig
+                        </button>
+                        <button
+                          type="button"
+                          title="Shows prompt pipeline (matches DB prompt_generation_source). Hover the purple chip on a card for the full tooltip."
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showPromptSource: !p.showPromptSource }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showPromptSource ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:text-box-multiple-outline" width="14" /> Prompt source
+                        </button>
+                        <button
+                          type="button"
+                          title="Gemini text model saved on the row (generation_model)"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showGenerationModel: !p.showGenerationModel }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showGenerationModel ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:robot-outline" width="14" /> AI model
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showChapter: !p.showChapter }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showChapter ? 'bg-sky-600 border-sky-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-book-open-variant" width="14" /> Chapter
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showTopic: !p.showTopic }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showTopic ? 'bg-zinc-700 border-zinc-700 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-tag-outline" width="14" /> Topic
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showOptions: !p.showOptions }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showOptions ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:format-list-numbered" width="14" /> Choices
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showCorrectAnswer: !p.showCorrectAnswer }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showCorrectAnswer ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-check-decagram" width="14" /> Answer
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showExplanation: !p.showExplanation }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showExplanation ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-lightbulb-on-outline" width="14" /> Explanation
+                        </button>
+                    </div>
+                    <div className="flex flex-col gap-1 border-t border-dashed border-zinc-200 pt-2 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-[7px] font-medium leading-snug text-zinc-500 max-w-3xl">
+                          <strong className="text-zinc-600">prompt_generation_source</strong> (DB column):{' '}
+                          <span className="text-zinc-600">built-in</span> = app defaults;{' '}
+                          <span className="text-zinc-600">browser_local</span> = this device’s Prompts;{' '}
+                          <span className="text-zinc-600">cloud_set</span> = saved KB prompt set. Hover a purple <strong>Prompt source</strong> chip on a card for the full note.
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-zinc-100 pt-2">
+                        <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">{mode === 'review' ? reviewQueue.length : totalCount} Items</span>
+                        {mode === 'browse' && (
+                          <div className="flex items-center bg-white border border-zinc-200 rounded-xl p-1 shadow-sm">
+                            <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-left" /></button>
+                            <span className="text-[9px] font-black text-indigo-600 px-3 uppercase">P.{currentPage} / {totalPages || 1}</span>
+                            <button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-right" /></button>
+                          </div>
                         )}
                     </div>
-                    <div className="flex items-center gap-3 shrink-0"><span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">{mode === 'review' ? reviewQueue.length : totalCount} Items</span>{mode === 'browse' && (<div className="flex items-center bg-white border border-zinc-200 rounded-xl p-1 shadow-sm"><button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-left" /></button><span className="text-[9px] font-black text-indigo-600 px-3 uppercase">P.{currentPage} / {totalPages || 1}</span><button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-right" /></button></div>)}</div>
                 </div>
             )}
         </header>
@@ -2667,10 +2752,34 @@ const QuestionBankHome: React.FC = () => {
                                         columnB: q.column_b || q.columnB,
                                         topic_tag: q.topic_tag || 'General'
                                     }}
-                                    showExplanation={mode === 'review' && reviewShowExplanations}
-                                    showSource={(mode === 'browse' && browseFilters.showSource) || (mode === 'review' && reviewShowSource)}
-                                    showPromptSet={mode === 'browse' && browseFilters.showPromptSet}
+                                    showExplanation={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showExplanation
+                                    }
+                                    showSource={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showSourceFigure
+                                    }
+                                    showPromptSet={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showPromptSource
+                                    }
                                     promptSetName={q.prompt_set_name ?? null}
+                                    promptSourceTooltip={q.prompt_source_tooltip ?? null}
+                                    showGenerationModel={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showGenerationModel
+                                    }
+                                    generationModelLabel={q.generation_model ?? null}
+                                    showChapter={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showChapter
+                                    }
+                                    chapterName={q.chapter_name ?? null}
+                                    showTopicTag={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showTopic
+                                    }
+                                    showOptions={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showOptions
+                                    }
+                                    showCorrectAnswer={
+                                      (mode === 'browse' || mode === 'review') && questionCardDisplay.showCorrectAnswer
+                                    }
                                     isSelected={selectedIds.has(String(q.id))}
                                     onToggleSelect={(id) => handleToggleSelect(String(id))}
                                     onFlagOutOfSyllabus={mode === 'browse' ? handleFlagOutOfSyllabus : undefined}

@@ -223,6 +223,7 @@ const LabHome: React.FC<LabHomeProps> = ({ onBack, embedded }) => {
                                 columnB: q.columnB || q.column_b
                             }}
                             showExplanation={true}
+                            showCorrectAnswer={true}
                         />
                     ))}
                 </div>

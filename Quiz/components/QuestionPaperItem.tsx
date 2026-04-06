@@ -29,9 +29,21 @@ interface QuestionPaperItemProps {
   index: number;
   showExplanation?: boolean;
   showSource?: boolean;
-  /** Browse repository: show cloud prompt set name when stored on the row. */
+  /** Show prompt provenance chip (cloud set name, built-in, or browser/local). */
   showPromptSet?: boolean;
   promptSetName?: string | null;
+  /** Long tooltip explaining prompt_generation_source + set name. */
+  promptSourceTooltip?: string | null;
+  showGenerationModel?: boolean;
+  generationModelLabel?: string | null;
+  showChapter?: boolean;
+  chapterName?: string | null;
+  /** When false, hide topic_tag chip. */
+  showTopicTag?: boolean;
+  /** When false, hide options (and matching table). */
+  showOptions?: boolean;
+  /** Highlight correct option + optional “Ans:” line. */
+  showCorrectAnswer?: boolean;
   onToggleSelect?: (id: string) => void;
   isSelected?: boolean;
   onFlagOutOfSyllabus?: (id: string, reason?: QuestionFlagReason) => void;
@@ -47,6 +59,14 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   showSource = false,
   showPromptSet = false,
   promptSetName = null,
+  promptSourceTooltip = null,
+  showGenerationModel = false,
+  generationModelLabel = null,
+  showChapter = false,
+  chapterName = null,
+  showTopicTag = true,
+  showOptions = true,
+  showCorrectAnswer = false,
   onToggleSelect,
   isSelected,
   onFlagOutOfSyllabus,
@@ -109,7 +129,15 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
           <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0 flex-1">
               <span className="shrink-0 rounded-md bg-zinc-900 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-white">Q{index + 1}</span>
               <span className={`shrink-0 text-[8px] font-black uppercase px-2 py-1 rounded-md border ${question.difficulty === 'Easy' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : question.difficulty === 'Medium' ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>{question.difficulty}</span>
-              {question.topic_tag && (
+              {showChapter && chapterName && (
+                  <span
+                    className="max-w-full min-w-0 break-words rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-[8px] font-semibold uppercase leading-snug text-sky-900 [overflow-wrap:anywhere]"
+                    title={`Chapter: ${chapterName}`}
+                  >
+                    {chapterName.length > 28 ? `${chapterName.slice(0, 28)}…` : chapterName}
+                  </span>
+              )}
+              {showTopicTag && question.topic_tag && (
                   <span className="max-w-full min-w-0 break-words rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[8px] font-medium uppercase leading-snug text-zinc-700 [overflow-wrap:anywhere]" title={question.topic_tag}>
                     {question.topic_tag}
                   </span>
@@ -117,9 +145,17 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
               {showPromptSet && promptSetName && (
                   <span
                       className="max-w-full min-w-0 break-words rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-[8px] font-semibold uppercase leading-snug text-violet-800 [overflow-wrap:anywhere]"
-                      title={`Prompt set: ${promptSetName}`}
+                      title={promptSourceTooltip || `Prompt: ${promptSetName}`}
                   >
                       {promptSetName}
+                  </span>
+              )}
+              {showGenerationModel && generationModelLabel && (
+                  <span
+                    className="shrink-0 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-[8px] font-semibold uppercase tracking-wide text-slate-800"
+                    title={`Text model: ${generationModelLabel}`}
+                  >
+                    {generationModelLabel}
                   </span>
               )}
           </div>
@@ -201,7 +237,7 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
       )}
 
       {/* Matching Table */}
-      {isMatching && columnA && columnB && (
+      {showOptions && isMatching && columnA && columnB && (
           <div className="my-2 overflow-hidden rounded-md border border-zinc-200 bg-white text-black shadow-sm">
               <table className="w-full border-collapse bg-white text-[10px] text-zinc-900">
                   <thead>
@@ -236,15 +272,32 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
           </div>
       )}
 
+      {showCorrectAnswer &&
+        showOptions &&
+        question.options &&
+        question.options.length > 0 &&
+        typeof question.correctIndex === 'number' &&
+        question.correctIndex >= 0 &&
+        question.correctIndex < question.options.length && (
+          <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50/90 px-2.5 py-1.5 text-[10px] font-bold text-emerald-900">
+            Ans: ({String.fromCharCode(65 + question.correctIndex)})
+          </div>
+        )}
+
       {/* Options — single column on narrow screens to avoid squashed text */}
+      {showOptions && question.options && question.options.length > 0 && (
       <div className="grid grid-cols-1 min-[520px]:grid-cols-2 gap-2 mt-2 min-w-0">
-          {question.options.map((opt, i) => (
-              <div key={i} className={`flex min-w-0 max-w-full items-start gap-2 overflow-hidden rounded-md border p-2.5 text-[10px] ${i === question.correctIndex ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-zinc-200 bg-white text-zinc-600'}`}>
-                  <span className={`shrink-0 pt-0.5 font-semibold ${i === question.correctIndex ? 'text-emerald-700' : 'text-zinc-400'}`}>({String.fromCharCode(65+i)})</span>
+          {question.options.map((opt, i) => {
+              const isCorrect = showCorrectAnswer && i === question.correctIndex;
+              return (
+              <div key={i} className={`flex min-w-0 max-w-full items-start gap-2 overflow-hidden rounded-md border p-2.5 text-[10px] ${isCorrect ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-zinc-200 bg-white text-zinc-600'}`}>
+                  <span className={`shrink-0 pt-0.5 font-semibold ${isCorrect ? 'text-emerald-700' : 'text-zinc-400'}`}>({String.fromCharCode(65+i)})</span>
                   <div className="leading-snug math-content min-w-0 flex-1 break-words [overflow-wrap:anywhere] max-w-full" dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(opt) }} />
               </div>
-          ))}
+              );
+          })}
       </div>
+      )}
 
       {/* Explanation */}
       {showExplanation && (
