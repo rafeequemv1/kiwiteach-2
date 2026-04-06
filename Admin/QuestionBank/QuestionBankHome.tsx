@@ -127,6 +127,8 @@ type ForgeStyleRowState = {
   planned: number;
   produced: number;
   status: 'pending' | 'running' | 'done' | 'skipped';
+  /** E/M/H for this style’s slice when using split-by-style (proportional to chapter mix). */
+  diffLabel: string;
 };
 
 type ForgeDetailState = {
@@ -137,6 +139,9 @@ type ForgeDetailState = {
   phase: ForgePhase;
   /** Cumulative count written to question_bank_neet this run. */
   totalQuestions: number;
+  /** Chapters fully saved this run (insert succeeded). */
+  savedChaptersCount: number;
+  lastSavedChapterLabel: string;
   chapterQuestions: number;
   modelLabel: string;
   geminiLine: string;
@@ -145,6 +150,17 @@ type ForgeDetailState = {
   syllabusIndex: number;
   syllabusTotal: number;
   synthesisLabel: string;
+  /** Chapter config: target difficulty mix (whole chapter). */
+  plannedEasy: number;
+  plannedMedium: number;
+  plannedHard: number;
+  plannedMcq: number;
+  plannedReasoning: number;
+  plannedMatching: number;
+  plannedStatements: number;
+  plannedTotalQs: number;
+  /** How E/M/H maps to styles for this chapter. */
+  recipeNote: string;
   log: { id: number; t: number; msg: string }[];
 };
 
@@ -172,6 +188,7 @@ function questionsToNeetBankRows(
     prompt_set_id: promptSetId ?? null,
   }));
 }
+
 
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
@@ -666,6 +683,8 @@ const QuestionBankHome: React.FC = () => {
         line: 'Preparing forge…',
         phase: 'prep',
         totalQuestions: 0,
+        savedChaptersCount: 0,
+        lastSavedChapterLabel: '—',
         chapterQuestions: 0,
         modelLabel: modelLabelForge,
         geminiLine: '',
@@ -674,6 +693,15 @@ const QuestionBankHome: React.FC = () => {
         syllabusIndex: 0,
         syllabusTotal: 0,
         synthesisLabel: '',
+        plannedEasy: 0,
+        plannedMedium: 0,
+        plannedHard: 0,
+        plannedMcq: 0,
+        plannedReasoning: 0,
+        plannedMatching: 0,
+        plannedStatements: 0,
+        plannedTotalQs: 0,
+        recipeNote: '',
         log: [
           {
             id: 1,
@@ -728,6 +756,15 @@ const QuestionBankHome: React.FC = () => {
                   synthesisLabel: config.synthesisMode === 'syllabus' ? 'Syllabus-focused' : 'Standard',
                   phase: 'chapter',
                   line: `${progressPrefix}: boundary lookup…`,
+                  plannedEasy: 0,
+                  plannedMedium: 0,
+                  plannedHard: 0,
+                  plannedMcq: 0,
+                  plannedReasoning: 0,
+                  plannedMatching: 0,
+                  plannedStatements: 0,
+                  plannedTotalQs: 0,
+                  recipeNote: '',
                 },
                 `Chapter ${i + 1}/${chapterIds.length}: ${String(chapter.name)}`
               );
@@ -754,12 +791,23 @@ const QuestionBankHome: React.FC = () => {
                   let chapterGeneratedQs: Question[] = [];
                   if (config.synthesisMode === 'syllabus') {
                       const enabledTopics = (Object.entries(config.topicCounts) as [string, { count: number; enabled: boolean }][]).filter(([_, tConf]) => tConf.enabled && tConf.count > 0);
+                      const totalSyllabusQ = enabledTopics.reduce((acc, [, tConf]) => acc + tConf.count, 0);
                       patchForgeDetail(
                         {
                           phase: 'gemini',
                           syllabusTotal: enabledTopics.length,
                           syllabusIndex: 0,
                           styleRows: [],
+                          plannedEasy: 0,
+                          plannedMedium: totalSyllabusQ,
+                          plannedHard: 0,
+                          plannedMcq: totalSyllabusQ,
+                          plannedReasoning: 0,
+                          plannedMatching: 0,
+                          plannedStatements: 0,
+                          plannedTotalQs: totalSyllabusQ,
+                          recipeNote:
+                            'Syllabus mode: each topic runs its own Gemini call — Medium difficulty, MCQ-only, count from the topic card.',
                         },
                         `Syllabus mode · ${enabledTopics.length} topic(s)`
                       );
@@ -828,6 +876,21 @@ const QuestionBankHome: React.FC = () => {
                         sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null);
                       } else figureCount = config.syntheticFigureCount || 0;
 
+                      const willSplitStyles = shouldSplitStandardForgeByStyle(typesForGen, diffForGen, figureCount);
+                      patchForgeDetail({
+                        plannedEasy: diffForGen.easy,
+                        plannedMedium: diffForGen.medium,
+                        plannedHard: diffForGen.hard,
+                        plannedMcq: typesForGen.mcq,
+                        plannedReasoning: typesForGen.reasoning,
+                        plannedMatching: typesForGen.matching,
+                        plannedStatements: typesForGen.statements,
+                        plannedTotalQs: config.total,
+                        recipeNote: willSplitStyles
+                          ? 'Split-by-style: your chapter E/M/H mix is scaled per style (largest remainder) — each style’s call gets its own Easy/Medium/Hard counts adding up to that style’s question total.'
+                          : 'Single Gemini call: one JSON array with your exact style counts and global E/M/H totals.',
+                      });
+
                       const runFigurePipeline = async (gen: Question[]) => {
                           const figureQs = gen.filter(q => q.figurePrompt);
                           if (figureQs.length > 0 && figureCount > 0) {
@@ -846,15 +909,20 @@ const QuestionBankHome: React.FC = () => {
                           }
                       };
 
-                      if (shouldSplitStandardForgeByStyle(typesForGen, diffForGen, figureCount)) {
+                      if (willSplitStyles) {
                           const styleOrder: QuestionType[] = ['mcq', 'reasoning', 'matching', 'statements'];
-                          const plannedRows: ForgeStyleRowState[] = styleOrder.map((k) => ({
-                            key: k,
-                            label: FORGE_STYLE_LABELS[k],
-                            planned: typesForGen[k],
-                            produced: 0,
-                            status: typesForGen[k] <= 0 ? 'skipped' : 'pending',
-                          }));
+                          const plannedRows: ForgeStyleRowState[] = styleOrder.map((k) => {
+                            const n = typesForGen[k];
+                            const d = n > 0 ? scaleDifficultyToTotal(diffForGen, n) : { easy: 0, medium: 0, hard: 0 };
+                            return {
+                              key: k,
+                              label: FORGE_STYLE_LABELS[k],
+                              planned: n,
+                              produced: 0,
+                              status: n <= 0 ? 'skipped' : 'pending',
+                              diffLabel: n > 0 ? `E${d.easy} · M${d.medium} · H${d.hard}` : '—',
+                            };
+                          });
                           patchForgeDetail(
                             {
                               phase: 'gemini',
@@ -984,20 +1052,40 @@ const QuestionBankHome: React.FC = () => {
                   if (chapterGeneratedQs.length > 0) {
                     const rows = questionsToNeetBankRows(chapter, chapterGeneratedQs, batchPromptSetId);
                     const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
-                    if (insertErr) throw new Error(insertErr.message);
-                    savedToHubThisRun += chapterGeneratedQs.length;
-                    setForgeDetail((p) =>
-                      p
-                        ? { ...p, totalQuestions: p.totalQuestions + chapterGeneratedQs.length }
-                        : p
-                    );
-                    patchForgeDetail(
-                      {
+                    if (insertErr) {
+                      throw new Error(
+                        `Hub save failed (${rows.length} new question(s)): ${insertErr.message}${insertErr.code ? ` [${insertErr.code}]` : ''}`
+                      );
+                    }
+                    const nSaved = chapterGeneratedQs.length;
+                    savedToHubThisRun += nSaved;
+                    const chLabel = String(chapter.name);
+                    forgeLogIdRef.current += 1;
+                    const logId = forgeLogIdRef.current;
+                    setForgeDetail((p) => {
+                      if (!p) return p;
+                      const nextTotal = p.totalQuestions + nSaved;
+                      const nextChapters = p.savedChaptersCount + 1;
+                      const shortCh =
+                        chLabel.length > 40 ? `${chLabel.slice(0, 40)}…` : chLabel;
+                      return {
+                        ...p,
+                        totalQuestions: nextTotal,
+                        savedChaptersCount: nextChapters,
+                        lastSavedChapterLabel: shortCh,
                         phase: 'done',
-                        line: `${progressPrefix}: saved ${chapterGeneratedQs.length} Q to hub`,
-                      },
-                      `✓ Database · ${String(chapter.name).slice(0, 36)}${String(chapter.name).length > 36 ? '…' : ''} · +${chapterGeneratedQs.length} Q (total saved ${savedToHubThisRun})`
-                    );
+                        line: `${progressPrefix}: saved ${nSaved} Q → hub total ${nextTotal} Q · ${nextChapters} chapter(s)`,
+                        log: [
+                          ...p.log,
+                          {
+                            id: logId,
+                            t: Date.now(),
+                            msg: `✓ Saved ${nSaved} Q · ${shortCh} → run total ${nextTotal} Q, ${nextChapters} ch`,
+                          },
+                        ].slice(-80),
+                      };
+                    });
+                    setForgeProgress(`${progressPrefix}: saved ${nSaved} Q to hub`);
                   } else {
                     patchForgeDetail(
                       {
@@ -1370,16 +1458,54 @@ const QuestionBankHome: React.FC = () => {
                     <p className="mt-1 font-mono text-[11px] leading-relaxed text-indigo-950">{forgeDetail.geminiLine || '—'}</p>
                   </section>
 
+                  {forgeDetail.plannedTotalQs > 0 || forgeDetail.recipeNote ? (
+                    <section className="rounded-xl border border-zinc-200 bg-white p-3">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Chapter plan</p>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                        <div className="rounded-lg bg-emerald-50/90 py-2 ring-1 ring-emerald-100">
+                          <p className="text-[8px] font-black uppercase text-emerald-700">Easy</p>
+                          <p className="text-lg font-black text-emerald-900">{forgeDetail.plannedEasy}</p>
+                        </div>
+                        <div className="rounded-lg bg-amber-50/90 py-2 ring-1 ring-amber-100">
+                          <p className="text-[8px] font-black uppercase text-amber-800">Medium</p>
+                          <p className="text-lg font-black text-amber-950">{forgeDetail.plannedMedium}</p>
+                        </div>
+                        <div className="rounded-lg bg-rose-50/90 py-2 ring-1 ring-rose-100">
+                          <p className="text-[8px] font-black uppercase text-rose-800">Hard</p>
+                          <p className="text-lg font-black text-rose-950">{forgeDetail.plannedHard}</p>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold text-zinc-700">
+                        <span>MCQ {forgeDetail.plannedMcq}</span>
+                        <span>Asst–R {forgeDetail.plannedReasoning}</span>
+                        <span>Match {forgeDetail.plannedMatching}</span>
+                        <span>Stmt {forgeDetail.plannedStatements}</span>
+                        <span className="text-zinc-500">· Σ {forgeDetail.plannedTotalQs} Q</span>
+                      </div>
+                      {forgeDetail.recipeNote ? (
+                        <p className="mt-2 text-[10px] leading-relaxed text-zinc-600">{forgeDetail.recipeNote}</p>
+                      ) : null}
+                    </section>
+                  ) : null}
+
                   <section className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-2.5">
                       <p className="text-[8px] font-black uppercase text-emerald-700">This chapter</p>
                       <p className="text-xl font-black text-emerald-900">{forgeDetail.chapterQuestions}</p>
-                      <p className="text-[9px] text-emerald-800/80">questions</p>
+                      <p className="text-[9px] text-emerald-800/80">generated (not yet saved until chapter ends)</p>
                     </div>
-                    <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-2.5">
-                      <p className="text-[8px] font-black uppercase text-violet-700">Saved to hub</p>
+                    <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-2.5 sm:col-span-1">
+                      <p className="text-[8px] font-black uppercase text-violet-700">Saved to hub (this run)</p>
                       <p className="text-xl font-black text-violet-900">{forgeDetail.totalQuestions}</p>
-                      <p className="text-[9px] text-violet-800/80">this run (per chapter)</p>
+                      <p className="text-[9px] font-bold text-violet-800/90">
+                        {forgeDetail.savedChaptersCount} chapter{forgeDetail.savedChaptersCount === 1 ? '' : 's'}
+                      </p>
+                      <p
+                        className="mt-1 line-clamp-2 text-[9px] leading-snug text-violet-700/90 [overflow-wrap:anywhere]"
+                        title={forgeDetail.lastSavedChapterLabel}
+                      >
+                        Last: {forgeDetail.lastSavedChapterLabel}
+                      </p>
                     </div>
                     {forgeDetail.syllabusTotal > 0 ? (
                       <div className="col-span-2 rounded-xl border border-amber-100 bg-amber-50/60 p-2.5 sm:col-span-1">
@@ -1401,7 +1527,7 @@ const QuestionBankHome: React.FC = () => {
                         {forgeDetail.styleRows.map((r) => (
                           <li
                             key={r.key}
-                            className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] ${
+                            className={`flex flex-col gap-0.5 rounded-lg border px-2.5 py-1.5 text-[11px] ${
                               r.status === 'running'
                                 ? 'border-indigo-200 bg-indigo-50'
                                 : r.status === 'done'
@@ -1411,16 +1537,21 @@ const QuestionBankHome: React.FC = () => {
                                     : 'border-zinc-100 bg-white'
                             }`}
                           >
-                            <span className="font-semibold text-zinc-800">{r.label}</span>
-                            <span className="shrink-0 text-[10px] font-bold text-zinc-600">
-                              {r.status === 'skipped'
-                                ? '—'
-                                : r.status === 'done'
-                                  ? `${r.produced}/${r.planned}`
-                                  : r.status === 'running'
-                                    ? `… / ${r.planned}`
-                                    : `${r.planned} planned`}
-                            </span>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-zinc-800">{r.label}</span>
+                              <span className="shrink-0 text-[10px] font-bold text-zinc-600">
+                                {r.status === 'skipped'
+                                  ? '—'
+                                  : r.status === 'done'
+                                    ? `${r.produced}/${r.planned}`
+                                    : r.status === 'running'
+                                      ? `… / ${r.planned}`
+                                      : `${r.planned} planned`}
+                              </span>
+                            </div>
+                            {r.planned > 0 ? (
+                              <p className="text-[9px] font-semibold text-zinc-500">Difficulty slice: {r.diffLabel}</p>
+                            ) : null}
                           </li>
                         ))}
                       </ul>

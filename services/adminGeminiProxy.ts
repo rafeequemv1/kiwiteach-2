@@ -48,7 +48,9 @@ export async function adminGeminiGenerateContent(body: AdminGeminiGenerateBody):
 
   const json = (await res.json().catch(() => ({}))) as { error?: string } & GeminiProxyResponse;
   if (!res.ok) {
-    throw new Error(json.error || `Gemini proxy failed (${res.status})`);
+    const err = new Error(json.error || `Gemini proxy failed (${res.status})`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return json;
 }

@@ -23,9 +23,18 @@ function storagePathLooksPdf(path: string) {
     return path.toLowerCase().split("?")[0].endsWith(".pdf");
 }
 
+function isRetryableGeminiError(error: any): boolean {
+  const msg = String(error?.message || '');
+  const st = typeof error?.status === 'number' ? error.status : undefined;
+  if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) return true;
+  if (st === 408 || st === 429) return true;
+  if (st !== undefined && st >= 500) return true;
+  return false;
+}
+
 const retryWithBackoff = async <T>(
-  operation: () => Promise<T>, 
-  maxRetries: number = 3, 
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
   baseDelay: number = 1000
 ): Promise<T> => {
   let lastError: any;
@@ -34,16 +43,16 @@ const retryWithBackoff = async <T>(
       return await operation();
     } catch (error: any) {
       lastError = error;
-      const isRetryable = error.message.includes('Failed to fetch') || 
-                          error.message.includes('NetworkError') || 
-                          (error.status && error.status >= 500);
-      
-      if (isRetryable && i < maxRetries - 1) {
+      const retryable = isRetryableGeminiError(error);
+
+      if (retryable && i < maxRetries - 1) {
         const delay = baseDelay * Math.pow(2, i);
-        console.warn(`Gemini API Request Failed (${error.message}). Retrying in ${delay}ms (Attempt ${i + 1}/${maxRetries})...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        console.warn(
+          `Gemini request failed (${error?.message || error}). Retrying in ${delay}ms (${i + 1}/${maxRetries})…`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
       } else {
-        if (!isRetryable) throw error;
+        if (!retryable) throw error;
       }
     }
   }
@@ -555,12 +564,15 @@ export const generateQuizQuestions = async (
     const styleLabel = typeof qType === "string" ? qType : "mixed_types";
     onProgress?.(`Gemini · ${styleLabel} · ${count} Q — sending request…`);
 
-    const response = await retryWithBackoff(() =>
-      adminGeminiGenerateContent({
-        model: modelName,
-        contents,
-        config,
-      })
+    const response = await retryWithBackoff(
+      () =>
+        adminGeminiGenerateContent({
+          model: modelName,
+          contents,
+          config,
+        }),
+      6,
+      2500
     );
 
     onProgress?.(`Gemini · ${styleLabel} · ${count} Q — received response, parsing…`);
