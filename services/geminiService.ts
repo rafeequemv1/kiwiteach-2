@@ -97,6 +97,14 @@ const repairMalformedJsonLatex = (jsonStr: string): string => {
         .replace(/(?<!\\)\\(rho|right)/g, '\\\\$1');
 };
 
+/**
+ * Gemini often puts LaTeX like \underbrace, \upsilon, \unit in JSON strings with a single backslash.
+ * JSON.parse treats `\u` as the start of a Unicode escape (must be \u + 4 hex). That throws
+ * "Bad Unicode escape in JSON". Escape any `\u` that is not a valid \uXXXX.
+ */
+const repairInvalidJsonUnicodeEscapes = (jsonStr: string): string =>
+    jsonStr.replace(/\\u(?![0-9a-fA-F]{4})/gi, "\\\\u");
+
 /** Same largest-remainder scaling as Neural Studio forge — maps template E/M/H to exact batch size. */
 function scaleDifficultyCountsToTotal(
   template: { easy: number; medium: number; hard: number },
@@ -579,9 +587,17 @@ export const generateQuizQuestions = async (
     
     // Repair the raw JSON string before parsing
     const rawText = response.text || "[]";
-    const repairedText = repairMalformedJsonLatex(rawText);
-    
-    const rawData = JSON.parse(repairedText);
+    const repairedText = repairInvalidJsonUnicodeEscapes(repairMalformedJsonLatex(rawText));
+
+    let rawData: unknown;
+    try {
+      rawData = JSON.parse(repairedText);
+    } catch (parseErr: unknown) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      throw new Error(
+        `${msg} (JSON parse) — Common cause: LaTeX such as \\underbrace or \\upsilon uses "\\u", which JSON treats as a Unicode escape. Re-forge this chapter or use a smaller batch if it persists.`
+      );
+    }
     const safeData = sanitizeResult(rawData);
     const list = Array.isArray(safeData) ? safeData : [];
 

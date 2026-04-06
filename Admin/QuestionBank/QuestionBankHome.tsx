@@ -92,6 +92,35 @@ interface ChapterConfig {
     isProportional: boolean;
 }
 
+/** Standard forge: figure slots used for split decision and image pipeline (syllabus → 0). */
+function standardChapterFigureCount(cfg: ChapterConfig): number {
+  if (cfg.synthesisMode === 'syllabus') return 0;
+  if (cfg.visualMode === 'image') {
+    return (Object.values(cfg.selectedFigures || {}) as number[]).reduce((a, b) => a + b, 0);
+  }
+  return cfg.syntheticFigureCount || 0;
+}
+
+/** Count of `/api/gemini` text generations for one chapter — matches `handleRunForge`. */
+function countForgeTextCallsForChapter(cfg: ChapterConfig): number {
+  if (cfg.synthesisMode === 'syllabus') {
+    const topics = Object.values(cfg.topicCounts || {}) as { count: number; enabled: boolean }[];
+    return topics.filter((t) => t.enabled && t.count > 0).length;
+  }
+  const figureCount = standardChapterFigureCount(cfg);
+  if (shouldSplitStandardForgeByStyle(cfg.types, cfg.diff, figureCount)) {
+    const styleOrder: QuestionType[] = ['mcq', 'reasoning', 'matching', 'statements'];
+    return styleOrder.filter((k) => cfg.types[k] > 0).length;
+  }
+  return 1;
+}
+
+/** Image model calls (one per figure prompt) — upper bound = planned figure slots. */
+function countForgeImageCallsForChapter(cfg: ChapterConfig): number {
+  if (cfg.synthesisMode === 'syllabus') return 0;
+  return standardChapterFigureCount(cfg);
+}
+
 interface GraphNode {
   id: string;
   label: string;
@@ -104,6 +133,16 @@ const COST_ESTIMATES = {
   'gemini-3-flash-preview': 0.15,
   'gemini-flash-lite-latest': 0.05
 };
+
+/** INR per text API round-trip beyond the per-question variable line (proxy, latency, small fixed input). */
+const STUDIO_TEXT_CALL_OVERHEAD_INR: Record<keyof typeof COST_ESTIMATES, number> = {
+  'gemini-3-pro-preview': 0.55,
+  'gemini-3-flash-preview': 0.08,
+  'gemini-flash-lite-latest': 0.05,
+};
+
+/** `gemini-3-pro-image-preview` — one billable call per figure prompt in the composite pipeline. */
+const STUDIO_IMAGE_CALL_INR = 6.5;
 
 const STUDIO_MODEL_IDS = ['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-flash-lite-latest'] as const;
 const STUDIO_MODEL_META: Record<(typeof STUDIO_MODEL_IDS)[number], { label: string; icon: string }> = {
@@ -399,17 +438,36 @@ const QuestionBankHome: React.FC = () => {
       return { questions: q, figures: f };
   }, [selectedChapterIds, chapterConfigs]);
 
-  /** Live forge estimate: updates as chapter configs, model, or batch selection change. */
+  /** Live forge estimate: question variable cost + per text call overhead + per figure image call. */
   const forgeCostPreview = useMemo(() => {
-    const rate = COST_ESTIMATES[selectedModel as keyof typeof COST_ESTIMATES] || 0;
+    const modelKey = selectedModel as keyof typeof COST_ESTIMATES;
+    const rate = COST_ESTIMATES[modelKey] || 0;
+    const overhead = STUDIO_TEXT_CALL_OVERHEAD_INR[modelKey] ?? 0;
     const q = grandTotals.questions;
+    let textCalls = 0;
+    let imageCalls = 0;
+    Array.from(selectedChapterIds).forEach((id) => {
+      const cfg = chapterConfigs[id];
+      if (!cfg) return;
+      textCalls += countForgeTextCallsForChapter(cfg);
+      imageCalls += countForgeImageCallsForChapter(cfg);
+    });
+    const variableInr = q * rate;
+    const textOverheadInr = textCalls * overhead;
+    const imageInr = imageCalls * STUDIO_IMAGE_CALL_INR;
+    const totalInr = variableInr + textOverheadInr + imageInr;
     return {
-      inrTotal: (q * rate).toFixed(2),
+      inrTotal: totalInr.toFixed(2),
       rate,
       questions: q,
+      textCalls,
+      imageCalls,
+      variableInr: variableInr.toFixed(2),
+      textOverheadInr: textOverheadInr.toFixed(2),
+      imageInr: imageInr.toFixed(2),
       modelLabel: STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel,
     };
-  }, [grandTotals.questions, selectedModel]);
+  }, [grandTotals.questions, selectedChapterIds, chapterConfigs, selectedModel]);
 
   const selectedChapterIdsKey = useMemo(
     () => Array.from(selectedChapterIds).sort().join(','),
@@ -2191,8 +2249,20 @@ const QuestionBankHome: React.FC = () => {
                                               <span className="text-2xl font-bold tracking-tight">₹{forgeCostPreview.inrTotal}</span>
                                               <span className="text-[10px] font-medium uppercase text-indigo-300">INR</span>
                                             </div>
-                                            <p className="mt-1 text-[9px] font-medium text-zinc-400">
-                                              {forgeCostPreview.questions} Q × ₹{forgeCostPreview.rate.toFixed(2)} · {forgeCostPreview.modelLabel}
+                                            <p className="mt-1 text-[9px] font-medium leading-snug text-zinc-400">
+                                              {forgeCostPreview.questions} Q × ₹{forgeCostPreview.rate.toFixed(2)} ({forgeCostPreview.modelLabel})
+                                              <br />
+                                              + {forgeCostPreview.textCalls} text API × ₹
+                                              {(
+                                                STUDIO_TEXT_CALL_OVERHEAD_INR[
+                                                  selectedModel as keyof typeof STUDIO_TEXT_CALL_OVERHEAD_INR
+                                                ] ?? 0
+                                              ).toFixed(2)}{' '}
+                                              · {forgeCostPreview.imageCalls} image × ₹{STUDIO_IMAGE_CALL_INR.toFixed(2)}
+                                            </p>
+                                            <p className="mt-0.5 text-[8px] text-zinc-500">
+                                              ≈ ₹{forgeCostPreview.variableInr} output + ₹{forgeCostPreview.textOverheadInr} calls + ₹
+                                              {forgeCostPreview.imageInr} figures
                                             </p>
                                             {applyActiveStandardMixToAllChapters && (
                                               <p className="mt-1 text-[9px] font-semibold text-amber-200/90">
