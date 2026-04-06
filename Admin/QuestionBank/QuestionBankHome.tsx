@@ -2,7 +2,6 @@
 import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Dialog } from 'radix-ui';
-import { Minus, Plus } from 'lucide-react';
 import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
 import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../../services/syllabusService';
@@ -76,23 +75,41 @@ const STUDIO_MODEL_META: Record<(typeof STUDIO_MODEL_IDS)[number], { label: stri
   'gemini-flash-lite-latest': { label: 'Flash Lite', icon: 'mdi:feather' },
 };
 
-/** Turn non-negative style weights into integer counts that sum exactly to `total` (same mix for every chapter). */
-function allocateQuestionTypesByWeight(
-  total: number,
-  w: { mcq: number; reasoning: number; matching: number; statements: number }
+/** Scale Easy/Medium/Hard template counts to sum exactly to `total` (preserves ratio; largest remainder). */
+function scaleDifficultyToTotal(
+  template: { easy: number; medium: number; hard: number },
+  total: number
+): { easy: number; medium: number; hard: number } {
+  const wE = Math.max(0, Math.floor(template.easy));
+  const wM = Math.max(0, Math.floor(template.medium));
+  const wH = Math.max(0, Math.floor(template.hard));
+  const sumW = wE + wM + wH;
+  if (total <= 0) return { easy: 0, medium: 0, hard: 0 };
+  if (sumW <= 0) return { easy: 0, medium: total, hard: 0 };
+
+  const exact = [(wE / sumW) * total, (wM / sumW) * total, (wH / sumW) * total];
+  const floor = exact.map((x) => Math.floor(x));
+  let rem = total - floor.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
+  const out = [...floor];
+  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
+  return { easy: out[0], medium: out[1], hard: out[2] };
+}
+
+/** Scale MCQ / assertion / matching / statements template counts to sum exactly to `total`. */
+function scaleTypesToTotal(
+  template: { mcq: number; reasoning: number; matching: number; statements: number },
+  total: number
 ): { mcq: number; reasoning: number; matching: number; statements: number } {
   const keys = ['mcq', 'reasoning', 'matching', 'statements'] as const;
-  const weights = keys.map((k) => Math.max(0, Math.floor(Number(w[k]) || 0)));
+  const weights = keys.map((k) => Math.max(0, Math.floor(Number(template[k]) || 0)));
   const sumW = weights.reduce((a, b) => a + b, 0);
   if (total <= 0) return { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
   if (sumW === 0) return { mcq: total, reasoning: 0, matching: 0, statements: 0 };
-
   const exact = weights.map((wi) => (wi / sumW) * total);
   const floor = exact.map((x) => Math.floor(x));
   let rem = total - floor.reduce((a, b) => a + b, 0);
-  const order = exact
-    .map((x, i) => ({ i, r: x - floor[i] }))
-    .sort((a, b) => b.r - a.r);
+  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
   const out = [...floor];
   for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
   return { mcq: out[0], reasoning: out[1], matching: out[2], statements: out[3] };
@@ -150,29 +167,9 @@ const QuestionBankHome: React.FC = () => {
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [forgeProgress, setForgeProgress] = useState('');
-  /** Forge = review queue; Fill = save MCQ text per chapter immediately */
-  const [studioTool, setStudioTool] = useState<'forge' | 'fill'>('forge');
-  const [fillUniformDiff, setFillUniformDiff] = useState({ easy: 3, medium: 4, hard: 2 });
-  /** Relative weights for MCQ / assertion / matching / statements — same mix applied to every chapter in fill mode. */
-  const [fillUniformStyleWeights, setFillUniformStyleWeights] = useState({
-    mcq: 60,
-    reasoning: 20,
-    matching: 10,
-    statements: 10,
-  });
-  const [isFillBatch, setIsFillBatch] = useState(false);
-  const [fillProgress, setFillProgress] = useState('');
-  const [fillSettingsOpen, setFillSettingsOpen] = useState(false);
-  const prevStudioToolRef = useRef<'forge' | 'fill'>('forge');
-
-  useEffect(() => {
-    if (studioTool !== 'fill') {
-      setFillSettingsOpen(false);
-    } else if (prevStudioToolRef.current !== 'fill' && selectedChapterIds.size > 0) {
-      setFillSettingsOpen(true);
-    }
-    prevStudioToolRef.current = studioTool;
-  }, [studioTool, selectedChapterIds.size]);
+  /** When on, Forge uses the active chapter's E/M/H + style *ratios* scaled to each chapter's question total (standard only). */
+  const [applyActiveStandardMixToAllChapters, setApplyActiveStandardMixToAllChapters] = useState(false);
+  const [studioChapterConfigOpen, setStudioChapterConfigOpen] = useState(false);
 
   const [activeChapterSyllabus, setActiveChapterSyllabus] = useState<string[]>([]);
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
@@ -302,26 +299,17 @@ const QuestionBankHome: React.FC = () => {
       return { questions: q, figures: f };
   }, [selectedChapterIds, chapterConfigs]);
 
-  const estimatedBatchCost = useMemo(() => {
+  /** Live forge estimate: updates as chapter configs, model, or batch selection change. */
+  const forgeCostPreview = useMemo(() => {
     const rate = COST_ESTIMATES[selectedModel as keyof typeof COST_ESTIMATES] || 0;
-    return (grandTotals.questions * rate).toFixed(2);
+    const q = grandTotals.questions;
+    return {
+      inrTotal: (q * rate).toFixed(2),
+      rate,
+      questions: q,
+      modelLabel: STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel,
+    };
   }, [grandTotals.questions, selectedModel]);
-
-  const fillQuestionsPerChapter = fillUniformDiff.easy + fillUniformDiff.medium + fillUniformDiff.hard;
-  const fillStyleWeightsSum =
-    fillUniformStyleWeights.mcq +
-    fillUniformStyleWeights.reasoning +
-    fillUniformStyleWeights.matching +
-    fillUniformStyleWeights.statements;
-  const fillStyleTypeCounts = useMemo(
-    () => allocateQuestionTypesByWeight(fillQuestionsPerChapter, fillUniformStyleWeights),
-    [fillQuestionsPerChapter, fillUniformStyleWeights]
-  );
-  const fillTotalPlannedQuestions = fillQuestionsPerChapter * selectedChapterIds.size;
-  const estimatedFillCostInr = useMemo(() => {
-    const rate = COST_ESTIMATES[selectedModel as keyof typeof COST_ESTIMATES] || 0;
-    return (fillTotalPlannedQuestions * rate).toFixed(2);
-  }, [fillTotalPlannedQuestions, selectedModel]);
 
   useEffect(() => {
       if (mode === 'browse') {
@@ -558,11 +546,22 @@ const QuestionBankHome: React.FC = () => {
                       }
                   } else {
                       config.total = Object.values(config.types).reduce((a: number, b: number) => a + b, 0);
+                      let diffForGen = config.diff;
+                      let typesForGen = { ...config.types };
+                      if (
+                        applyActiveStandardMixToAllChapters &&
+                        activeEditingChapterId &&
+                        chapterConfigs[activeEditingChapterId]
+                      ) {
+                        const tmpl = chapterConfigs[activeEditingChapterId];
+                        diffForGen = scaleDifficultyToTotal(tmpl.diff, config.total);
+                        typesForGen = scaleTypesToTotal(tmpl.types, config.total);
+                      }
                       let figureCount = 0; let sourceImages: {data: string, mimeType: string}[] = [];
                       if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null); } else figureCount = config.syntheticFigureCount || 0;
                       
                       setForgeProgress(`${progressPrefix}: Synthesizing Questions...`);
-                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), config.diff, config.total, { text: rawText, images: sourceImages }, config.types, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId);
+                      const gen: Question[] = await generateQuizQuestions(String(chapter.name), diffForGen, config.total, { text: rawText, images: sourceImages }, typesForGen, undefined, figureCount, false, JSON.stringify(config.selectedFigures || {}), selectedModel, config.visualMode, undefined, undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId);
                       const figureQs = gen.filter(q => q.figurePrompt);
                       if (figureQs.length > 0 && figureCount > 0) {
                           setForgeProgress(`${progressPrefix}: Processing Visuals...`);
@@ -599,146 +598,6 @@ const QuestionBankHome: React.FC = () => {
     stopForgingRef.current = true;
   };
 
-  const handleRunFillMode = async () => {
-    const chapterIds = Array.from(selectedChapterIds);
-    if (chapterIds.length === 0) {
-      alert('Select chapters.');
-      return;
-    }
-    const perChap = fillUniformDiff.easy + fillUniformDiff.medium + fillUniformDiff.hard;
-    if (perChap <= 0) {
-      alert('Set at least one question per chapter (Easy + Medium + Hard).');
-      return;
-    }
-    const typeCounts = allocateQuestionTypesByWeight(perChap, fillUniformStyleWeights);
-    const styleSum =
-      fillUniformStyleWeights.mcq +
-      fillUniformStyleWeights.reasoning +
-      fillUniformStyleWeights.matching +
-      fillUniformStyleWeights.statements;
-    if (styleSum <= 0) {
-      alert('Set at least one positive style weight (MCQ, Assertion, Matching, or Statements).');
-      return;
-    }
-
-    setIsFillBatch(true);
-    stopForgingRef.current = false;
-    let savedTotal = 0;
-
-    try {
-      let excludedTopicLabelsNormalized: string[] = [];
-      if (bankUserId) {
-        try {
-          excludedTopicLabelsNormalized = await fetchUserExcludedTopicLabels(
-            supabase,
-            bankUserId,
-            selectedKbId
-          );
-        } catch (e) {
-          console.warn('Exclusions fetch failed', e);
-        }
-      }
-
-      const fillPromptSetId = await resolveStoredPromptSetIdForKbGeneration(selectedKbId);
-
-      for (let i = 0; i < chapterIds.length; i++) {
-        if (stopForgingRef.current) {
-          setFillProgress(`Stopped · ${savedTotal} saved`);
-          break;
-        }
-        const chapId = chapterIds[i];
-        const chapter = chapters.find((c) => c.id === chapId);
-        if (!chapter) continue;
-
-        const progressPrefix = `[${i + 1}/${chapterIds.length}] ${String(chapter.name)}`;
-        setFillProgress(`${progressPrefix} · ${savedTotal} saved · loading…`);
-
-        let boundariesContext = '';
-        try {
-          const boundaryTopics = await fetchSyllabusTopicsForChapter({
-            kbId: selectedKbId,
-            chapterName: String(chapter.name).trim(),
-            subjectName: chapter.subject_name || null,
-          });
-          if (boundaryTopics.length > 0) {
-            boundariesContext = `[STRICT BOUNDARIES]: Topics: ${boundaryTopics.join(', ')}.`;
-          }
-        } catch {
-          /* ignore */
-        }
-
-        const contentRes = await supabase.from('chapters').select('raw_text').eq('id', chapId).single();
-        const rawText = (contentRes.data?.raw_text || '') + '\n\n' + boundariesContext;
-
-        setFillProgress(
-          `${progressPrefix} · ${savedTotal} saved · generating ${perChap} Q (styles: M${typeCounts.mcq}·A${typeCounts.reasoning}·m${typeCounts.matching}·S${typeCounts.statements})…`
-        );
-
-        const gen = await generateQuizQuestions(
-          String(chapter.name),
-          fillUniformDiff,
-          perChap,
-          { text: rawText },
-          typeCounts,
-          (status) => setFillProgress(`${progressPrefix} · ${savedTotal} saved · ${status}`),
-          0,
-          false,
-          undefined,
-          selectedModel,
-          'text',
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          excludedTopicLabelsNormalized,
-          selectedKbId
-        );
-
-        const rows = gen.map((q) => ({
-          chapter_id: chapter.id,
-          chapter_name: chapter.name,
-          subject_name: chapter.subject_name,
-          class_name: chapter.class_name,
-          question_text: q.text,
-          options: q.options,
-          correct_index: q.correctIndex,
-          explanation: q.explanation,
-          difficulty: q.difficulty,
-          question_type: q.type,
-          topic_tag: q.topic_tag || 'General',
-          figure_url: q.figureDataUrl,
-          source_figure_url: q.sourceFigureDataUrl,
-          column_a: q.columnA,
-          column_b: q.columnB,
-          prompt_set_id: fillPromptSetId,
-        }));
-
-        if (rows.length > 0) {
-          setFillProgress(`${progressPrefix} · saving ${rows.length}…`);
-          const { error } = await supabase.from('question_bank_neet').insert(rows);
-          if (error) throw error;
-          savedTotal += rows.length;
-        }
-
-        fetchBulkStats([chapId]);
-      }
-
-      if (!stopForgingRef.current) {
-        alert(`Fill complete. Saved ${savedTotal} questions.`);
-      } else {
-        alert(`Stopped. ${savedTotal} questions remain in the repository.`);
-      }
-    } catch (e: any) {
-      console.error('Fill mode error', e);
-      alert(`Fill error: ${e?.message || String(e)}`);
-    } finally {
-      setIsFillBatch(false);
-      setFillProgress('');
-      stopForgingRef.current = false;
-      if (selectedChapterIds.size > 0) fetchBulkStats(Array.from(selectedChapterIds));
-    }
-  };
-
   // Helper inputs (StepNumberInput, etc)
   const StepNumberInput = ({ value, onChange, label, color, subText, min = 0, icon, disabled }: any) => (
     <div className={`flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-zinc-100 shadow-sm ${disabled ? 'opacity-40 grayscale' : ''}`}>
@@ -756,53 +615,6 @@ const QuestionBankHome: React.FC = () => {
             <input disabled={disabled} type="number" value={value} onChange={(e) => onChange(Math.max(min, parseInt(e.target.value) || min))} className={`flex-1 min-w-0 bg-transparent text-center font-black text-sm outline-none ${color}`} />
             <button disabled={disabled} onClick={() => onChange(value + 1)} className="w-10 h-9 flex items-center justify-center text-zinc-400 hover:bg-emerald-50 hover:text-emerald-500"><iconify-icon icon="mdi:plus" /></button>
         </div>
-    </div>
-  );
-
-  /** Compact numeric row (fill modal only — always light surface for OS dark mode). */
-  const FillNumericRow = ({
-    value,
-    onChange,
-    label,
-    min = 0,
-  }: {
-    value: number;
-    onChange: (v: number) => void;
-    label: string;
-    min?: number;
-  }) => (
-    <div className="space-y-1.5">
-      <label className="block text-xs font-medium leading-none text-zinc-500">{label}</label>
-      <div className="flex h-11 min-w-0 items-stretch overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm [color-scheme:light]">
-        <button
-          type="button"
-          aria-label={`Decrease ${label}`}
-          onClick={() => onChange(Math.max(min, value - 1))}
-          className="inline-flex w-11 shrink-0 items-center justify-center border-r border-zinc-200 bg-white text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
-        >
-          <Minus className="size-4 shrink-0" strokeWidth={2} aria-hidden />
-        </button>
-        <input
-          type="number"
-          inputMode="numeric"
-          min={min}
-          value={value}
-          onChange={(e) => {
-            const n = parseInt(e.target.value, 10);
-            onChange(Number.isFinite(n) ? Math.max(min, n) : min);
-          }}
-          onFocus={(e) => e.currentTarget.select()}
-          className="min-w-[3.25rem] flex-1 border-0 bg-white px-2 text-center text-xl font-semibold tabular-nums text-zinc-900 outline-none ring-offset-white transition-shadow focus-visible:ring-2 focus-visible:ring-zinc-950/15 focus-visible:ring-offset-0 sm:min-w-[4rem] sm:text-2xl [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-        />
-        <button
-          type="button"
-          aria-label={`Increase ${label}`}
-          onClick={() => onChange(value + 1)}
-          className="inline-flex w-11 shrink-0 items-center justify-center border-l border-zinc-200 bg-white text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
-        >
-          <Plus className="size-4 shrink-0" strokeWidth={2} aria-hidden />
-        </button>
-      </div>
     </div>
   );
 
@@ -1044,17 +856,17 @@ const QuestionBankHome: React.FC = () => {
 
   return (
     <div className={`${workspacePageClass} overflow-hidden relative`}>
-        {/* PROGRESS OVERLAY — forge, fill, or save */}
-        {(isSaving || isForgingBatch || isFillBatch) && (
+        {/* PROGRESS OVERLAY — forge or save */}
+        {(isSaving || isForgingBatch) && (
             <div className="fixed inset-0 z-[200] bg-white/90 backdrop-blur-md flex flex-col items-center justify-center animate-fade-in px-6">
                 <div className="w-20 h-20 border-4 border-zinc-100 border-t-indigo-600 rounded-full animate-spin mb-8"></div>
                 <h3 className="text-2xl font-black text-zinc-900 tracking-tight mb-2 uppercase text-center">
-                  {isFillBatch ? 'Fill mode' : isForgingBatch ? 'Neural Forge' : 'Syncing repository'}
+                  {isForgingBatch ? 'Neural Forge' : 'Syncing repository'}
                 </h3>
                 <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-[0.25em] text-center max-w-lg leading-relaxed">
-                  {(isFillBatch ? fillProgress : forgeProgress) || 'Processing…'}
+                  {forgeProgress || 'Processing…'}
                 </p>
-                {(isForgingBatch || isFillBatch) && (
+                {isForgingBatch && (
                   <button
                     type="button"
                     onClick={handleInterruptStudio}
@@ -1064,9 +876,7 @@ const QuestionBankHome: React.FC = () => {
                   </button>
                 )}
                 <p className="mt-4 text-[9px] text-zinc-400 text-center max-w-sm">
-                  {isFillBatch
-                    ? 'Each chapter is saved before the next starts. Earlier chapters stay in the bank if you stop.'
-                    : 'Forge batches to review; interrupt stops before the next chapter or topic.'}
+                  Forge batches to review; interrupt stops before the next chapter or topic.
                 </p>
             </div>
         )}
@@ -1356,10 +1166,6 @@ const QuestionBankHome: React.FC = () => {
                                 <header className="flex flex-col gap-3">
                                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                     <h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight shrink-0">Neural Studio</h2>
-                                    <div className="flex bg-zinc-100 p-1 rounded-xl border border-zinc-200 w-full sm:w-auto">
-                                      <button type="button" disabled={isForgingBatch || isFillBatch} onClick={() => setStudioTool('forge')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-50 ${studioTool === 'forge' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Forge</button>
-                                      <button type="button" disabled={isForgingBatch || isFillBatch} onClick={() => setStudioTool('fill')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-50 ${studioTool === 'fill' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-400'}`}>Fill</button>
-                                    </div>
                                   </div>
                                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                                     <div className="flex flex-wrap items-center gap-1 bg-white p-0.5 rounded-lg border border-zinc-200 w-full md:w-fit">
@@ -1372,72 +1178,68 @@ const QuestionBankHome: React.FC = () => {
                                         );
                                       })}
                                     </div>
-                                    {studioTool === 'forge' ? (
-                                      <button type="button" onClick={handleRunForge} disabled={isForgingBatch || isFillBatch} className="bg-zinc-900 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 w-full md:w-auto disabled:opacity-50">
+                                    <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                                      <button
+                                        type="button"
+                                        onClick={() => setStudioChapterConfigOpen(true)}
+                                        disabled={!activeConfig}
+                                        className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shrink-0 flex-1 sm:flex-none disabled:opacity-40"
+                                      >
+                                        <iconify-icon icon="mdi:cog-outline" width="18" /> Config
+                                      </button>
+                                      <button type="button" onClick={handleRunForge} disabled={isForgingBatch} className="bg-zinc-900 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 flex-1 sm:flex-none disabled:opacity-50">
                                         <iconify-icon icon="mdi:lightning-bolt" width="18" /> Forge
                                       </button>
-                                    ) : (
-                                      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
-                                        <button
-                                          type="button"
-                                          onClick={() => setFillSettingsOpen(true)}
-                                          disabled={isForgingBatch || isFillBatch || selectedChapterIds.size === 0}
-                                          className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-4 py-2.5 text-sm font-medium text-zinc-800 shadow-sm transition-colors hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                                        >
-                                          Fill settings
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => void handleRunFillMode()}
-                                          disabled={
-                                            isForgingBatch ||
-                                            isFillBatch ||
-                                            fillQuestionsPerChapter === 0 ||
-                                            fillStyleWeightsSum <= 0 ||
-                                            selectedChapterIds.size === 0
-                                          }
-                                          className="inline-flex items-center justify-center gap-2 rounded-md bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
-                                        >
-                                          <iconify-icon icon="mdi:playlist-plus" width="18" /> Run fill
-                                        </button>
-                                      </div>
-                                    )}
+                                    </div>
                                   </div>
                                 </header>
-                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                                    <div className="lg:col-span-5 space-y-3">
-                                        {studioTool === 'fill' ? (
-                                            <div className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-950">
-                                              <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Chapter fill</h3>
-                                              <p className="mt-2 text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
-                                                Same difficulty and style weights for every selected chapter. Open settings to edit counts; run
-                                                from the header when ready.
-                                              </p>
-                                              <dl className="mt-4 space-y-2 border-t border-zinc-100 pt-4 text-sm dark:border-zinc-800">
-                                                <div className="flex justify-between gap-4">
-                                                  <dt className="text-zinc-500 dark:text-zinc-400">Questions / chapter</dt>
-                                                  <dd className="font-medium tabular-nums text-zinc-900 dark:text-zinc-100">{fillQuestionsPerChapter}</dd>
-                                                </div>
-                                                <div className="flex justify-between gap-4">
-                                                  <dt className="text-zinc-500 dark:text-zinc-400">Chapters</dt>
-                                                  <dd className="font-medium tabular-nums text-zinc-900 dark:text-zinc-100">{selectedChapterIds.size}</dd>
-                                                </div>
-                                                <div className="flex justify-between gap-4">
-                                                  <dt className="text-zinc-500 dark:text-zinc-400">Total planned</dt>
-                                                  <dd className="font-medium tabular-nums text-zinc-900 dark:text-zinc-100">{fillTotalPlannedQuestions}</dd>
-                                                </div>
-                                              </dl>
-                                              <button
-                                                type="button"
-                                                onClick={() => setFillSettingsOpen(true)}
-                                                className="mt-5 w-full rounded-md border border-zinc-200 bg-zinc-50 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                                              >
-                                                Open fill settings
-                                              </button>
-                                            </div>
-                                        ) : activeConfig && (
-                                            <div className="bg-white p-3 sm:p-4 rounded-xl border border-zinc-200 shadow-sm space-y-4 animate-fade-in min-w-0 max-w-full overflow-hidden">
-                                                <h3 className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide truncate border-b border-zinc-100 pb-2">Chapter config</h3>
+                                <div className="rounded-xl border border-indigo-200 bg-white px-4 py-3 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">Active chapter</p>
+                                    <p className="text-sm font-bold text-zinc-900 truncate">
+                                      {activeEditingChapterId
+                                        ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || 'Chapter')
+                                        : '—'}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setStudioChapterConfigOpen(true)}
+                                    disabled={!activeConfig}
+                                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-[10px] font-black uppercase tracking-wide text-indigo-800 transition-colors hover:bg-indigo-100 disabled:opacity-40"
+                                  >
+                                    <iconify-icon icon="mdi:open-in-new" width="16" /> Open chapter config
+                                  </button>
+                                </div>
+                                <Dialog.Root open={studioChapterConfigOpen} onOpenChange={setStudioChapterConfigOpen}>
+                                  <Dialog.Portal>
+                                    <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+                                    <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(92vh,760px)] w-[calc(100vw-1.25rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+                                      <div className="shrink-0 flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
+                                        <div className="min-w-0 pr-2">
+                                          <Dialog.Title className="text-sm font-bold text-zinc-900">Chapter config</Dialog.Title>
+                                          <Dialog.Description className="sr-only">
+                                            Synthesis mode, visuals, difficulty counts, and question style counts for forge.
+                                          </Dialog.Description>
+                                          <p className="mt-0.5 truncate text-xs text-zinc-500">
+                                            {activeEditingChapterId
+                                              ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || '')
+                                              : ''}
+                                          </p>
+                                        </div>
+                                        <Dialog.Close asChild>
+                                          <button
+                                            type="button"
+                                            className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 shrink-0"
+                                            aria-label="Close"
+                                          >
+                                            <iconify-icon icon="mdi:close" width="22" />
+                                          </button>
+                                        </Dialog.Close>
+                                      </div>
+                                      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 custom-scrollbar">
+                                        {activeConfig ? (
+                                            <div className="space-y-4 min-w-0 max-w-full overflow-hidden">
                                                 <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Synthesis Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => handleSynthesisModeChange('standard')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'standard' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Standard</button><button onClick={() => handleSynthesisModeChange('syllabus')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'syllabus' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Syllabus Focused</button></div></div>
                                                 {/* (Rest of Studio Config as per original...) */}
                                                 {activeConfig.synthesisMode === 'syllabus' ? (
@@ -1615,46 +1417,68 @@ const QuestionBankHome: React.FC = () => {
                                                         ) : null}
                                                         <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
                                                         <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
+                                                        <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-amber-100 bg-amber-50/50 px-3 py-2.5">
+                                                          <input
+                                                            type="checkbox"
+                                                            className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-amber-600 focus:ring-amber-500"
+                                                            checked={applyActiveStandardMixToAllChapters}
+                                                            onChange={(e) => setApplyActiveStandardMixToAllChapters(e.target.checked)}
+                                                          />
+                                                          <span className="min-w-0">
+                                                            <span className="block text-[9px] font-black uppercase tracking-wide text-amber-950">Apply difficulty + styles to all chapters</span>
+                                                            <span className="mt-0.5 block text-[8px] font-medium leading-snug text-zinc-600">
+                                                              At forge time, each <strong className="font-semibold text-zinc-800">standard</strong> chapter uses this chapter&apos;s Easy/Medium/Hard and MCQ/assertion/matching/statements <em className="not-italic font-semibold text-zinc-700">ratios</em>, scaled to that chapter&apos;s own total count. Syllabus chapters unchanged.
+                                                            </span>
+                                                          </span>
+                                                        </label>
                                                     </>
                                                 )}
                                             </div>
+                                        ) : (
+                                          <p className="py-10 text-center text-sm text-zinc-500">Select a chapter in the batch list, then configure.</p>
                                         )}
-                                    </div>
-                                    <div className="lg:col-span-7 flex flex-col gap-3">
-                                      <div className={`rounded-xl p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3 border ${studioTool === 'fill' ? 'border-zinc-600 bg-zinc-900' : 'bg-zinc-900 border-indigo-500/30'}`}>
+                                      </div>
+                                    </Dialog.Content>
+                                  </Dialog.Portal>
+                                </Dialog.Root>
+                                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                                    <div className="flex flex-col gap-3">
+                                      <div className="rounded-xl border border-indigo-500/30 bg-zinc-900 p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3 transition-[box-shadow] duration-200">
                                         <div className="flex items-center gap-3 min-w-0">
-                                          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-white shadow-md ${studioTool === 'fill' ? 'bg-zinc-700' : 'bg-indigo-500'}`}>
+                                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-500 text-white shadow-md">
                                             <iconify-icon icon="mdi:currency-inr" width="22" />
                                           </div>
                                           <div>
-                                            <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">Est. cost</span>
-                                            <div className="flex items-baseline gap-1.5">
-                                              <span className="text-2xl font-bold">₹{studioTool === 'fill' ? estimatedFillCostInr : estimatedBatchCost}</span>
-                                              <span className={`text-[10px] font-medium uppercase ${studioTool === 'fill' ? 'text-zinc-400' : 'text-indigo-300'}`}>INR</span>
+                                            <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">Est. cost (live)</span>
+                                            <div className="flex items-baseline gap-1.5 tabular-nums">
+                                              <span className="text-2xl font-bold tracking-tight">₹{forgeCostPreview.inrTotal}</span>
+                                              <span className="text-[10px] font-medium uppercase text-indigo-300">INR</span>
                                             </div>
+                                            <p className="mt-1 text-[9px] font-medium text-zinc-400">
+                                              {forgeCostPreview.questions} Q × ₹{forgeCostPreview.rate.toFixed(2)} · {forgeCostPreview.modelLabel}
+                                            </p>
+                                            {applyActiveStandardMixToAllChapters && (
+                                              <p className="mt-1 text-[9px] font-semibold text-amber-200/90">
+                                                Shared E/M/H + style mix at forge (standard chapters)
+                                              </p>
+                                            )}
                                           </div>
                                         </div>
                                         <div className="text-right text-[10px]">
-                                          <span className="font-semibold text-zinc-400 uppercase tracking-wide block">{studioTool === 'fill' ? 'Fill run' : 'Batch'}</span>
-                                          <span className="font-bold text-lg">
-                                            {studioTool === 'fill' ? fillTotalPlannedQuestions : grandTotals.questions}{' '}
+                                          <span className="font-semibold text-zinc-400 uppercase tracking-wide block">Batch</span>
+                                          <span className="font-bold text-lg tabular-nums">
+                                            {grandTotals.questions}{' '}
                                             <span className="text-zinc-500 font-normal text-xs">items</span>
                                           </span>
-                                          {studioTool === 'fill' ? (
-                                            <div className="mt-0.5 text-[9px] text-zinc-400">
-                                              Styles M{fillStyleTypeCounts.mcq}/A{fillStyleTypeCounts.reasoning}/m
-                                              {fillStyleTypeCounts.matching}/S{fillStyleTypeCounts.statements} · model{' '}
-                                              {STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel}
-                                            </div>
-                                          ) : (
-                                            <div className="mt-0.5 text-zinc-400">
-                                              <span className="text-rose-300">{grandTotals.figures} fig</span>
-                                              <span className="mx-1">·</span>
-                                              <span className="text-indigo-300">{grandTotals.questions - grandTotals.figures} text</span>
-                                            </div>
-                                          )}
+                                          <div className="mt-0.5 text-zinc-400">
+                                            <span className="text-rose-300">{grandTotals.figures} fig</span>
+                                            <span className="mx-1">·</span>
+                                            <span className="text-indigo-300">{grandTotals.questions - grandTotals.figures} text</span>
+                                          </div>
                                         </div>
                                       </div>
+                                    </div>
+                                    <div className="flex flex-col gap-3">
                                       <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm flex-1 overflow-hidden min-h-0">
                                         <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 mb-4">
                                           <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
@@ -1665,12 +1489,24 @@ const QuestionBankHome: React.FC = () => {
                                             const config = chapterConfigs[id as string];
                                             const isActive = activeEditingChapterId === id;
                                             let chapterTotalCount = 0;
-                                            if (studioTool === 'fill') {
-                                              chapterTotalCount = fillQuestionsPerChapter;
-                                            } else if (config?.synthesisMode === 'syllabus') {
+                                            if (config?.synthesisMode === 'syllabus') {
                                               const topics = Object.values(config.topicCounts || {}) as { count: number; enabled: boolean }[];
                                               chapterTotalCount = topics.reduce((sum, t) => sum + (t.enabled ? t.count : 0), 0);
                                             } else chapterTotalCount = config?.total || 0;
+                                            const isStd = config?.synthesisMode === 'standard';
+                                            let rowDiff = config?.diff ?? { easy: 0, medium: 0, hard: 0 };
+                                            let rowTypes = config?.types ?? { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
+                                            if (
+                                              applyActiveStandardMixToAllChapters &&
+                                              isStd &&
+                                              activeEditingChapterId &&
+                                              chapterConfigs[activeEditingChapterId]?.synthesisMode === 'standard' &&
+                                              chapterTotalCount > 0
+                                            ) {
+                                              const tmpl = chapterConfigs[activeEditingChapterId];
+                                              rowDiff = scaleDifficultyToTotal(tmpl.diff, chapterTotalCount);
+                                              rowTypes = scaleTypesToTotal(tmpl.types, chapterTotalCount);
+                                            }
                                             return (
                                               <div
                                                 key={id}
@@ -1687,25 +1523,42 @@ const QuestionBankHome: React.FC = () => {
                                                     <span className="text-[8px] font-semibold text-zinc-500 uppercase bg-white px-1 py-0.5 rounded border border-zinc-100">
                                                       {chapterTotalCount} Q
                                                     </span>
-                                                    {studioTool === 'fill' ? (
-                                                      <span
-                                                        className="rounded bg-zinc-200 px-1 py-0.5 text-[8px] font-semibold uppercase text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200"
-                                                        title="Uniform fill: difficulty + style mix"
-                                                      >
-                                                        Fill M{fillStyleTypeCounts.mcq}·A{fillStyleTypeCounts.reasoning}·m
-                                                        {fillStyleTypeCounts.matching}·S{fillStyleTypeCounts.statements}
-                                                      </span>
-                                                    ) : config?.synthesisMode === 'syllabus' ? (
+                                                    {config?.synthesisMode === 'syllabus' ? (
                                                       <span className="text-[8px] font-semibold text-rose-600 bg-rose-50 px-1 py-0.5 rounded uppercase">Syllabus</span>
                                                     ) : (
                                                       <>
-                                                        <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded">E:{config?.diff?.easy || 0}</span>
-                                                        <span className="text-[8px] font-semibold text-rose-700 bg-rose-50 px-1 py-0.5 rounded">H:{config?.diff?.hard || 0}</span>
+                                                        <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded" title="Easy (forge preview)">
+                                                          E:{rowDiff.easy}
+                                                        </span>
+                                                        <span className="text-[8px] font-semibold text-amber-800 bg-amber-50 px-1 py-0.5 rounded" title="Medium (forge preview)">
+                                                          M:{rowDiff.medium}
+                                                        </span>
+                                                        <span className="text-[8px] font-semibold text-rose-700 bg-rose-50 px-1 py-0.5 rounded" title="Hard (forge preview)">
+                                                          H:{rowDiff.hard}
+                                                        </span>
+                                                        <span
+                                                          className="text-[7px] font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded border border-indigo-100 max-w-full truncate"
+                                                          title="Style counts at forge (MCQ · Assertion · Matching · Statements)"
+                                                        >
+                                                          M{rowTypes.mcq}·A{rowTypes.reasoning}·m{rowTypes.matching}·S{rowTypes.statements}
+                                                        </span>
                                                       </>
                                                     )}
                                                   </div>
                                                 </div>
                                                 <div className="flex items-center gap-1 shrink-0">
+                                                  <button
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setActiveEditingChapterId(id);
+                                                      setStudioChapterConfigOpen(true);
+                                                    }}
+                                                    className="w-7 h-7 rounded-md bg-zinc-100 text-zinc-600 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center border border-zinc-200"
+                                                    title="Chapter config"
+                                                    type="button"
+                                                  >
+                                                    <iconify-icon icon="mdi:cog-outline" width="16" />
+                                                  </button>
                                                   <button
                                                     onClick={(e) => {
                                                       e.stopPropagation();
@@ -1735,143 +1588,6 @@ const QuestionBankHome: React.FC = () => {
                                       </div>
                                     </div>
                                 </div>
-
-                            <Dialog.Root
-                              open={fillSettingsOpen}
-                              onOpenChange={(open) => {
-                                if (!open && isFillBatch) return;
-                                setFillSettingsOpen(open);
-                              }}
-                            >
-                              <Dialog.Portal>
-                                <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-                                <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(88vh,620px)] w-[calc(100vw-1.5rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white p-0 text-zinc-900 shadow-lg duration-200 [color-scheme:light] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 focus:outline-none sm:max-w-lg">
-                                  <div className="min-h-0 flex-1 overflow-y-auto bg-white px-5 py-5 sm:px-6 sm:py-6 custom-scrollbar">
-                                    <Dialog.Title className="text-base font-semibold leading-none tracking-tight text-zinc-900">
-                                      Chapter fill
-                                    </Dialog.Title>
-                                    <Dialog.Description className="mt-2 text-xs leading-relaxed text-zinc-500">
-                                      Same difficulty and style mix for all selected chapters. Weights set MCQ vs assertion, matching, and
-                                      statements (counts are derived). Text-only, no figures. Saves one chapter at a time.
-                                    </Dialog.Description>
-
-                                    <div className="mt-5 space-y-6">
-                                      <section className="space-y-3">
-                                        <h3 className="text-sm font-medium text-zinc-900">Difficulty counts</h3>
-                                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-4">
-                                          <FillNumericRow
-                                            label="Easy"
-                                            value={fillUniformDiff.easy}
-                                            onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, easy: Math.max(0, v) }))}
-                                          />
-                                          <FillNumericRow
-                                            label="Medium"
-                                            value={fillUniformDiff.medium}
-                                            onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, medium: Math.max(0, v) }))}
-                                          />
-                                          <FillNumericRow
-                                            label="Hard"
-                                            value={fillUniformDiff.hard}
-                                            onChange={(v: number) => setFillUniformDiff((d) => ({ ...d, hard: Math.max(0, v) }))}
-                                          />
-                                        </div>
-                                      </section>
-
-                                      <section className="space-y-3 border-t border-zinc-200 pt-6">
-                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                                          <div className="space-y-1">
-                                            <h3 className="text-sm font-medium text-zinc-900">Style weights</h3>
-                                            <p className="text-xs text-zinc-500">
-                                              Positive integers as relative weights (e.g. like percentages).
-                                            </p>
-                                          </div>
-                                          <button
-                                            type="button"
-                                            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md px-2.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
-                                            onClick={() =>
-                                              setFillUniformStyleWeights({ mcq: 60, reasoning: 20, matching: 10, statements: 10 })
-                                            }
-                                          >
-                                            Reset 60·20·10·10
-                                          </button>
-                                        </div>
-                                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-4">
-                                          <FillNumericRow
-                                            label="MCQ"
-                                            value={fillUniformStyleWeights.mcq}
-                                            onChange={(v: number) =>
-                                              setFillUniformStyleWeights((s) => ({ ...s, mcq: Math.max(0, v) }))
-                                            }
-                                          />
-                                          <FillNumericRow
-                                            label="Assertion"
-                                            value={fillUniformStyleWeights.reasoning}
-                                            onChange={(v: number) =>
-                                              setFillUniformStyleWeights((s) => ({ ...s, reasoning: Math.max(0, v) }))
-                                            }
-                                          />
-                                          <FillNumericRow
-                                            label="Matching"
-                                            value={fillUniformStyleWeights.matching}
-                                            onChange={(v: number) =>
-                                              setFillUniformStyleWeights((s) => ({ ...s, matching: Math.max(0, v) }))
-                                            }
-                                          />
-                                          <FillNumericRow
-                                            label="Statements"
-                                            value={fillUniformStyleWeights.statements}
-                                            onChange={(v: number) =>
-                                              setFillUniformStyleWeights((s) => ({ ...s, statements: Math.max(0, v) }))
-                                            }
-                                          />
-                                        </div>
-                                        {fillStyleWeightsSum <= 0 ? (
-                                          <p className="text-center text-xs text-zinc-500">
-                                            Add at least one style weight.
-                                          </p>
-                                        ) : (
-                                          <p className="text-center text-xs leading-relaxed text-zinc-500">
-                                            Per chapter:{' '}
-                                            <span className="font-medium text-zinc-900">
-                                              {fillStyleTypeCounts.mcq} MCQ · {fillStyleTypeCounts.reasoning} assertion ·{' '}
-                                              {fillStyleTypeCounts.matching} matching · {fillStyleTypeCounts.statements} statements
-                                            </span>
-                                          </p>
-                                        )}
-                                      </section>
-                                    </div>
-                                  </div>
-
-                                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
-                                    <Dialog.Close asChild>
-                                      <button
-                                        type="button"
-                                        disabled={isFillBatch}
-                                        className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3.5 text-sm font-medium text-zinc-900 shadow-sm transition-colors hover:bg-zinc-50 disabled:opacity-50"
-                                      >
-                                        Close
-                                      </button>
-                                    </Dialog.Close>
-                                    <button
-                                      type="button"
-                                      disabled={
-                                        isFillBatch ||
-                                        fillQuestionsPerChapter === 0 ||
-                                        fillStyleWeightsSum <= 0 ||
-                                        selectedChapterIds.size === 0
-                                      }
-                                      onClick={() => {
-                                        setFillSettingsOpen(false);
-                                        void handleRunFillMode();
-                                      }}
-                                      className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-3.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50"
-                                    >
-                                      Run fill
-                                    </button>
-                                  </div>
-                                </Dialog.Content>
-                              </Dialog.Portal>
-                            </Dialog.Root>
 
                             {syllabusDetailTopic && activeConfig && (
                               <div
