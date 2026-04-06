@@ -14,6 +14,12 @@ import {
   type KbGenerationPromptSource,
 } from '../../services/kbPromptService';
 import { bankLabelForTextGenerationModel } from '../../services/studioGenerationModelLabels';
+import {
+  sanitizeRowForAnalysis,
+  questionItemToAnalysisRow,
+  runForgeBatchQualityAnalysis,
+  type AnalysisTableRow,
+} from '../../services/forgeBatchAnalysis';
 import { QuestionType, Question } from '../../Quiz/types';
 
 /** Scale Easy/Medium/Hard template to sum exactly to `total` (largest remainder). Used when splitting forge into per-style API calls. */
@@ -284,6 +290,24 @@ const QuestionBankHome: React.FC = () => {
   
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const stopForgingRef = useRef(false);
+  /** Rows successfully inserted this forge run (sanitized), for optional AI batch report. */
+  const forgeRunSnapshotRef = useRef<AnalysisTableRow[]>([]);
+  const [lastForgeAnalysisBatch, setLastForgeAnalysisBatch] = useState<{
+    rows: AnalysisTableRow[];
+    savedAt: number;
+  } | null>(null);
+  const [forgeAnalysisModalOpen, setForgeAnalysisModalOpen] = useState(false);
+  const [forgeAnalysisPayload, setForgeAnalysisPayload] = useState<{
+    rows: AnalysisTableRow[];
+    label: string;
+  } | null>(null);
+  const [forgeAnalysisLoading, setForgeAnalysisLoading] = useState(false);
+  const [forgeAnalysisReportMarkdown, setForgeAnalysisReportMarkdown] = useState<string | null>(null);
+  const [forgeAnalysisError, setForgeAnalysisError] = useState<string | null>(null);
+  const [forgeAnalysisTruncation, setForgeAnalysisTruncation] = useState<{
+    analyzedCount: number;
+    totalCount: number;
+  } | null>(null);
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatQuery, setChatQuery] = useState('');
@@ -790,6 +814,7 @@ const QuestionBankHome: React.FC = () => {
       setReviewQueue([]);
       setIsForgingBatch(true); 
       stopForgingRef.current = false;
+      forgeRunSnapshotRef.current = [];
       const modelLabelForge =
         STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel;
       forgeLogIdRef.current = 1;
@@ -1180,6 +1205,11 @@ const QuestionBankHome: React.FC = () => {
                         `Hub save failed (${rows.length} new question(s)): ${insertErr.message}${insertErr.code ? ` [${insertErr.code}]` : ''}`
                       );
                     }
+                    for (const r of rows) {
+                      forgeRunSnapshotRef.current.push(
+                        sanitizeRowForAnalysis({ ...(r as object) } as Record<string, unknown>)
+                      );
+                    }
                     const nSaved = chapterGeneratedQs.length;
                     savedToHubThisRun += nSaved;
                     const chLabel = String(chapter.name);
@@ -1240,6 +1270,16 @@ const QuestionBankHome: React.FC = () => {
         setForgeProgress('');
         setForgeDetail(null);
         setMode('browse');
+        if (savedToHubThisRun > 0 && forgeRunSnapshotRef.current.length > 0) {
+          setLastForgeAnalysisBatch({
+            rows: [...forgeRunSnapshotRef.current],
+            savedAt: Date.now(),
+          });
+          setForgeAnalysisReportMarkdown(null);
+          setForgeAnalysisError(null);
+          setForgeAnalysisTruncation(null);
+        }
+        forgeRunSnapshotRef.current = [];
         if (savedToHubThisRun > 0) {
           void fetchQuestions();
           if (selectedChapterIds.size > 0) void fetchBulkStats(Array.from(selectedChapterIds));
@@ -1253,7 +1293,7 @@ const QuestionBankHome: React.FC = () => {
           }
         }
       }
-  };
+    };
 
   const handleCommitReview = async () => {
     // ... (Commit logic same as original) ...
@@ -1271,6 +1311,54 @@ const QuestionBankHome: React.FC = () => {
   const handleInterruptStudio = () => {
     stopForgingRef.current = true;
   };
+
+  const openForgeAnalysisModalFromLastBatch = useCallback(() => {
+    if (!lastForgeAnalysisBatch?.rows.length) return;
+    setForgeAnalysisPayload({
+      rows: lastForgeAnalysisBatch.rows,
+      label: `Last forge · ${lastForgeAnalysisBatch.rows.length} question(s)`,
+    });
+    setForgeAnalysisReportMarkdown(null);
+    setForgeAnalysisError(null);
+    setForgeAnalysisTruncation(null);
+    setForgeAnalysisModalOpen(true);
+  }, [lastForgeAnalysisBatch]);
+
+  const openForgeAnalysisModalFromSelection = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    if (mode !== 'browse' && mode !== 'review') return;
+    const sourceList = mode === 'review' ? reviewQueue : questions;
+    const picked = sourceList.filter((q) => selectedIds.has(q.id));
+    const rows = picked.map((q) => questionItemToAnalysisRow(q as Record<string, unknown>));
+    if (rows.length === 0) return;
+    setForgeAnalysisPayload({
+      rows,
+      label: `${mode === 'review' ? 'Review queue' : 'Browse'} · ${rows.length} selected`,
+    });
+    setForgeAnalysisReportMarkdown(null);
+    setForgeAnalysisError(null);
+    setForgeAnalysisTruncation(null);
+    setForgeAnalysisModalOpen(true);
+  }, [selectedIds, mode, questions, reviewQueue]);
+
+  const runForgeAnalysisGenerate = useCallback(async () => {
+    if (!forgeAnalysisPayload?.rows.length) return;
+    setForgeAnalysisLoading(true);
+    setForgeAnalysisError(null);
+    try {
+      const result = await runForgeBatchQualityAnalysis(forgeAnalysisPayload.rows, selectedModel);
+      setForgeAnalysisReportMarkdown(result.markdown);
+      setForgeAnalysisTruncation(
+        result.truncated
+          ? { analyzedCount: result.analyzedCount, totalCount: result.totalCount }
+          : null
+      );
+    } catch (e: unknown) {
+      setForgeAnalysisError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setForgeAnalysisLoading(false);
+    }
+  }, [forgeAnalysisPayload, selectedModel]);
 
   // Helper inputs (StepNumberInput, etc)
   const StepNumberInput = ({ value, onChange, label, color, subText, min = 0, icon, disabled }: any) => (
@@ -1753,6 +1841,18 @@ const QuestionBankHome: React.FC = () => {
                 <div className="bg-zinc-50/90 border-t border-zinc-100 px-3 sm:px-6 py-2 flex flex-col gap-2">
                     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                         <button onClick={handleSelectAllOnPage} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'}`}><iconify-icon icon={selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? "mdi:check-circle" : "mdi:circle-outline"} /> Select All</button>
+                        {(mode === 'browse' || mode === 'review') && selectedIds.size > 0 && (
+                            <button
+                                type="button"
+                                onClick={openForgeAnalysisModalFromSelection}
+                                disabled={isForgingBatch}
+                                title="Send selected rows (table fields, images omitted) to Gemini for a quality report"
+                                className="px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 text-[8px] font-black uppercase tracking-widest text-violet-800 shadow-sm transition-all hover:bg-violet-100 flex items-center gap-2 disabled:opacity-50"
+                            >
+                                <iconify-icon icon="mdi:clipboard-text-search" width="16" />
+                                AI report ({selectedIds.size})
+                            </button>
+                        )}
                         {mode === 'browse' && (
                             <>
                                 <div className="hidden h-6 w-px bg-zinc-200 sm:block" />
@@ -1845,6 +1945,126 @@ const QuestionBankHome: React.FC = () => {
                 </div>
             )}
         </header>
+
+        {mode === 'browse' && lastForgeAnalysisBatch && lastForgeAnalysisBatch.rows.length > 0 && (
+            <div className="shrink-0 border-b border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-3 py-2.5 sm:px-6">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-[10px] font-semibold leading-snug text-violet-950 sm:max-w-xl">
+                        <span className="font-black uppercase tracking-widest text-violet-700">Post-forge</span>{' '}
+                        {lastForgeAnalysisBatch.rows.length} question(s) just saved — run an AI quality pass (difficulty tags, NEET style,
+                        topic fit, explanations, distractors, scores).
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={openForgeAnalysisModalFromLastBatch}
+                            disabled={isForgingBatch}
+                            className="inline-flex items-center gap-2 rounded-xl border border-violet-300 bg-white px-4 py-2 text-[9px] font-black uppercase tracking-widest text-violet-900 shadow-sm transition-all hover:bg-violet-100 disabled:opacity-50"
+                        >
+                            <iconify-icon icon="mdi:chart-box-outline" width="18" />
+                            AI quality report
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setLastForgeAnalysisBatch(null);
+                                setForgeAnalysisModalOpen(false);
+                            }}
+                            className="rounded-xl px-3 py-2 text-[9px] font-bold uppercase tracking-widest text-violet-600/80 hover:text-violet-900"
+                        >
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        <Dialog.Root
+            open={forgeAnalysisModalOpen}
+            onOpenChange={(open) => {
+                setForgeAnalysisModalOpen(open);
+                if (!open) setForgeAnalysisPayload(null);
+            }}
+        >
+            <Dialog.Portal>
+                <Dialog.Overlay className="fixed inset-0 z-[185] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+                <Dialog.Content className="fixed left-1/2 top-1/2 z-[195] flex max-h-[min(92vh,820px)] w-[calc(100vw-1.25rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+                    <div className="flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
+                        <div>
+                            <Dialog.Title className="text-sm font-black tracking-tight text-zinc-900">
+                                AI batch quality report
+                            </Dialog.Title>
+                            <Dialog.Description className="mt-0.5 text-[10px] font-medium text-zinc-500">
+                                {forgeAnalysisPayload?.label ?? '—'} · model {STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel}
+                            </Dialog.Description>
+                        </div>
+                        <Dialog.Close asChild>
+                            <button
+                                type="button"
+                                className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-zinc-200/60 hover:text-zinc-800"
+                                aria-label="Close"
+                            >
+                                <iconify-icon icon="mdi:close" width="20" />
+                            </button>
+                        </Dialog.Close>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-2.5 sm:px-5">
+                        <button
+                            type="button"
+                            disabled={forgeAnalysisLoading || !forgeAnalysisPayload?.rows.length}
+                            onClick={() => void runForgeAnalysisGenerate()}
+                            className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 disabled:opacity-50"
+                        >
+                            {forgeAnalysisLoading ? (
+                                <>
+                                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                                    Analyzing…
+                                </>
+                            ) : (
+                                <>
+                                    <iconify-icon icon="mdi:play-circle-outline" width="18" />
+                                    Run analysis
+                                </>
+                            )}
+                        </button>
+                        {forgeAnalysisReportMarkdown && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void navigator.clipboard.writeText(forgeAnalysisReportMarkdown);
+                                }}
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-50"
+                            >
+                                Copy markdown
+                            </button>
+                        )}
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5 custom-scrollbar">
+                        {forgeAnalysisTruncation ? (
+                            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-medium text-amber-950">
+                                Large batch: analysis covers the first {forgeAnalysisTruncation.analyzedCount} of{' '}
+                                {forgeAnalysisTruncation.totalCount} rows. Use filters or analyze selected subsets for the rest.
+                            </p>
+                        ) : null}
+                        {forgeAnalysisError ? (
+                            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">{forgeAnalysisError}</p>
+                        ) : null}
+                        {forgeAnalysisReportMarkdown ? (
+                            <div className="whitespace-pre-wrap text-left text-[13px] leading-relaxed text-zinc-800">
+                                {forgeAnalysisReportMarkdown}
+                            </div>
+                        ) : (
+                            !forgeAnalysisLoading && (
+                                <p className="text-sm text-zinc-500">
+                                    Sends sanitized table fields (inline images replaced with placeholders) to the server Gemini proxy. Run
+                                    when you are ready.
+                                </p>
+                            )
+                        )}
+                    </div>
+                </Dialog.Content>
+            </Dialog.Portal>
+        </Dialog.Root>
 
         <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
             <aside className="w-full lg:w-80 lg:max-w-[20rem] lg:shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-zinc-100 flex flex-col shrink-0 z-20 shadow-sm max-h-[min(42vh,420px)] lg:max-h-none min-h-0">
