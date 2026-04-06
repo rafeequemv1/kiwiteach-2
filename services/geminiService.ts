@@ -105,6 +105,53 @@ const repairMalformedJsonLatex = (jsonStr: string): string => {
 const repairInvalidJsonUnicodeEscapes = (jsonStr: string): string =>
     jsonStr.replace(/\\u(?![0-9a-fA-F]{4})/gi, "\\\\u");
 
+/**
+ * Model often writes LaTeX like `\neq`, `\nabla` with a single backslash before `n`.
+ * In JSON, `\n` is a newline escape — but `\\n` is a literal backslash + n.
+ * Only fix the single-backslash case (not when already escaped).
+ */
+const repairJsonLatexNewlineFalsePositive = (jsonStr: string): string =>
+    jsonStr.replace(/(?<!\\)\\n(?=[a-zA-Z])/g, "\\\\n");
+
+/** Forge JSON can be huge (many questions × LaTeX). API default maxOutputTokens is often ~8192 — raise caps. */
+function computeForgeMaxOutputTokens(questionCount: number, modelName: string): number {
+  const n = Math.max(1, questionCount);
+  const perQuestion = modelName.includes("lite") ? 1600 : modelName.includes("pro") ? 2800 : 2000;
+  const budget = n * perQuestion + 12000;
+  const cap = modelName.includes("pro") ? 65536 : modelName.includes("lite") ? 16384 : 32768;
+  return Math.min(cap, Math.max(16384, budget));
+}
+
+function forgeJsonParseHint(
+  parseMessage: string,
+  responseLen: number,
+  finishReason: string
+): string {
+  const fr = finishReason.toUpperCase();
+  const truncated =
+    /MAX_TOKEN|LENGTH|TOKEN/i.test(fr) ||
+    /Unexpected end|end of data|Unterminated string/i.test(parseMessage);
+  const unicode = /unicode escape|\\u/i.test(parseMessage);
+  const parts: string[] = [];
+  if (truncated) {
+    parts.push(
+      "The model’s JSON was probably cut off (output token limit) or a string was broken mid-way — try fewer questions per run, use split-by-style, or a model with a larger output budget."
+    );
+  }
+  if (unicode) {
+    parts.push(
+      'Some LaTeX uses "\\u…" (e.g. \\underbrace) which JSON treats as a Unicode escape — we try to fix this automatically; if it still fails, shorten explanations or reduce batch size.'
+    );
+  }
+  if (parts.length === 0) {
+    parts.push(
+      "The response was not valid JSON (often unescaped quotes or newlines inside a field). Try a smaller batch or re-forge."
+    );
+  }
+  parts.push(`(Response length ~${responseLen.toLocaleString()} chars; finishReason=${finishReason || "unknown"})`);
+  return parts.join(" ");
+}
+
 /** Same largest-remainder scaling as Neural Studio forge — maps template E/M/H to exact batch size. */
 function scaleDifficultyCountsToTotal(
   template: { easy: number; medium: number; hard: number },
@@ -542,6 +589,7 @@ export const generateQuizQuestions = async (
 
     const config: any = {
         temperature: modelName.includes('pro') ? 0.2 : 0.1,
+        maxOutputTokens: computeForgeMaxOutputTokens(count, modelName),
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -565,9 +613,8 @@ export const generateQuizQuestions = async (
         }
     };
 
-    if (!modelName.includes('pro')) {
-        config.thinkingConfig = { thinkingBudget: 0 };
-    }
+    // Reserve output budget for JSON; thinking can share the same token cap on some models.
+    config.thinkingConfig = { thinkingBudget: 0 };
 
     const styleLabel = typeof qType === "string" ? qType : "mixed_types";
     onProgress?.(`Gemini · ${styleLabel} · ${count} Q — sending request…`);
@@ -584,19 +631,22 @@ export const generateQuizQuestions = async (
     );
 
     onProgress?.(`Gemini · ${styleLabel} · ${count} Q — received response, parsing…`);
-    
+
+    const finishReason = String(response.candidates?.[0]?.finishReason ?? "");
+
     // Repair the raw JSON string before parsing
     const rawText = response.text || "[]";
-    const repairedText = repairInvalidJsonUnicodeEscapes(repairMalformedJsonLatex(rawText));
+    const repairedText = repairInvalidJsonUnicodeEscapes(
+      repairJsonLatexNewlineFalsePositive(repairMalformedJsonLatex(rawText))
+    );
 
     let rawData: unknown;
     try {
       rawData = JSON.parse(repairedText);
     } catch (parseErr: unknown) {
       const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-      throw new Error(
-        `${msg} (JSON parse) — Common cause: LaTeX such as \\underbrace or \\upsilon uses "\\u", which JSON treats as a Unicode escape. Re-forge this chapter or use a smaller batch if it persists.`
-      );
+      const hint = forgeJsonParseHint(msg, repairedText.length, finishReason);
+      throw new Error(`${msg} (JSON parse). ${hint}`);
     }
     const safeData = sanitizeResult(rawData);
     const list = Array.isArray(safeData) ? safeData : [];

@@ -32,6 +32,25 @@ function scaleDifficultyToTotal(
   return { easy: out[0], medium: out[1], hard: out[2] };
 }
 
+/** Largest-remainder scaling for MCQ / Assertion / Matching / Statements weights → exact question counts. */
+function scaleTypeWeightsToTotal(
+  weights: { mcq: number; reasoning: number; matching: number; statements: number },
+  total: number
+): { mcq: number; reasoning: number; matching: number; statements: number } {
+  const keys = ['mcq', 'reasoning', 'matching', 'statements'] as const;
+  const ws = keys.map((k) => Math.max(0, Math.floor(weights[k])));
+  const sumW = ws.reduce((a, b) => a + b, 0);
+  if (total <= 0) return { mcq: 0, reasoning: 0, matching: 0, statements: 0 };
+  if (sumW <= 0) return { mcq: total, reasoning: 0, matching: 0, statements: 0 };
+  const exact = keys.map((_, i) => (ws[i] / sumW) * total);
+  const floor = exact.map((x) => Math.floor(x));
+  let rem = total - floor.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => ({ i, r: x - floor[i] })).sort((a, b) => b.r - a.r);
+  const out = [...floor];
+  for (let k = 0; k < rem; k++) out[order[k % order.length].i] += 1;
+  return { mcq: out[0], reasoning: out[1], matching: out[2], statements: out[3] };
+}
+
 /** One Gemini call per style when all four styles and E/M/H are used — avoids one mega-prompt with coupled constraints. */
 function shouldSplitStandardForgeByStyle(
   types: { mcq: number; reasoning: number; matching: number; statements: number },
@@ -283,8 +302,22 @@ const QuestionBankHome: React.FC = () => {
   const [forgeProgress, setForgeProgress] = useState('');
   const [forgeDetail, setForgeDetail] = useState<ForgeDetailState | null>(null);
   const forgeLogIdRef = useRef(0);
-  /** When on, Forge uses the active chapter's E/M/H + style *ratios* scaled to each chapter's question total (standard only). */
+  /** When on, every selected standard chapter uses the uniform total + weight presets below (not the active row alone). */
   const [applyActiveStandardMixToAllChapters, setApplyActiveStandardMixToAllChapters] = useState(false);
+  /** Default ≈ 10% E / 30% M / 70% H when scaled (weights 1 : 3 : 7). */
+  const [batchUniformStandardTotal, setBatchUniformStandardTotal] = useState(10);
+  const [batchUniformDiffWeights, setBatchUniformDiffWeights] = useState({
+    easy: 1,
+    medium: 3,
+    hard: 7,
+  });
+  /** Default 7 : 1 : 1 : 1 (MCQ-heavy batch). */
+  const [batchUniformTypeWeights, setBatchUniformTypeWeights] = useState({
+    mcq: 7,
+    reasoning: 1,
+    matching: 1,
+    statements: 1,
+  });
   const [studioChapterConfigOpen, setStudioChapterConfigOpen] = useState(false);
   /** null = use KB prompt preferences (builtin / local / active cloud set). UUID = force that cloud set for forge. */
   const [forgePromptSetOverrideId, setForgePromptSetOverrideId] = useState<string | null>(null);
@@ -474,49 +507,43 @@ const QuestionBankHome: React.FC = () => {
     [selectedChapterIds]
   );
 
-  const activeStandardSyncSig =
-    activeEditingChapterId &&
-    chapterConfigs[activeEditingChapterId]?.synthesisMode === 'standard'
-      ? (() => {
-          const c = chapterConfigs[activeEditingChapterId];
-          if (!c) return '';
-          return `${c.diff.easy},${c.diff.medium},${c.diff.hard},${c.types.mcq},${c.types.reasoning},${c.types.matching},${c.types.statements},${c.isProportional ? 1 : 0},${c.total}`;
-        })()
-      : '';
-
-  /** When on, keep every selected *standard* chapter’s diff, types, total, and proportional flag in sync with the active chapter. */
+  /** When on, apply one shared total + E/M/H + style mix (from editable weights) to every selected standard chapter. */
   useEffect(() => {
     if (!applyActiveStandardMixToAllChapters || !activeEditingChapterId) return;
+
+    const total = Math.max(1, Math.min(500, Math.floor(Number(batchUniformStandardTotal) || 1)));
+    const diff = scaleDifficultyToTotal(batchUniformDiffWeights, total);
+    const types = scaleTypeWeightsToTotal(batchUniformTypeWeights, total);
+
     setChapterConfigs((prev) => {
-      const src = prev[activeEditingChapterId!];
-      if (!src || src.synthesisMode !== 'standard') return prev;
-      const total = Object.values(src.types).reduce((a: number, b: number) => a + b, 0);
+      const anchor = prev[activeEditingChapterId];
+      if (!anchor || anchor.synthesisMode !== 'standard') return prev;
+
       const next = { ...prev };
       let changed = false;
       for (const rid of selectedChapterIds) {
         const id = String(rid);
-        if (id === String(activeEditingChapterId)) continue;
         const t = next[id];
         if (!t || t.synthesisMode !== 'standard') continue;
         if (
-          t.diff.easy === src.diff.easy &&
-          t.diff.medium === src.diff.medium &&
-          t.diff.hard === src.diff.hard &&
-          t.types.mcq === src.types.mcq &&
-          t.types.reasoning === src.types.reasoning &&
-          t.types.matching === src.types.matching &&
-          t.types.statements === src.types.statements &&
+          t.diff.easy === diff.easy &&
+          t.diff.medium === diff.medium &&
+          t.diff.hard === diff.hard &&
+          t.types.mcq === types.mcq &&
+          t.types.reasoning === types.reasoning &&
+          t.types.matching === types.matching &&
+          t.types.statements === types.statements &&
           t.total === total &&
-          t.isProportional === src.isProportional
+          t.isProportional === false
         ) {
           continue;
         }
         next[id] = {
           ...t,
-          diff: { ...src.diff },
-          types: { ...src.types },
+          diff: { ...diff },
+          types: { ...types },
           total,
-          isProportional: src.isProportional,
+          isProportional: false,
         };
         changed = true;
       }
@@ -526,7 +553,14 @@ const QuestionBankHome: React.FC = () => {
     applyActiveStandardMixToAllChapters,
     activeEditingChapterId,
     selectedChapterIdsKey,
-    activeStandardSyncSig,
+    batchUniformStandardTotal,
+    batchUniformDiffWeights.easy,
+    batchUniformDiffWeights.medium,
+    batchUniformDiffWeights.hard,
+    batchUniformTypeWeights.mcq,
+    batchUniformTypeWeights.reasoning,
+    batchUniformTypeWeights.matching,
+    batchUniformTypeWeights.statements,
   ]);
 
   useEffect(() => {
@@ -2224,7 +2258,7 @@ const QuestionBankHome: React.FC = () => {
                                                         <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
                                                         <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
                                                         <p className="rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-[8px] font-medium leading-snug text-zinc-600">
-                                                          To mirror these counts to every standard chapter in the batch, use the toggle next to <strong className="font-semibold text-zinc-800">Selected batch</strong> on the main screen.
+                                                          To use one shared total and mix for every standard chapter, turn on the toggle under <strong className="font-semibold text-zinc-800">Selected batch</strong> and edit the uniform preset there.
                                                         </p>
                                                     </>
                                                 )}
@@ -2266,7 +2300,7 @@ const QuestionBankHome: React.FC = () => {
                                             </p>
                                             {applyActiveStandardMixToAllChapters && (
                                               <p className="mt-1 text-[9px] font-semibold text-amber-200/90">
-                                                Standard chapters share the active chapter’s counts (updated live)
+                                                Uniform batch: same total + preset weights on every standard chapter
                                               </p>
                                             )}
                                           </div>
@@ -2287,30 +2321,150 @@ const QuestionBankHome: React.FC = () => {
                                     </div>
                                     <div className="flex flex-col gap-3">
                                       <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm flex-1 overflow-hidden min-h-0">
-                                        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                          <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 shrink-0">
-                                            <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
-                                          </h3>
-                                          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5 sm:max-w-[min(100%,280px)]">
-                                            <input
-                                              type="checkbox"
-                                              className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-amber-600 focus:ring-amber-500 disabled:opacity-40"
-                                              checked={applyActiveStandardMixToAllChapters}
-                                              disabled={
-                                                !activeEditingChapterId ||
-                                                chapterConfigs[activeEditingChapterId]?.synthesisMode !== 'standard'
-                                              }
-                                              onChange={(e) => setApplyActiveStandardMixToAllChapters(e.target.checked)}
-                                            />
-                                            <span className="min-w-0">
-                                              <span className="block text-[9px] font-black uppercase tracking-wide text-amber-950">
-                                                Same counts for all standard chapters
-                                              </span>
-                                              <span className="mt-0.5 block text-[8px] font-medium leading-snug text-zinc-600">
-                                                Copies the <strong className="font-semibold text-zinc-800">active</strong> chapter’s total, Easy/Medium/Hard, and style numbers to every other selected standard chapter. Syllabus rows are skipped.
-                                              </span>
-                                            </span>
-                                          </label>
+                                        <div className="mb-4 flex flex-col gap-3">
+                                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                            <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 shrink-0">
+                                              <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
+                                            </h3>
+                                            <div className="min-w-0 w-full sm:max-w-[min(100%,340px)] space-y-2">
+                                              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5">
+                                                <input
+                                                  type="checkbox"
+                                                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-amber-600 focus:ring-amber-500 disabled:opacity-40"
+                                                  checked={applyActiveStandardMixToAllChapters}
+                                                  disabled={
+                                                    !activeEditingChapterId ||
+                                                    chapterConfigs[activeEditingChapterId]?.synthesisMode !== 'standard'
+                                                  }
+                                                  onChange={(e) => {
+                                                    const on = e.target.checked;
+                                                    if (on && activeEditingChapterId) {
+                                                      const cfg = chapterConfigs[activeEditingChapterId];
+                                                      if (cfg?.synthesisMode === 'standard' && cfg.total > 0) {
+                                                        setBatchUniformStandardTotal(
+                                                          Math.max(1, Math.min(500, cfg.total))
+                                                        );
+                                                      }
+                                                    }
+                                                    setApplyActiveStandardMixToAllChapters(on);
+                                                  }}
+                                                />
+                                                <span className="min-w-0">
+                                                  <span className="block text-[9px] font-black uppercase tracking-wide text-amber-950">
+                                                    Same counts for all standard chapters
+                                                  </span>
+                                                  <span className="mt-0.5 block text-[8px] font-medium leading-snug text-zinc-600">
+                                                    Set one <strong className="font-semibold text-zinc-800">total</strong> and editable weight presets below; every selected <strong className="font-semibold text-zinc-800">standard</strong> chapter is updated. Syllabus rows are skipped.
+                                                  </span>
+                                                </span>
+                                              </label>
+                                              {applyActiveStandardMixToAllChapters &&
+                                                activeEditingChapterId &&
+                                                chapterConfigs[activeEditingChapterId]?.synthesisMode === 'standard' && (
+                                                  <div className="rounded-lg border border-amber-200/80 bg-white px-2.5 py-2.5 shadow-sm space-y-2.5">
+                                                    <p className="text-[8px] font-semibold uppercase tracking-wide text-amber-900/90">
+                                                      Uniform preset (all standard chapters)
+                                                    </p>
+                                                    <label className="block">
+                                                      <span className="text-[8px] font-bold text-zinc-500 uppercase tracking-wide">
+                                                        Total questions per chapter
+                                                      </span>
+                                                      <input
+                                                        type="number"
+                                                        min={1}
+                                                        max={500}
+                                                        value={batchUniformStandardTotal}
+                                                        onChange={(e) => {
+                                                          const v = parseInt(e.target.value, 10);
+                                                          setBatchUniformStandardTotal(
+                                                            Number.isFinite(v)
+                                                              ? Math.max(1, Math.min(500, v))
+                                                              : 1
+                                                          );
+                                                        }}
+                                                        className="mt-0.5 w-full rounded-md border border-zinc-200 px-2 py-1.5 text-xs font-semibold tabular-nums text-zinc-900 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-300"
+                                                      />
+                                                    </label>
+                                                    <div>
+                                                      <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-wide mb-1">
+                                                        Difficulty weights → E / M / H (default 1∶3∶7 parts)
+                                                      </p>
+                                                      <div className="grid grid-cols-3 gap-1.5">
+                                                        {(
+                                                          [
+                                                            ['easy', 'E', batchUniformDiffWeights.easy],
+                                                            ['medium', 'M', batchUniformDiffWeights.medium],
+                                                            ['hard', 'H', batchUniformDiffWeights.hard],
+                                                          ] as const
+                                                        ).map(([key, letter, val]) => (
+                                                          <label key={key} className="flex flex-col gap-0.5">
+                                                            <span className="text-[7px] font-semibold text-zinc-400 uppercase">
+                                                              {letter}
+                                                            </span>
+                                                            <input
+                                                              type="number"
+                                                              min={0}
+                                                              max={100}
+                                                              value={val}
+                                                              onChange={(e) => {
+                                                                const v = parseInt(e.target.value, 10);
+                                                                setBatchUniformDiffWeights((w) => ({
+                                                                  ...w,
+                                                                  [key]: Number.isFinite(v)
+                                                                    ? Math.max(0, Math.min(100, v))
+                                                                    : 0,
+                                                                }));
+                                                              }}
+                                                              className="w-full rounded border border-zinc-200 px-1.5 py-1 text-[11px] font-semibold tabular-nums focus:border-amber-400 focus:outline-none"
+                                                            />
+                                                          </label>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-wide mb-1">
+                                                        Style weights (default 7∶1∶1∶1 — MCQ-heavy)
+                                                      </p>
+                                                      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                                                        {(
+                                                          [
+                                                            ['mcq', 'MCQ', batchUniformTypeWeights.mcq],
+                                                            ['reasoning', 'Assert', batchUniformTypeWeights.reasoning],
+                                                            ['matching', 'Match', batchUniformTypeWeights.matching],
+                                                            ['statements', 'Stmt', batchUniformTypeWeights.statements],
+                                                          ] as const
+                                                        ).map(([key, short, val]) => (
+                                                          <label key={key} className="flex flex-col gap-0.5 min-w-0">
+                                                            <span className="text-[7px] font-semibold text-zinc-400 uppercase truncate">
+                                                              {short}
+                                                            </span>
+                                                            <input
+                                                              type="number"
+                                                              min={0}
+                                                              max={100}
+                                                              value={val}
+                                                              onChange={(e) => {
+                                                                const v = parseInt(e.target.value, 10);
+                                                                setBatchUniformTypeWeights((w) => ({
+                                                                  ...w,
+                                                                  [key]: Number.isFinite(v)
+                                                                    ? Math.max(0, Math.min(100, v))
+                                                                    : 0,
+                                                                }));
+                                                              }}
+                                                              className="w-full rounded border border-zinc-200 px-1.5 py-1 text-[11px] font-semibold tabular-nums focus:border-amber-400 focus:outline-none"
+                                                            />
+                                                          </label>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+                                                    <p className="text-[7px] font-medium leading-snug text-zinc-500">
+                                                      Counts use largest-remainder scaling so E+M+H and all style counts each sum exactly to the total.
+                                                    </p>
+                                                  </div>
+                                                )}
+                                            </div>
+                                          </div>
                                         </div>
                                         <div className="flex flex-col gap-2 overflow-y-auto custom-scrollbar max-h-[min(360px,50vh)] pr-1">
                                           {Array.from(selectedChapterIds).map((id: string) => {
