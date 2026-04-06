@@ -552,6 +552,9 @@ export const generateQuizQuestions = async (
         config.thinkingConfig = { thinkingBudget: 0 };
     }
 
+    const styleLabel = typeof qType === "string" ? qType : "mixed_types";
+    onProgress?.(`Gemini · ${styleLabel} · ${count} Q — sending request…`);
+
     const response = await retryWithBackoff(() =>
       adminGeminiGenerateContent({
         model: modelName,
@@ -559,6 +562,8 @@ export const generateQuizQuestions = async (
         config,
       })
     );
+
+    onProgress?.(`Gemini · ${styleLabel} · ${count} Q — received response, parsing…`);
     
     // Repair the raw JSON string before parsing
     const rawText = response.text || "[]";
@@ -567,6 +572,8 @@ export const generateQuizQuestions = async (
     const rawData = JSON.parse(repairedText);
     const safeData = sanitizeResult(rawData);
     const list = Array.isArray(safeData) ? safeData : [];
+
+    onProgress?.(`Gemini · ${styleLabel} — ${list.length} question(s) parsed`);
 
     return list.map((q: any, index: number) => ({ 
         id: `forge-${Date.now()}-${index}`, 

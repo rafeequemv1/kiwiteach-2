@@ -1,6 +1,6 @@
 
 import '../../types';
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Dialog } from 'radix-ui';
 import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey, extractChapterReferenceImages, generateCompositeStyleVariants, generateCompositeFigures } from '../../services/geminiService';
@@ -112,6 +112,67 @@ const STUDIO_MODEL_META: Record<(typeof STUDIO_MODEL_IDS)[number], { label: stri
   'gemini-flash-lite-latest': { label: 'Flash Lite', icon: 'mdi:feather' },
 };
 
+const FORGE_STYLE_LABELS: Record<QuestionType, string> = {
+  mcq: 'MCQ',
+  reasoning: 'Assertion–Reason',
+  matching: 'Matching',
+  statements: 'Statements',
+};
+
+type ForgePhase = 'prep' | 'chapter' | 'gemini' | 'figures' | 'done';
+
+type ForgeStyleRowState = {
+  key: QuestionType;
+  label: string;
+  planned: number;
+  produced: number;
+  status: 'pending' | 'running' | 'done' | 'skipped';
+};
+
+type ForgeDetailState = {
+  chaptersTotal: number;
+  chapterIndex: number;
+  chapterName: string;
+  line: string;
+  phase: ForgePhase;
+  /** Cumulative count written to question_bank_neet this run. */
+  totalQuestions: number;
+  chapterQuestions: number;
+  modelLabel: string;
+  geminiLine: string;
+  styleRows: ForgeStyleRowState[];
+  syllabusTopic: string | null;
+  syllabusIndex: number;
+  syllabusTotal: number;
+  synthesisLabel: string;
+  log: { id: number; t: number; msg: string }[];
+};
+
+function questionsToNeetBankRows(
+  chapter: { id: string; name: string; subject_name: string; class_name: string },
+  qs: Question[],
+  promptSetId: string | null | undefined
+) {
+  return qs.map((q) => ({
+    chapter_id: chapter.id,
+    chapter_name: chapter.name,
+    subject_name: chapter.subject_name,
+    class_name: chapter.class_name,
+    question_text: q.text,
+    options: q.options,
+    correct_index: q.correctIndex,
+    explanation: q.explanation,
+    difficulty: q.difficulty,
+    question_type: q.type,
+    topic_tag: q.topic_tag || 'General',
+    figure_url: q.figureDataUrl,
+    source_figure_url: q.sourceFigureDataUrl,
+    column_a: q.columnA,
+    column_b: q.columnB,
+    prompt_set_id: promptSetId ?? null,
+  }));
+}
+
 const QuestionBankHome: React.FC = () => {
   const [kbList, setKbList] = useState<any[]>([]);
   const [kbChapterCounts, setKbChapterCounts] = useState<Record<string, number>>({});
@@ -164,6 +225,8 @@ const QuestionBankHome: React.FC = () => {
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [forgeProgress, setForgeProgress] = useState('');
+  const [forgeDetail, setForgeDetail] = useState<ForgeDetailState | null>(null);
+  const forgeLogIdRef = useRef(0);
   /** When on, Forge uses the active chapter's E/M/H + style *ratios* scaled to each chapter's question total (standard only). */
   const [applyActiveStandardMixToAllChapters, setApplyActiveStandardMixToAllChapters] = useState(false);
   const [studioChapterConfigOpen, setStudioChapterConfigOpen] = useState(false);
@@ -573,13 +636,55 @@ const QuestionBankHome: React.FC = () => {
     setCurrentPage(1);
   };
 
+  const patchForgeDetail = useCallback((patch: Partial<ForgeDetailState>, logMsg?: string) => {
+    setForgeDetail((prev) => {
+      if (!prev) return prev;
+      let log = prev.log;
+      if (logMsg) {
+        forgeLogIdRef.current += 1;
+        log = [...prev.log, { id: forgeLogIdRef.current, t: Date.now(), msg: logMsg }].slice(-80);
+      }
+      return { ...prev, ...patch, log };
+    });
+    if (typeof patch.line === 'string') setForgeProgress(patch.line);
+  }, []);
+
   const handleRunForge = async () => {
       const chapterIds = Array.from(selectedChapterIds);
       if (chapterIds.length === 0) return alert("Select chapters.");
-      setMode('review'); 
-      setReviewQueue([]); 
+      setMode('browse');
+      setReviewQueue([]);
       setIsForgingBatch(true); 
       stopForgingRef.current = false;
+      const modelLabelForge =
+        STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel;
+      forgeLogIdRef.current = 1;
+      setForgeDetail({
+        chaptersTotal: chapterIds.length,
+        chapterIndex: 1,
+        chapterName: '',
+        line: 'Preparing forge…',
+        phase: 'prep',
+        totalQuestions: 0,
+        chapterQuestions: 0,
+        modelLabel: modelLabelForge,
+        geminiLine: '',
+        styleRows: [],
+        syllabusTopic: null,
+        syllabusIndex: 0,
+        syllabusTotal: 0,
+        synthesisLabel: '',
+        log: [
+          {
+            id: 1,
+            t: Date.now(),
+            msg: `Started · ${chapterIds.length} chapter(s) · model ${modelLabelForge} · each chapter saves to hub when done`,
+          },
+        ],
+      });
+      setForgeProgress('Preparing forge…');
+      let savedToHubThisRun = 0;
+      let suppressForgeSummaryAlert = false;
       try {
           let excludedTopicLabelsNormalized: string[] = [];
           if (bankUserId) {
@@ -593,6 +698,14 @@ const QuestionBankHome: React.FC = () => {
                   console.warn('Exclusions fetch failed', e);
               }
           }
+          if (excludedTopicLabelsNormalized.length > 0) {
+            patchForgeDetail(
+              {
+                line: `Topic exclusions · ${excludedTopicLabelsNormalized.length} label(s) sent to Gemini (banned in prompt)`,
+              },
+              `Exclusions active — model must not use these topic_tags: ${excludedTopicLabelsNormalized.slice(0, 6).join(', ')}${excludedTopicLabelsNormalized.length > 6 ? '…' : ''}`
+            );
+          }
           const batchPromptSetId =
             forgePromptSetOverrideId ??
             (await resolveStoredPromptSetIdForKbGeneration(selectedKbId));
@@ -603,6 +716,21 @@ const QuestionBankHome: React.FC = () => {
               const config = { ...chapterConfigs[chapId] }; 
               if (!chapter || !config) continue;
               const progressPrefix = `[${i+1}/${chapterIds.length}] ${String(chapter.name)}`;
+              patchForgeDetail(
+                {
+                  chapterIndex: i + 1,
+                  chapterName: String(chapter.name),
+                  chapterQuestions: 0,
+                  styleRows: [],
+                  syllabusTopic: null,
+                  syllabusIndex: 0,
+                  syllabusTotal: 0,
+                  synthesisLabel: config.synthesisMode === 'syllabus' ? 'Syllabus-focused' : 'Standard',
+                  phase: 'chapter',
+                  line: `${progressPrefix}: boundary lookup…`,
+                },
+                `Chapter ${i + 1}/${chapterIds.length}: ${String(chapter.name)}`
+              );
               setForgeProgress(`${progressPrefix}: Boundary Lookup...`);
               
               try {
@@ -626,22 +754,87 @@ const QuestionBankHome: React.FC = () => {
                   let chapterGeneratedQs: Question[] = [];
                   if (config.synthesisMode === 'syllabus') {
                       const enabledTopics = (Object.entries(config.topicCounts) as [string, { count: number; enabled: boolean }][]).filter(([_, tConf]) => tConf.enabled && tConf.count > 0);
+                      patchForgeDetail(
+                        {
+                          phase: 'gemini',
+                          syllabusTotal: enabledTopics.length,
+                          syllabusIndex: 0,
+                          styleRows: [],
+                        },
+                        `Syllabus mode · ${enabledTopics.length} topic(s)`
+                      );
+                      let topicOrd = 0;
                       for (const [topicName, topicConfig] of enabledTopics) {
                           if (stopForgingRef.current) break;
-                          setForgeProgress(`${progressPrefix}: ${topicName}`);
-                          const gen = await generateQuizQuestions(String(chapter.name), { easy: 0, medium: topicConfig.count, hard: 0 }, topicConfig.count, { text: rawText }, { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 }, undefined, 0, false, undefined, selectedModel, 'text', [String(topicName)], undefined, undefined, undefined, excludedTopicLabelsNormalized, selectedKbId, forgePromptSetOverrideId);
+                          topicOrd += 1;
+                          const line = `${progressPrefix}: topic ${topicOrd}/${enabledTopics.length} · ${topicName}`;
+                          patchForgeDetail({
+                            syllabusTopic: String(topicName),
+                            syllabusIndex: topicOrd,
+                            line,
+                            geminiLine: 'Preparing Gemini request…',
+                          });
+                          setForgeProgress(line);
+                          const gen = await generateQuizQuestions(
+                              String(chapter.name),
+                              { easy: 0, medium: topicConfig.count, hard: 0 },
+                              topicConfig.count,
+                              { text: rawText },
+                              { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 },
+                              (st) => {
+                                setForgeProgress(`${progressPrefix}: ${topicName} · ${st}`);
+                                setForgeDetail((p) => (p ? { ...p, geminiLine: st } : p));
+                              },
+                              0,
+                              false,
+                              undefined,
+                              selectedModel,
+                              'text',
+                              [String(topicName)],
+                              undefined,
+                              undefined,
+                              undefined,
+                              excludedTopicLabelsNormalized,
+                              selectedKbId,
+                              forgePromptSetOverrideId
+                          );
                           chapterGeneratedQs.push(...gen);
+                          setForgeDetail((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  chapterQuestions: p.chapterQuestions + gen.length,
+                                  geminiLine: `Received ${gen.length} question(s)`,
+                                }
+                              : p
+                          );
+                          patchForgeDetail(
+                            { line: `${progressPrefix}: topic ${topicOrd} done (+${gen.length} Q)` },
+                            `✓ ${topicName.slice(0, 48)}${topicName.length > 48 ? '…' : ''} · +${gen.length} Q`
+                          );
                       }
                   } else {
                       config.total = Object.values(config.types).reduce((a: number, b: number) => a + b, 0);
                       const diffForGen = config.diff;
                       const typesForGen = { ...config.types };
                       let figureCount = 0; let sourceImages: {data: string, mimeType: string}[] = [];
-                      if (config.visualMode === 'image') { figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0); setForgeProgress(`${progressPrefix}: Scanning Visuals...`); sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null); } else figureCount = config.syntheticFigureCount || 0;
+                      if (config.visualMode === 'image') {
+                        figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0);
+                        patchForgeDetail(
+                          { line: `${progressPrefix}: scanning chapter visuals…`, phase: 'chapter' },
+                          'Scanning reference images / PDF'
+                        );
+                        setForgeProgress(`${progressPrefix}: Scanning Visuals...`);
+                        sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null);
+                      } else figureCount = config.syntheticFigureCount || 0;
 
                       const runFigurePipeline = async (gen: Question[]) => {
                           const figureQs = gen.filter(q => q.figurePrompt);
                           if (figureQs.length > 0 && figureCount > 0) {
+                              patchForgeDetail(
+                                { phase: 'figures', line: `${progressPrefix}: rendering figures…` },
+                                `Figures · ${figureQs.length} prompt(s)`
+                              );
                               setForgeProgress(`${progressPrefix}: Processing Visuals...`);
                               if (config.visualMode === 'image') {
                                   if (sourceImages.length > 0) {
@@ -655,6 +848,21 @@ const QuestionBankHome: React.FC = () => {
 
                       if (shouldSplitStandardForgeByStyle(typesForGen, diffForGen, figureCount)) {
                           const styleOrder: QuestionType[] = ['mcq', 'reasoning', 'matching', 'statements'];
+                          const plannedRows: ForgeStyleRowState[] = styleOrder.map((k) => ({
+                            key: k,
+                            label: FORGE_STYLE_LABELS[k],
+                            planned: typesForGen[k],
+                            produced: 0,
+                            status: typesForGen[k] <= 0 ? 'skipped' : 'pending',
+                          }));
+                          patchForgeDetail(
+                            {
+                              phase: 'gemini',
+                              styleRows: plannedRows,
+                              geminiLine: '',
+                            },
+                            `Split-by-style · ${plannedRows.filter((r) => r.planned > 0).length} Gemini call(s)`
+                          );
                           const genParts: Question[] = [];
                           let sub = 0;
                           for (const styleKey of styleOrder) {
@@ -663,19 +871,30 @@ const QuestionBankHome: React.FC = () => {
                               if (n <= 0) continue;
                               sub += 1;
                               const diffSlice = scaleDifficultyToTotal(diffForGen, n);
-                              setForgeProgress(
-                                  `${progressPrefix}: AI ${sub}/4 · ${styleKey} (${n} Q, E${diffSlice.easy}/M${diffSlice.medium}/H${diffSlice.hard})…`
+                              const lineBusy = `${progressPrefix}: Gemini ${sub}/4 · ${FORGE_STYLE_LABELS[styleKey]} · ${n} Q (E${diffSlice.easy}/M${diffSlice.medium}/H${diffSlice.hard})`;
+                              setForgeDetail((p) =>
+                                p
+                                  ? {
+                                      ...p,
+                                      styleRows: p.styleRows.map((r) =>
+                                        r.key === styleKey ? { ...r, status: 'running' } : r
+                                      ),
+                                      line: lineBusy,
+                                      geminiLine: 'Sending request…',
+                                    }
+                                  : p
                               );
+                              setForgeProgress(lineBusy);
                               const part = await generateQuizQuestions(
                                   String(chapter.name),
                                   diffSlice,
                                   n,
                                   { text: rawText, images: sourceImages },
                                   styleKey,
-                                  (status) =>
-                                      setForgeProgress(
-                                          `${progressPrefix}: ${styleKey} (${sub}/4) · ${status}`
-                                      ),
+                                  (status) => {
+                                    setForgeProgress(`${progressPrefix}: ${FORGE_STYLE_LABELS[styleKey]} (${sub}/4) · ${status}`);
+                                    setForgeDetail((p) => (p ? { ...p, geminiLine: status } : p));
+                                  },
                                   0,
                                   false,
                                   undefined,
@@ -690,10 +909,37 @@ const QuestionBankHome: React.FC = () => {
                                   forgePromptSetOverrideId
                               );
                               genParts.push(...part);
+                              setForgeDetail((p) =>
+                                p
+                                  ? {
+                                      ...p,
+                                      styleRows: p.styleRows.map((r) =>
+                                        r.key === styleKey
+                                          ? { ...r, status: 'done', produced: part.length }
+                                          : r
+                                      ),
+                                      chapterQuestions: p.chapterQuestions + part.length,
+                                      geminiLine: `${FORGE_STYLE_LABELS[styleKey]} · ${part.length} Q parsed`,
+                                    }
+                                  : p
+                              );
+                              patchForgeDetail(
+                                { line: `${progressPrefix}: ${FORGE_STYLE_LABELS[styleKey]} done` },
+                                `✓ ${FORGE_STYLE_LABELS[styleKey]} · +${part.length} Q`
+                              );
                           }
                           await runFigurePipeline(genParts);
                           chapterGeneratedQs = genParts;
                       } else {
+                          patchForgeDetail(
+                            {
+                              phase: 'gemini',
+                              styleRows: [],
+                              line: `${progressPrefix}: single Gemini batch (mixed styles)…`,
+                              geminiLine: 'Building prompt…',
+                            },
+                            `Mixed batch · ${config.total} Q · ${figureCount > 0 ? `${figureCount} with figures` : 'text only'}`
+                          );
                           setForgeProgress(`${progressPrefix}: Synthesizing Questions…`);
                           const gen: Question[] = await generateQuizQuestions(
                               String(chapter.name),
@@ -701,7 +947,10 @@ const QuestionBankHome: React.FC = () => {
                               config.total,
                               { text: rawText, images: sourceImages },
                               typesForGen,
-                              undefined,
+                              (status) => {
+                                setForgeProgress(`${progressPrefix}: ${status}`);
+                                setForgeDetail((p) => (p ? { ...p, geminiLine: status } : p));
+                              },
                               figureCount,
                               false,
                               JSON.stringify(config.selectedFigures || {}),
@@ -715,14 +964,84 @@ const QuestionBankHome: React.FC = () => {
                               selectedKbId,
                               forgePromptSetOverrideId
                           );
+                          setForgeDetail((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  chapterQuestions: p.chapterQuestions + gen.length,
+                                  geminiLine: `Batch complete · ${gen.length} Q`,
+                                }
+                              : p
+                          );
+                          patchForgeDetail(
+                            { line: `${progressPrefix}: mixed batch done` },
+                            `✓ Mixed styles · +${gen.length} Q`
+                          );
                           await runFigurePipeline(gen);
                           chapterGeneratedQs = gen;
                       }
                   }
-                  setReviewQueue(prev => [...prev, ...chapterGeneratedQs.map((q, k) => ({ id: `review-${chapter.id}-${Date.now()}-${k}`, chapter_id: chapter.id, chapter_name: chapter.name, subject_name: chapter.subject_name, class_name: chapter.class_name, question_text: q.text, options: q.options, correct_index: q.correctIndex, explanation: q.explanation, difficulty: q.difficulty, question_type: q.type, topic_tag: q.topic_tag || 'General', figure_url: q.figureDataUrl, source_figure_url: q.sourceFigureDataUrl, column_a: q.columnA, column_b: q.columnB, prompt_set_id: batchPromptSetId }))]);
-              } catch (chapErr) { console.error(`Chapter Error`, chapErr); }
+                  if (chapterGeneratedQs.length > 0) {
+                    const rows = questionsToNeetBankRows(chapter, chapterGeneratedQs, batchPromptSetId);
+                    const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
+                    if (insertErr) throw new Error(insertErr.message);
+                    savedToHubThisRun += chapterGeneratedQs.length;
+                    setForgeDetail((p) =>
+                      p
+                        ? { ...p, totalQuestions: p.totalQuestions + chapterGeneratedQs.length }
+                        : p
+                    );
+                    patchForgeDetail(
+                      {
+                        phase: 'done',
+                        line: `${progressPrefix}: saved ${chapterGeneratedQs.length} Q to hub`,
+                      },
+                      `✓ Database · ${String(chapter.name).slice(0, 36)}${String(chapter.name).length > 36 ? '…' : ''} · +${chapterGeneratedQs.length} Q (total saved ${savedToHubThisRun})`
+                    );
+                  } else {
+                    patchForgeDetail(
+                      {
+                        phase: 'done',
+                        line: `${progressPrefix}: no questions generated`,
+                      },
+                      `Chapter skipped · 0 Q`
+                    );
+                  }
+                  chapterGeneratedQs.length = 0;
+              } catch (chapErr: unknown) {
+                console.error('Chapter forge error', chapErr);
+                suppressForgeSummaryAlert = true;
+                const msg = chapErr instanceof Error ? chapErr.message : String(chapErr);
+                alert(
+                  `Forge stopped on chapter "${String(chapter?.name || '')}": ${msg}` +
+                    (savedToHubThisRun > 0
+                      ? `\n\n${savedToHubThisRun} question(s) from earlier chapters were already saved to the hub.`
+                      : '')
+                );
+                break;
+              }
           }
-      } catch (e: any) { alert("Batch Error: " + e.message); } finally { setIsForgingBatch(false); setForgeProgress(''); setMode('review'); }
+      } catch (e: any) {
+        suppressForgeSummaryAlert = true;
+        alert("Batch Error: " + e.message);
+      } finally {
+        setIsForgingBatch(false);
+        setForgeProgress('');
+        setForgeDetail(null);
+        setMode('browse');
+        if (savedToHubThisRun > 0) {
+          void fetchQuestions();
+          if (selectedChapterIds.size > 0) void fetchBulkStats(Array.from(selectedChapterIds));
+          if (!suppressForgeSummaryAlert) {
+            const interrupted = stopForgingRef.current;
+            alert(
+              interrupted
+                ? `Forge interrupted. ${savedToHubThisRun} question(s) were already saved to the hub.`
+                : `Forge finished. ${savedToHubThisRun} question(s) saved to the hub.`
+            );
+          }
+        }
+      }
   };
 
   const handleCommitReview = async () => {
@@ -1002,6 +1321,143 @@ const QuestionBankHome: React.FC = () => {
     <div className={`${workspacePageClass} overflow-hidden relative`}>
         {/* PROGRESS OVERLAY — forge or save */}
         {(isSaving || isForgingBatch) && (
+            isForgingBatch && forgeDetail ? (
+            <div className="fixed inset-0 z-[200] flex animate-fade-in items-center justify-center bg-zinc-950/60 p-3 backdrop-blur-sm [color-scheme:light]">
+              <div className="flex max-h-[min(92vh,820px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl sm:max-w-2xl">
+                <div className="shrink-0 border-b border-zinc-100 bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-3 sm:px-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/90">Neural forge</p>
+                      <h3 className="mt-0.5 truncate text-base font-bold text-white sm:text-lg">Generating questions</h3>
+                    </div>
+                    <div className="h-9 w-9 shrink-0 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden />
+                  </div>
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/20">
+                    <div
+                      className="h-full rounded-full bg-white transition-[width] duration-300 ease-out"
+                      style={{
+                        width: `${forgeDetail.chaptersTotal > 0 ? Math.min(100, (forgeDetail.chapterIndex / forgeDetail.chaptersTotal) * 100) : 0}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1.5 text-[10px] font-semibold text-white/90">
+                    Chapter {forgeDetail.chapterIndex} / {forgeDetail.chaptersTotal}
+                    {forgeDetail.chapterName ? ` · ${forgeDetail.chapterName}` : ''}
+                  </p>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5 sm:py-4 custom-scrollbar space-y-3">
+                  <section className="rounded-xl border border-zinc-100 bg-zinc-50/80 p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Current step</p>
+                    <p className="mt-1 text-sm font-semibold leading-snug text-zinc-900">{forgeDetail.line}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="rounded-md bg-white px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-indigo-700 ring-1 ring-indigo-100">
+                        {forgeDetail.phase}
+                      </span>
+                      {forgeDetail.synthesisLabel ? (
+                        <span className="rounded-md bg-white px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-zinc-600 ring-1 ring-zinc-200">
+                          {forgeDetail.synthesisLabel}
+                        </span>
+                      ) : null}
+                      <span className="rounded-md bg-white px-2 py-0.5 text-[9px] font-bold text-zinc-600 ring-1 ring-zinc-200">
+                        Model {forgeDetail.modelLabel}
+                      </span>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-indigo-600">Gemini</p>
+                    <p className="mt-1 font-mono text-[11px] leading-relaxed text-indigo-950">{forgeDetail.geminiLine || '—'}</p>
+                  </section>
+
+                  <section className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-2.5">
+                      <p className="text-[8px] font-black uppercase text-emerald-700">This chapter</p>
+                      <p className="text-xl font-black text-emerald-900">{forgeDetail.chapterQuestions}</p>
+                      <p className="text-[9px] text-emerald-800/80">questions</p>
+                    </div>
+                    <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-2.5">
+                      <p className="text-[8px] font-black uppercase text-violet-700">Saved to hub</p>
+                      <p className="text-xl font-black text-violet-900">{forgeDetail.totalQuestions}</p>
+                      <p className="text-[9px] text-violet-800/80">this run (per chapter)</p>
+                    </div>
+                    {forgeDetail.syllabusTotal > 0 ? (
+                      <div className="col-span-2 rounded-xl border border-amber-100 bg-amber-50/60 p-2.5 sm:col-span-1">
+                        <p className="text-[8px] font-black uppercase text-amber-800">Syllabus topic</p>
+                        <p className="text-xs font-bold text-amber-950">
+                          {forgeDetail.syllabusIndex}/{forgeDetail.syllabusTotal}
+                        </p>
+                        <p className="line-clamp-2 text-[10px] font-medium text-amber-900/90" title={forgeDetail.syllabusTopic || ''}>
+                          {forgeDetail.syllabusTopic || '—'}
+                        </p>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  {forgeDetail.styleRows.some((r) => r.planned > 0) ? (
+                    <section className="rounded-xl border border-zinc-200 bg-white p-3">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">By style (split calls)</p>
+                      <ul className="mt-2 space-y-1.5">
+                        {forgeDetail.styleRows.map((r) => (
+                          <li
+                            key={r.key}
+                            className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] ${
+                              r.status === 'running'
+                                ? 'border-indigo-200 bg-indigo-50'
+                                : r.status === 'done'
+                                  ? 'border-emerald-100 bg-emerald-50/50'
+                                  : r.status === 'skipped'
+                                    ? 'border-zinc-100 bg-zinc-50/50 opacity-50'
+                                    : 'border-zinc-100 bg-white'
+                            }`}
+                          >
+                            <span className="font-semibold text-zinc-800">{r.label}</span>
+                            <span className="shrink-0 text-[10px] font-bold text-zinc-600">
+                              {r.status === 'skipped'
+                                ? '—'
+                                : r.status === 'done'
+                                  ? `${r.produced}/${r.planned}`
+                                  : r.status === 'running'
+                                    ? `… / ${r.planned}`
+                                    : `${r.planned} planned`}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+
+                  <section className="rounded-xl border border-zinc-200 bg-zinc-900/[0.03] p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Activity log</p>
+                    <div className="mt-2 max-h-36 overflow-y-auto font-mono text-[10px] leading-relaxed text-zinc-700 custom-scrollbar">
+                      {forgeDetail.log.length === 0 ? (
+                        <span className="text-zinc-400">Waiting…</span>
+                      ) : (
+                        forgeDetail.log.map((e) => (
+                          <div key={e.id} className="border-b border-zinc-100/80 py-1 last:border-0">
+                            {e.msg}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                <div className="shrink-0 border-t border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
+                  <button
+                    type="button"
+                    onClick={handleInterruptStudio}
+                    className="w-full rounded-xl border-2 border-rose-200 bg-white py-2.5 text-[10px] font-black uppercase tracking-widest text-rose-700 hover:bg-rose-50"
+                  >
+                    Interrupt forge
+                  </button>
+                  <p className="mt-2 text-center text-[9px] text-zinc-500">
+                    Stops after the current Gemini call. Finished chapters are already in the hub.
+                  </p>
+                </div>
+              </div>
+            </div>
+            ) : (
             <div className="fixed inset-0 z-[200] bg-white/90 backdrop-blur-md flex flex-col items-center justify-center animate-fade-in px-6">
                 <div className="w-20 h-20 border-4 border-zinc-100 border-t-indigo-600 rounded-full animate-spin mb-8"></div>
                 <h3 className="text-2xl font-black text-zinc-900 tracking-tight mb-2 uppercase text-center">
@@ -1023,6 +1479,7 @@ const QuestionBankHome: React.FC = () => {
                   Forge batches to review; interrupt stops before the next chapter or topic.
                 </p>
             </div>
+            )
         )}
         
         {/* Header ... */}
