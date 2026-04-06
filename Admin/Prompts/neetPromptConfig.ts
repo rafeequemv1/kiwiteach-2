@@ -38,25 +38,29 @@ export const SECTIONS: {
 ];
 
 export const DEFAULT_PROMPTS: Record<string, string> = {
-  General: `TASK: Generate elite medical entrance (NEET UG) level questions.
-    - RIGOR: Clinical, analytical, and professional.
+  General: `TASK: Generate NTA NEET (UG) style assessment items with a clear ladder of depth.
+    - GOAL: Match the real exam arc — from accessible, well-scored items through standard NEET reasoning to a thin band of elite discriminators. Easy → Medium → Hard must mean visibly increasing cognitive load, not the same stem with a different label.
+    - TONE: Clinical and analytical where appropriate; always professional. Stems read like a formal entrance paper, not a textbook excerpt.
     - NEGATIVE CONSTRAINT: NEVER use the words "NCERT", "Textbook", "The Source", "Chapter", or "Passage" in the output. The question must appear as an independent scientific problem.
     - SYLLABUS CONSTRAINT: Map every question to a specific sub-topic from the syllabus.`,
 
-  Difficulty: `RIGOR PROTOCOL (ELITE STANDARD):
-    1. **EASY (Application Standard)**: 
-       - Corresponds to typical 'Medium' standard level. 
-       - Frame as conceptual applications rather than pure recall. 
-       - Requires 1-2 steps of logical derivation.
-    2. **MEDIUM (Deep Analyzer)**: 
-       - High-Standard rigor. 
-       - STYLE: Increased length (50-90 words). Frame as intricate scenarios, experimental set-ups, or clinical observations. 
-       - LOGIC: Requires multi-step analysis (3-4 steps) and correlating distinct scientific variables or principles from the same topic.
-    3. **HARD (Elite Strategist)**: 
-       - Designed for Top 1% Rankers (AIIMS/JIPMER).
-       - **LENGTH**: Verbose (70-120 words), utilizing clinical vignettes, experimental data tables, or multi-statement analysis.
-       - **CONSTRAINT**: Strictly within syllabus scope, testing deep theoretical nuances and cross-concept mapping.
-       - **LOGIC**: Requires linking concepts from entirely different parts of the curriculum.`,
+  Difficulty: `NEET DIFFICULTY CALIBRATION (STRICT LADDER — EASY < MEDIUM < HARD):
+
+    1. EASY (Accessible / high yield — like the “scoring” zone on NEET papers):
+       - STEM: Clear, concise (typically ~20–45 words unless a table/list is needed). One main idea.
+       - COGNITION: Direct recall of definitions, facts, classifications, standard diagrams, or single-step application (one logical hop). Comparable to straightforward PYQ-style recall and “obvious if you know the line” items.
+       - NOT THIS TIER: Multi-paragraph vignettes, deep traps, or cross-chapter synthesis — those belong in Medium/Hard.
+
+    2. MEDIUM (Standard NEET core — thoughtful, exam-authentic):
+       - STEM: Moderate length (~35–70 words) or compact data; may use short scenarios, exceptions, “which is correct”, or two linked concepts within the same chapter/theme.
+       - COGNITION: 2–4 reasoning steps, compare/contrast, mild numerical reasoning, or ruling out options with real science (not guessing from wording).
+       - DISTRACTORS: Plausible to a prepared student; at least two wrong options should tempt someone who partially knows the topic.
+
+    3. HARD (Elite / repeater tier — top ~0.5–2% discrimination, still syllabus-true):
+       - AUDIENCE: Students who already know the chapter cold and need items that separate “good” from “airtight”.
+       - STEM: Often longer (~55–110 words), dense, or multi-part (assertion–reason, multi-statement, integrated numeric + concept, edge cases, “except”, subtle data).
+       - COGNITION: Cross-concept links within the syllabus, uncommon but fair twists, strict attention to exceptions, or reasoning that only resolves after full working. Must feel worth the label — not just a verbose Easy question.
+       - QUALITY BAR: Every Hard item should be something a committed repeater respects as “exam-winning” preparation material.`,
 
   Explanation: `EXPLANATION PROTOCOL (CRITICAL FOR LEARNING):
 - **Clarity and Depth**: Explanations MUST be comprehensive, clear, and sufficient for a student to fully understand the reasoning. They should be detailed paragraphs, not terse one-liners.
@@ -65,10 +69,10 @@ export const DEFAULT_PROMPTS: Record<string, string> = {
 - **Distractor Analysis**: Briefly but effectively explain why each of the incorrect options are wrong, targeting the specific misconception each distractor represents.
 - **Self-Contained**: The explanation must be a standalone piece of teaching, making complete sense without needing to refer back to external source material.`,
 
-  Distractors: `CHOICE & DISTRACTOR LOGIC (HIGH ENTROPY):
-    1. **Plausible Distractors**: All wrong options must be scientifically grounded.
-    2. **Common Errors**: Design based on frequent student misconceptions (e.g., confusing similar terms).
-    3. **Numerical Nuance**: Include options resulting from common calculation slips.`,
+  Distractors: `OPTION & DISTRACTOR LOGIC (SCALE WITH DIFFICULTY):
+    - EASY: Wrong options are clearly weaker scientifically once the key fact is known; avoid cruel trick wording.
+    - MEDIUM: At least two distractors are highly plausible; design from typical misconceptions and “almost right” statements.
+    - HARD: All four choices defensible on a quick read; wrong answers map to specific expert-level slips (sign errors, wrong exception, conflated mechanisms). No throwaway fillers on Hard items.`,
 
   Figure: `VISUAL PROTOCOL (STRICT MONOCHROME):
     - **MONOCHROME ONLY**: 0% Color. Use #000000 (Pure Black) and #FFFFFF (Pure White) only. 

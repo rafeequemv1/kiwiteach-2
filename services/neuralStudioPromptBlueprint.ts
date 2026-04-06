@@ -5,6 +5,10 @@
  */
 
 export const FORGE_FORMAT_PROTOCOLS = `
+  NEET FORGE GOAL:
+  - Calibrate like NTA NEET (UG): Easy = scoring-friendly clarity; Medium = standard exam reasoning; Hard = elite repeater-tier discrimination (syllabus-fair, top-quality traps and synthesis).
+  - The JSON "difficulty" field must describe how hard the item actually is to solve, not a random tag.
+
   STYLE PROTOCOLS (STRICT):
   1. mcq: Standard 4-option single correct choice.
   2. reasoning (Assertion-Reason): Clear A/R text.
@@ -26,7 +30,7 @@ export const NEURAL_STUDIO_FORGE_SECTIONS: NeuralDocSection[] = [
   },
   {
     title: '1. System blocks (editable in this screen)',
-    body: `These are concatenated at the start of the main prompt, in order:\n• General\n• Difficulty\n• Explanation\n• Chemistry\n• Latex\n• Figure — only when the run requests figures (figureCount > 0)\n\nText is loaded via \`getSystemPrompt(...)\`: values from localStorage \`kiwiteach_system_prompts\` override defaults in \`SYSTEM_PROMPTS\` inside geminiService.`,
+    body: `These are concatenated at the start of the main prompt, in order:\n• General\n• Difficulty\n• Explanation\n• Distractors\n• Chemistry\n• Latex\n• Figure — only when the run requests figures (figureCount > 0)\n\nText is loaded via \`getSystemPrompt(...)\` (and KB prompt sets): values from localStorage \`kiwiteach_system_prompts\` override defaults in \`SYSTEM_PROMPTS\` / \`DEFAULT_PROMPTS\` in code.`,
   },
   {
     title: '2. Style mandate (question types)',
@@ -58,7 +62,7 @@ export const NEURAL_STUDIO_FORGE_SECTIONS: NeuralDocSection[] = [
   },
   {
     title: '9. Response schema',
-    body: `Gemini is called with \`responseMimeType: application/json\` and a schema: an array of objects with fields text, type, difficulty, explanation, options, correctIndex, figurePrompt, sourceImageIndex, topic_tag, columnA, columnB. Required: text, difficulty, explanation, options, correctIndex, type, topic_tag.\n\nAfter parsing, **difficulty labels are aligned to the forge recipe** (Easy/Medium/Hard counts and array order) so UI tags match chapter config; the model’s free-form difficulty field is not trusted for counts mode.`,
+    body: `Gemini is called with \`responseMimeType: application/json\` and a schema: an array of objects with fields text, type, difficulty, explanation, options, correctIndex, figurePrompt, sourceImageIndex, topic_tag, columnA, columnB. Required: text, difficulty, explanation, options, correctIndex, type, topic_tag.\n\nThe model is instructed (order-locked when counts are mixed) to match **content depth** to each tier per the Difficulty system prompt; there is no separate server-side relabelling pass.`,
   },
   {
     title: 'Other Gemini calls',

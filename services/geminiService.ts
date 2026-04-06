@@ -188,24 +188,34 @@ const cleanBase64 = (base64: string): string => {
 };
 
 const SYSTEM_PROMPTS: Record<string, string> = {
-    'General': `TASK: Generate elite medical entrance (NEET UG) level questions.
-    - RIGOR: Clinical, analytical, and professional.
+    'General': `TASK: Generate NTA NEET (UG) style assessment items with a clear ladder of depth.
+    - GOAL: Match the real exam arc — from accessible, well-scored items through standard NEET reasoning to a thin band of elite discriminators. Easy → Medium → Hard must mean visibly increasing cognitive load, not the same stem with a different label.
+    - TONE: Clinical and analytical where appropriate; always professional. Stems read like a formal entrance paper, not a textbook excerpt.
     - NEGATIVE CONSTRAINT: NEVER use the words "NCERT", "Textbook", "The Source", "Chapter", or "Passage" in the output. The question must appear as an independent scientific problem.
     - SYLLABUS CONSTRAINT: Map every question to a specific sub-topic from the syllabus.`,
     
-    'Difficulty': `RIGOR PROTOCOL (ELITE ENTRANCE STANDARD):
-    1. EASY (Application Standard): 
-       - RIGOR: Equivalent to typical 'Medium' level textbook questions.
-       - LOGIC: Requires direct application of a concept to a scenario or a 1-2 step logical derivation. No simple recall.
-    2. MEDIUM (Deep Analyzer): 
-       - TARGET: Experienced repeater students.
-       - STYLE: Increased length (50-80 words). Frame questions as complex application-based scenarios, experimental observations, or diagnostic cases.
-       - LOGIC: Requires significant multi-step reasoning (3-4 logical steps). Must require correlating two different properties or principles within the topic. 
-       - DISTRACTORS: Use "Strong Distractors" that target specific nuanced misconceptions of high-scoring students.
-    3. HARD (Elite Ranker): 
-       - TARGET: Top 1% Students (Single-digit rankers).
-       - STYLE: Long-form, highly technical questions (70-120 words). Use clinical vignettes, intricate data interpretation, or multi-statement evaluation.
-       - LOGIC: Requires cross-concept mapping, linking theories from different sub-sections of the curriculum to arrive at the solution.`,
+    'Difficulty': `NEET DIFFICULTY CALIBRATION (STRICT LADDER — EASY < MEDIUM < HARD):
+
+    1. EASY (Accessible / high yield — like the “scoring” zone on NEET papers):
+       - STEM: Clear, concise (typically ~20–45 words unless a table/list is needed). One main idea.
+       - COGNITION: Direct recall of definitions, facts, classifications, standard diagrams, or single-step application (one logical hop). Comparable to straightforward PYQ-style recall and “obvious if you know the line” items.
+       - NOT THIS TIER: Multi-paragraph vignettes, deep traps, or cross-chapter synthesis — those belong in Medium/Hard.
+
+    2. MEDIUM (Standard NEET core — thoughtful, exam-authentic):
+       - STEM: Moderate length (~35–70 words) or compact data; may use short scenarios, exceptions, “which is correct”, or two linked concepts within the same chapter/theme.
+       - COGNITION: 2–4 reasoning steps, compare/contrast, mild numerical reasoning, or ruling out options with real science (not guessing from wording).
+       - DISTRACTORS: Plausible to a prepared student; at least two wrong options should tempt someone who partially knows the topic.
+
+    3. HARD (Elite / repeater tier — top ~0.5–2% discrimination, still syllabus-true):
+       - AUDIENCE: Students who already know the chapter cold and need items that separate “good” from “airtight”.
+       - STEM: Often longer (~55–110 words), dense, or multi-part (assertion–reason, multi-statement, integrated numeric + concept, edge cases, “except”, subtle data).
+       - COGNITION: Cross-concept links within the syllabus, uncommon but fair twists, strict attention to exceptions, or reasoning that only resolves after full working. Must feel worth the label — not just a verbose Easy question.
+       - QUALITY BAR: Every Hard item should be something a committed repeater respects as “exam-winning” preparation material.`,
+
+    'Distractors': `OPTION & DISTRACTOR LOGIC (SCALE WITH DIFFICULTY):
+    - EASY: Wrong options are clearly weaker scientifically once the key fact is known; avoid cruel trick wording.
+    - MEDIUM: At least two distractors are highly plausible; design from typical misconceptions and “almost right” statements.
+    - HARD: All four choices defensible on a quick read; wrong answers map to specific expert-level slips (sign errors, wrong exception, conflated mechanisms). No throwaway fillers on Hard items.`,
     
     'Explanation': `EXPLANATION PROTOCOL:
 - **Standard Questions**: Comprehensive, clear, step-by-step logic.
@@ -500,14 +510,14 @@ export const generateQuizQuestions = async (
     scaledDifficultyForHint &&
     scaledDifficultyForHint.easy + scaledDifficultyForHint.medium + scaledDifficultyForHint.hard === count
       ? `
-    - **JSON "difficulty" (ORDER-LOCKED)**: Return exactly ${count} objects in array order. The "difficulty" string must follow position, not your guess of how hard the stem looks:
+    - **JSON "difficulty" (ORDER-LOCKED)**: Return exactly ${count} objects in array order. Use these positions so the Easy/Medium/Hard *counts* match the forge recipe; each slot’s **content** must genuinely match that tier (do not put recall-only items in a Hard slot):
       ${scaledDifficultyForHint.easy > 0 ? `- First ${scaledDifficultyForHint.easy} item(s): "Easy"` : ""}
       ${scaledDifficultyForHint.medium > 0 ? `- Next ${scaledDifficultyForHint.medium} item(s): "Medium"` : ""}
       ${scaledDifficultyForHint.hard > 0 ? `- Final ${scaledDifficultyForHint.hard} item(s): "Hard"` : ""}
-    - **Content** for each item must still match that tier per the Difficulty protocol (rigor / length / steps).`
+    - **Semantic match**: The *stem, options, and reasoning demand* for each position must match that tier in the Difficulty protocol — Easy stays direct and scoring-friendly; Hard must earn the label with elite depth (not length alone).`
       : typeof difficulty === "string" && count > 0
         ? `
-    - Every item's "difficulty" must be exactly "${capitalizeDifficultyMandate(difficulty)}".`
+    - Every item's "difficulty" must be exactly "${capitalizeDifficultyMandate(difficulty)}", and every stem must match that tier’s cognitive demand in the Difficulty protocol.`
         : "";
 
   const visualInstruction = figureCount > 0 
@@ -569,6 +579,7 @@ export const generateQuizQuestions = async (
     HARD COMPLIANCE CHECK:
     - You MUST return EXACTLY ${count} questions.
     - The difficulty counts MUST match exactly the mandate above.
+    - **NEET GOAL**: Overall batch reflects a real paper mix — Easy items are genuinely accessible; Hard items are repeater-grade discriminators that still respect the syllabus.
     - **LABEL EXPLANATION CHECK**: If a question asks to identify labels (e.g. "Identify P"), the explanation MUST be ultra-short (max 2 sentences).
 
     - TARGET CHAPTER: "${topic}"
