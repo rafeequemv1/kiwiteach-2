@@ -140,44 +140,126 @@ export async function resolveStoredPromptSetIdForKbGeneration(
 export type ForgePromptProvenance = {
   promptSetId: string | null;
   generationSource: KbGenerationPromptSource;
+  /** Denormalized for `question_bank_neet.prompt_set_name` (set display at generation time). */
+  promptSetName: string;
 };
+
+/**
+ * Load `kb_prompt_sets.name` for hub denormalization. Exported so forge can re-fetch right before insert.
+ * Scoped by KB so a stray id cannot leak names across databases.
+ */
+export async function fetchKbPromptSetName(knowledgeBaseId: string, setId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('kb_prompt_sets')
+    .select('name')
+    .eq('id', setId)
+    .eq('knowledge_base_id', knowledgeBaseId)
+    .maybeSingle();
+  if (error || !data?.name) return null;
+  const n = String(data.name).trim();
+  return n || null;
+}
+
+/** Non-empty label for `question_bank_neet.prompt_set_name` (never rely on undefined → omitted JSON keys). */
+export function hubPromptSetDisplayNameFallback(
+  generationSource: KbGenerationPromptSource,
+  explicit: string | null | undefined
+): string {
+  const t = typeof explicit === 'string' ? explicit.trim() : '';
+  if (t) return t;
+  if (generationSource === 'builtin_default') return 'Built-in defaults';
+  if (generationSource === 'browser_local') return 'Browser / local prompts';
+  if (generationSource === 'cloud_set') return 'Cloud prompt set';
+  return 'Unknown';
+}
+
+/**
+ * Final display string for saved hub rows: refetch cloud set name when possible so `prompt_set_name` always matches `prompt_set_id`.
+ */
+export async function hydrateHubPromptSetDisplayName(
+  knowledgeBaseId: string | null | undefined,
+  prov: ForgePromptProvenance
+): Promise<string> {
+  let name = hubPromptSetDisplayNameFallback(prov.generationSource, prov.promptSetName);
+  const kb = knowledgeBaseId?.trim();
+  if (prov.generationSource === 'cloud_set' && prov.promptSetId && kb) {
+    const resolved = await fetchKbPromptSetName(kb, prov.promptSetId);
+    if (resolved) name = resolved;
+  }
+  return name;
+}
 
 export async function resolveForgePromptProvenance(
   knowledgeBaseId: string | null | undefined,
   forgePromptSetOverrideId: string | null | undefined
 ): Promise<ForgePromptProvenance> {
+  const browser: ForgePromptProvenance = {
+    promptSetId: null,
+    generationSource: 'browser_local',
+    promptSetName: 'Browser / local prompts',
+  };
+  const builtin: ForgePromptProvenance = {
+    promptSetId: null,
+    generationSource: 'builtin_default',
+    promptSetName: 'Built-in defaults',
+  };
+
   if (!knowledgeBaseId?.trim()) {
-    return { promptSetId: null, generationSource: 'browser_local' };
+    return browser;
   }
   const kb = knowledgeBaseId.trim();
   const override = forgePromptSetOverrideId?.trim();
   if (override) {
     const { data: row, error } = await supabase
       .from('kb_prompt_sets')
-      .select('id')
+      .select('id, name')
       .eq('id', override)
       .eq('knowledge_base_id', kb)
       .maybeSingle();
     if (!error && row?.id) {
-      return { promptSetId: row.id, generationSource: 'cloud_set' };
+      const nm = String(row.name || '').trim();
+      return {
+        promptSetId: row.id,
+        generationSource: 'cloud_set',
+        promptSetName: nm || 'Cloud prompt set',
+      };
     }
-    return { promptSetId: null, generationSource: 'browser_local' };
+    return browser;
   }
   try {
     const prefs = await fetchKbPromptGenerationPrefs(kb);
     if (!prefs) {
-      return { promptSetId: null, generationSource: 'browser_local' };
+      return browser;
     }
     if (prefs.generationSource === 'cloud_set') {
+      const sid = prefs.activePromptSetId ?? null;
+      if (sid) {
+        const nm = await fetchKbPromptSetName(kb, sid);
+        return {
+          promptSetId: sid,
+          generationSource: 'cloud_set',
+          promptSetName: nm || 'Cloud prompt set',
+        };
+      }
       return {
-        promptSetId: prefs.activePromptSetId ?? null,
+        promptSetId: null,
         generationSource: 'cloud_set',
+        promptSetName: 'Cloud prompt set',
       };
     }
-    return { promptSetId: null, generationSource: prefs.generationSource };
+    if (prefs.generationSource === 'builtin_default') {
+      return builtin;
+    }
+    return browser;
   } catch {
-    return { promptSetId: null, generationSource: 'browser_local' };
+    return browser;
   }
+}
+
+/** True if the string looks like a UUID (e.g. `prompt_set_name` accidentally set to `prompt_set_id`). */
+export function isLikelyUuid(s: string): boolean {
+  const t = s.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t);
 }
 
 /** Display when no kb_prompt_sets name join (builtin / browser). */
@@ -202,7 +284,7 @@ export function describePromptGenerationSource(source: string | null | undefined
     return 'prompt_generation_source: browser/local — Admin → Prompts on this device (localStorage), optional NEET reference layer.';
   }
   if (source === 'cloud_set') {
-    return 'prompt_generation_source: cloud_set — merged from kb_prompt_sets; name/UUID on the row.';
+    return 'prompt_generation_source: cloud_set — merged from a saved kb_prompt_sets row; prompt_set_name on the question is the human-readable set label.';
   }
   return 'prompt_generation_source: not recorded (legacy row or non–Neural Studio insert).';
 }

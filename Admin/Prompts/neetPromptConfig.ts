@@ -1,6 +1,7 @@
 /** Shared NEET admin prompt defaults and section metadata (Prompts hub + detail page). */
 
 import { KIWITEACH_NEET_PROMPT_EXTRAS_KEY } from '../../services/neetReferenceLayer';
+import { CHOICE_DIVERSITY_BATCH_RULES } from '../../services/neuralStudioPromptBlueprint';
 
 export const KIWITEACH_SYSTEM_PROMPTS_KEY = 'kiwiteach_system_prompts';
 
@@ -40,6 +41,7 @@ export const SECTIONS: {
 export const DEFAULT_PROMPTS: Record<string, string> = {
   General: `TASK: Generate NTA NEET (UG) style assessment items with a clear ladder of depth.
     - GOAL: Match the real exam arc — from accessible, well-scored items through standard NEET reasoning to a thin band of elite discriminators. Easy → Medium → Hard must mean visibly increasing cognitive load, not the same stem with a different label.
+    - OPTION VARIETY (BATCH): Across each batch, include a reasonable share of numerically framed four-option sets and of near-miss / confusion-style distractors where the topic allows—see Distractors and Neural Studio forge protocols (approx. ~25–35% each, not every item).
     - TONE: Clinical and analytical where appropriate; always professional. Stems read like a formal entrance paper, not a textbook excerpt.
     - NEGATIVE CONSTRAINT: NEVER use the words "NCERT", "Textbook", "The Source", "Chapter", or "Passage" in the output. The question must appear as an independent scientific problem.
     - SYLLABUS CONSTRAINT: Map every question to a specific sub-topic from the syllabus.`,
@@ -72,7 +74,8 @@ export const DEFAULT_PROMPTS: Record<string, string> = {
   Distractors: `OPTION & DISTRACTOR LOGIC (SCALE WITH DIFFICULTY):
     - EASY: Wrong options are clearly weaker scientifically once the key fact is known; avoid cruel trick wording.
     - MEDIUM: At least two distractors are highly plausible; design from typical misconceptions and “almost right” statements.
-    - HARD: All four choices defensible on a quick read; wrong answers map to specific expert-level slips (sign errors, wrong exception, conflated mechanisms). No throwaway fillers on Hard items.`,
+    - HARD: All four choices defensible on a quick read; wrong answers map to specific expert-level slips (sign errors, wrong exception, conflated mechanisms). No throwaway fillers on Hard items.
+${CHOICE_DIVERSITY_BATCH_RULES}`,
 
   Figure: `VISUAL PROTOCOL (STRICT MONOCHROME):
     - **MONOCHROME ONLY**: 0% Color. Use #000000 (Pure Black) and #FFFFFF (Pure White) only. 

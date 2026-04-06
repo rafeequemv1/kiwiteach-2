@@ -4,10 +4,24 @@
  * Admin → Prompts → "Neural Studio forge" documents the full assembly.
  */
 
+/** Appended to system "Distractors" + forge protocols — batch-level variety, not forced on every item. */
+export const CHOICE_DIVERSITY_BATCH_RULES = `
+OPTION FORMAT MIX (BATCH-LEVEL — NOT EVERY ITEM):
+Across all items in this response, vary how the four options (A–D) are built. These are approximate targets for the batch as a whole; do not cram every pattern into every question.
+
+- **Numerical / quantitative options (aim ~25–35% of items when the chapter supports math or data):** For that share, centre the option set on numbers: concrete values, short expressions, or answers with correct units. Wrong options should mirror real exam slips—wrong powers of ten, rounding, dropped factors (e.g. 2, π), sign errors, misapplied constants, or same-order-of-magnitude blunders—not absurd unrelated numbers.
+
+- **Near-miss / “looks similar” distractors (aim ~25–35% of items):** For that share, make wrong options deliberately easy to confuse at a glance: parallel phrasing, same structure or units, adjacent concepts, swapped labels, or organic/chemistry pairs that differ by one step or stereochemistry. The student must use reasoning, not typography tricks, to separate correct from incorrect.
+
+- **Rest of the batch:** Conceptual, definitional, or mixed option styles as the topic demands. Easy items may use gentler distractors; Hard items must still satisfy Difficulty + base distractor rules.`;
+
 export const FORGE_FORMAT_PROTOCOLS = `
   NEET FORGE GOAL:
   - Calibrate like NTA NEET (UG): Easy = scoring-friendly clarity; Medium = standard exam reasoning; Hard = elite repeater-tier discrimination (syllabus-fair, top-quality traps and synthesis).
   - The JSON "difficulty" field must describe how hard the item actually is to solve, not a random tag.
+  - Option variety: over the full batch, include a substantial minority of numerically dominated option sets and a substantial minority of near-miss / confusion-style distractors where the material allows (see OPTION FORMAT MIX below).
+
+${CHOICE_DIVERSITY_BATCH_RULES}
 
   STYLE PROTOCOLS (STRICT):
   1. mcq: Standard 4-option single correct choice.
@@ -50,7 +64,7 @@ export const NEURAL_STUDIO_FORGE_SECTIONS: NeuralDocSection[] = [
   },
   {
     title: '6. Format protocols (fixed block)',
-    body: `The following block is always appended after the above (same string as in code):\n\n${FORGE_FORMAT_PROTOCOLS.trim()}`,
+    body: `The following block is always appended after the above (same string as in code). It includes NEET FORGE GOAL plus OPTION FORMAT MIX (batch targets for numeric options and near-miss distractors):\n\n${FORGE_FORMAT_PROTOCOLS.trim()}`,
   },
   {
     title: '7. World-class tuning',

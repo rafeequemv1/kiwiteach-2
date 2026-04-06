@@ -8,8 +8,12 @@ import { fetchSyllabusTopicsForChapter, fetchUserExcludedTopicLabels } from '../
 import {
   listKbPromptSets,
   resolveForgePromptProvenance,
+  hydrateHubPromptSetDisplayName,
+  hubPromptSetDisplayNameFallback,
+  fetchKbPromptSetName,
   labelPromptGenerationSource,
   describePromptGenerationSource,
+  isLikelyUuid,
   type KbPromptSetRow,
   type KbGenerationPromptSource,
 } from '../../services/kbPromptService';
@@ -237,7 +241,8 @@ function questionsToNeetBankRows(
   qs: Question[],
   promptSetId: string | null | undefined,
   promptGenerationSource: KbGenerationPromptSource,
-  generationModelApiId: string
+  generationModelApiId: string,
+  promptSetDisplayName: string
 ) {
   const modelLabel = bankLabelForTextGenerationModel(generationModelApiId);
   return qs.map((q) => ({
@@ -258,6 +263,7 @@ function questionsToNeetBankRows(
     column_b: q.columnB,
     prompt_set_id: promptSetId ?? null,
     prompt_generation_source: promptGenerationSource,
+    prompt_set_name: hubPromptSetDisplayNameFallback(promptGenerationSource, promptSetDisplayName),
     generation_model: modelLabel,
   }));
 }
@@ -729,14 +735,19 @@ const QuestionBankHome: React.FC = () => {
           // Clean up data for QuestionItem type compatibility
           const cleanData = (data || []).map((item: any) => {
               const nested = item.kb_prompt_sets;
-              const promptSetName =
+              const joinName =
                   nested && typeof nested === 'object' && !Array.isArray(nested)
                       ? (nested as { name?: string }).name
                       : Array.isArray(nested) && nested[0]
                         ? (nested[0] as { name?: string }).name
                         : undefined;
+              let storedName =
+                typeof item.prompt_set_name === 'string' && item.prompt_set_name.trim() !== ''
+                  ? item.prompt_set_name.trim()
+                  : null;
+              if (storedName && isLikelyUuid(storedName)) storedName = null;
               const srcLabel = labelPromptGenerationSource(item.prompt_generation_source);
-              let promptDisplay = promptSetName ?? srcLabel ?? null;
+              let promptDisplay = storedName ?? joinName ?? srcLabel ?? null;
               if (!promptDisplay && item.prompt_generation_source === 'cloud_set') {
                 promptDisplay = 'Cloud prompt set';
               }
@@ -884,6 +895,7 @@ const QuestionBankHome: React.FC = () => {
           const forgeProvenance = await resolveForgePromptProvenance(selectedKbId, forgePromptSetOverrideId);
           const batchPromptSetId = forgeProvenance.promptSetId;
           const batchPromptGenerationSource = forgeProvenance.generationSource;
+          const batchPromptSetName = await hydrateHubPromptSetDisplayName(selectedKbId, forgeProvenance);
           for (let i = 0; i < chapterIds.length; i++) {
               if (stopForgingRef.current) break;
               if (i > 0) {
@@ -1227,7 +1239,8 @@ const QuestionBankHome: React.FC = () => {
                       chapterGeneratedQs,
                       batchPromptSetId,
                       batchPromptGenerationSource,
-                      selectedModel
+                      selectedModel,
+                      batchPromptSetName
                     );
                     const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
                     if (insertErr) {
@@ -1360,7 +1373,43 @@ const QuestionBankHome: React.FC = () => {
     setIsSaving(true);
     setForgeProgress('Cloud Sync...');
     try {
-        const { error } = await supabase.from('question_bank_neet').insert(reviewQueue.map(item => ({ chapter_id: item.chapter_id, chapter_name: item.chapter_name, subject_name: item.subject_name, class_name: item.class_name, question_text: item.question_text, options: item.options, correct_index: item.correct_index, explanation: item.explanation, difficulty: item.difficulty, question_type: item.question_type, topic_tag: item.topic_tag || 'General', figure_url: item.figure_url, source_figure_url: item.source_figure_url, column_a: item.column_a, column_b: item.column_b, prompt_set_id: item.prompt_set_id ?? null, prompt_generation_source: item.prompt_generation_source ?? null, generation_model: item.generation_model ?? null })));
+        const rows = await Promise.all(
+          reviewQueue.map(async (item: any) => {
+            const src: KbGenerationPromptSource =
+              item.prompt_generation_source === 'builtin_default' ||
+              item.prompt_generation_source === 'browser_local' ||
+              item.prompt_generation_source === 'cloud_set'
+                ? item.prompt_generation_source
+                : 'browser_local';
+            let prompt_set_name = hubPromptSetDisplayNameFallback(src, item.prompt_set_name);
+            if (src === 'cloud_set' && item.prompt_set_id && selectedKbId) {
+              const nm = await fetchKbPromptSetName(selectedKbId, String(item.prompt_set_id));
+              if (nm) prompt_set_name = nm;
+            }
+            return {
+              chapter_id: item.chapter_id,
+              chapter_name: item.chapter_name,
+              subject_name: item.subject_name,
+              class_name: item.class_name,
+              question_text: item.question_text,
+              options: item.options,
+              correct_index: item.correct_index,
+              explanation: item.explanation,
+              difficulty: item.difficulty,
+              question_type: item.question_type,
+              topic_tag: item.topic_tag || 'General',
+              figure_url: item.figure_url,
+              source_figure_url: item.source_figure_url,
+              column_a: item.column_a,
+              column_b: item.column_b,
+              prompt_set_id: item.prompt_set_id ?? null,
+              prompt_generation_source: item.prompt_generation_source ?? null,
+              prompt_set_name,
+              generation_model: item.generation_model ?? null,
+            };
+          })
+        );
+        const { error } = await supabase.from('question_bank_neet').insert(rows);
         if (error) throw error;
         alert(`Synced ${reviewQueue.length} items.`);
         setReviewQueue([]); setMode('browse'); fetchQuestions();

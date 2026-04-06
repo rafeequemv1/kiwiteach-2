@@ -4,6 +4,7 @@
  */
 
 import { adminGeminiGenerateContent } from './adminGeminiProxy';
+import { isLikelyUuid, labelPromptGenerationSource } from './kbPromptService';
 
 export type AnalysisTableRow = Record<string, unknown>;
 
@@ -51,15 +52,26 @@ function omitLargeStrings(value: unknown, key: string): unknown {
   return value;
 }
 
+function promptSetDisplayForAnalysis(item: Record<string, unknown>): string | null {
+  const raw = item.prompt_set_name;
+  let stored = typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : null;
+  if (stored && isLikelyUuid(stored)) stored = null;
+  const src = item.prompt_generation_source as string | null | undefined;
+  let display = stored ?? labelPromptGenerationSource(src) ?? null;
+  if (!display && src === 'cloud_set') display = 'Cloud prompt set';
+  return display;
+}
+
 /** Strip inline images and oversized fields before sending to the model. */
 export function sanitizeRowForAnalysis(row: Record<string, unknown>): AnalysisTableRow {
+  const out: AnalysisTableRow = { ...row };
+  delete out.prompt_set_id;
   const keys = [
     'figure_url',
     'source_figure_url',
     'figureDataUrl',
     'sourceFigureDataUrl',
   ] as const;
-  const out: AnalysisTableRow = { ...row };
   for (const k of keys) {
     if (k in out) out[k] = omitLargeStrings(out[k], k);
   }
@@ -89,10 +101,9 @@ export function questionItemToAnalysisRow(item: Record<string, unknown>): Analys
     topic_tag: item.topic_tag,
     column_a: item.column_a ?? item.columnA,
     column_b: item.column_b ?? item.columnB,
-    prompt_set_id: item.prompt_set_id,
     prompt_generation_source: item.prompt_generation_source,
     generation_model: item.generation_model,
-    prompt_set_name: item.prompt_set_name,
+    prompt_set_name: promptSetDisplayForAnalysis(item),
   };
   row.figure_url = item.figure_url ?? item.figureDataUrl;
   row.source_figure_url = item.source_figure_url ?? item.sourceFigureDataUrl;

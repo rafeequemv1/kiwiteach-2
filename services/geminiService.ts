@@ -3,7 +3,7 @@ import { Type } from "@google/genai";
 import { Question, QuestionType, TypeDistribution } from "../Quiz/types";
 import { supabase } from "../supabase/client";
 import { adminGeminiGenerateContent } from "./adminGeminiProxy";
-import { FORGE_FORMAT_PROTOCOLS } from "./neuralStudioPromptBlueprint";
+import { FORGE_FORMAT_PROTOCOLS, CHOICE_DIVERSITY_BATCH_RULES } from "./neuralStudioPromptBlueprint";
 import { getReferenceLayerBlock } from "./neetReferenceLayer";
 import * as pdfjs from "pdfjs-dist";
 
@@ -211,6 +211,7 @@ const cleanBase64 = (base64: string): string => {
 const SYSTEM_PROMPTS: Record<string, string> = {
     'General': `TASK: Generate NTA NEET (UG) style assessment items with a clear ladder of depth.
     - GOAL: Match the real exam arc — from accessible, well-scored items through standard NEET reasoning to a thin band of elite discriminators. Easy → Medium → Hard must mean visibly increasing cognitive load, not the same stem with a different label.
+    - OPTION VARIETY (BATCH): Across each batch, include a reasonable share of numerically framed four-option sets and of near-miss / confusion-style distractors where the topic allows—see Distractors and forge protocols (approx. ~25–35% each, not every item).
     - TONE: Clinical and analytical where appropriate; always professional. Stems read like a formal entrance paper, not a textbook excerpt.
     - NEGATIVE CONSTRAINT: NEVER use the words "NCERT", "Textbook", "The Source", "Chapter", or "Passage" in the output. The question must appear as an independent scientific problem.
     - SYLLABUS CONSTRAINT: Map every question to a specific sub-topic from the syllabus.`,
@@ -236,7 +237,8 @@ const SYSTEM_PROMPTS: Record<string, string> = {
     'Distractors': `OPTION & DISTRACTOR LOGIC (SCALE WITH DIFFICULTY):
     - EASY: Wrong options are clearly weaker scientifically once the key fact is known; avoid cruel trick wording.
     - MEDIUM: At least two distractors are highly plausible; design from typical misconceptions and “almost right” statements.
-    - HARD: All four choices defensible on a quick read; wrong answers map to specific expert-level slips (sign errors, wrong exception, conflated mechanisms). No throwaway fillers on Hard items.`,
+    - HARD: All four choices defensible on a quick read; wrong answers map to specific expert-level slips (sign errors, wrong exception, conflated mechanisms). No throwaway fillers on Hard items.
+${CHOICE_DIVERSITY_BATCH_RULES}`,
     
     'Explanation': `EXPLANATION PROTOCOL:
 - **Standard Questions**: Comprehensive, clear, step-by-step logic.
@@ -600,7 +602,7 @@ export const generateQuizQuestions = async (
     HARD COMPLIANCE CHECK:
     - You MUST return EXACTLY ${count} questions.
     - The difficulty counts MUST match exactly the mandate above.
-    - **NEET GOAL**: Overall batch reflects a real paper mix — Easy items are genuinely accessible; Hard items are repeater-grade discriminators that still respect the syllabus.
+    - **NEET GOAL**: Overall batch reflects a real paper mix — Easy items are genuinely accessible; Hard items are repeater-grade discriminators that still respect the syllabus; options vary across the batch (substantial numeric-option questions and near-miss distractors where topics allow, per OPTION FORMAT MIX in forge protocols).
     - **LABEL EXPLANATION CHECK**: If a question asks to identify labels (e.g. "Identify P"), the explanation MUST be ultra-short (max 2 sentences).
 
     - TARGET CHAPTER: "${topic}"

@@ -3,6 +3,7 @@ import '../../types';
 import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '../../supabase/client';
 import { forgeSequentialQuestions, ensureApiKey, downsampleImage, getSystemPrompt } from '../../services/geminiService';
+import { bankLabelForTextGenerationModel } from '../../services/studioGenerationModelLabels';
 import { Question, QuestionType } from '../../Quiz/types';
 import QuestionPaperItem from '../../Quiz/components/QuestionPaperItem';
 
@@ -139,7 +140,11 @@ const LabHome: React.FC<LabHomeProps> = ({ onBack, embedded }) => {
               explanation: item.explanation,
               difficulty: item.difficulty,
               question_type: item.question_type || item.type,
-              topic_tag: item.topic_tag || 'General'
+              topic_tag: item.topic_tag || 'General',
+              prompt_set_id: item.prompt_set_id ?? null,
+              prompt_generation_source: item.prompt_generation_source ?? 'browser_local',
+              prompt_set_name: item.prompt_set_name ?? 'Neural Lab',
+              generation_model: item.generation_model ?? bankLabelForTextGenerationModel(config.model),
           }));
 
           const { error } = await supabase.from('question_bank_neet').insert(cleanData);
