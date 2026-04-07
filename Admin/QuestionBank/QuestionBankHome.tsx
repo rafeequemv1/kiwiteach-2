@@ -827,15 +827,15 @@ const QuestionBankHome: React.FC = () => {
                 describePromptGenerationSource(item.prompt_generation_source) +
                 (promptDisplay ? ` Card label: “${promptDisplay}”.` : '');
               return {
-                  ...item,
-                  id: item.id,
-                  text: item.question_text || item.text,
-                  type: item.question_type || item.type,
-                  correctIndex: item.correct_index,
-                  columnA: item.column_a,
-                  columnB: item.column_b,
-                  figureDataUrl: item.figure_url,
-                  sourceFigureDataUrl: item.source_figure_url,
+              ...item,
+              id: item.id,
+              text: item.question_text || item.text,
+              type: item.question_type || item.type,
+              correctIndex: item.correct_index,
+              columnA: item.column_a,
+              columnB: item.column_b,
+              figureDataUrl: item.figure_url,
+              sourceFigureDataUrl: item.source_figure_url,
                   topic_tag: item.topic_tag || 'General',
                   prompt_set_name: promptDisplay,
                   prompt_source_tooltip: promptSourceTooltip,
@@ -898,7 +898,7 @@ const QuestionBankHome: React.FC = () => {
       const chapterIds = Array.from(selectedChapterIds);
       if (chapterIds.length === 0) return alert("Select chapters.");
       setMode('browse');
-      setReviewQueue([]);
+      setReviewQueue([]); 
       setIsForgingBatch(true); 
       stopForgingRef.current = false;
       forgeRunSnapshotRef.current = [];
@@ -1014,7 +1014,7 @@ const QuestionBankHome: React.FC = () => {
                 `Chapter ${i + 1}/${chapterIds.length}: ${String(chapter.name)}`
               );
               setForgeProgress(`${progressPrefix}: Boundary Lookup...`);
-
+              
               for (
                 let chapterAttempt = 1;
                 chapterAttempt <= 2 && !stopForgingRef.current;
@@ -1130,7 +1130,7 @@ const QuestionBankHome: React.FC = () => {
                       let figureCount = 0;
                       let sourceImages: { data: string; mimeType: string }[] = [];
                       if (includeFigures) {
-                        if (config.visualMode === 'image') {
+                          if (config.visualMode === 'image') {
                           figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce(
                             (a: number, b: number) => a + b,
                             0
@@ -1231,8 +1231,8 @@ const QuestionBankHome: React.FC = () => {
                                   }
                                 : p
                             );
-                            return;
-                          }
+      return;
+    }
 
                             patchForgeDetail(
                               {
@@ -1437,7 +1437,7 @@ const QuestionBankHome: React.FC = () => {
                               );
                               setForgeProgress(lineBusy);
                               const part = await generateQuizQuestions(
-                                  String(chapter.name),
+          String(chapter.name),
                                   diffSlice,
                                   n,
                                   sourceCtxForGen,
@@ -1446,15 +1446,15 @@ const QuestionBankHome: React.FC = () => {
                                     setForgeProgress(`${progressPrefix}: ${FORGE_STYLE_LABELS[styleKey]} (${sub}/4) · ${status}`);
                                     setForgeDetail((p) => (p ? { ...p, geminiLine: status } : p));
                                   },
-                                  0,
-                                  false,
-                                  undefined,
-                                  selectedModel,
+          0,
+          false,
+          undefined,
+          selectedModel,
                                   visualModeForGen,
-                                  undefined,
-                                  undefined,
-                                  undefined,
-                                  undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
                                   excludedTopicLabelsNormalized,
                                   selectedKbId,
                                   forgePromptSetOverrideId
@@ -1482,7 +1482,7 @@ const QuestionBankHome: React.FC = () => {
                           }
                           await runFigurePipeline(genParts);
                           chapterGeneratedQs = genParts;
-                      } else {
+      } else {
                           patchForgeDetail(
                             {
                               phase: 'gemini',
@@ -1619,11 +1619,11 @@ const QuestionBankHome: React.FC = () => {
                   }
                 }
               }
-          }
-      } catch (e: any) {
+      }
+    } catch (e: any) {
         suppressForgeSummaryAlert = true;
         alert("Batch Error: " + e.message);
-      } finally {
+    } finally {
         setIsForgingBatch(false);
         setForgeProgress('');
         setForgeDetail(null);
@@ -2614,7 +2614,7 @@ const QuestionBankHome: React.FC = () => {
                         {forgeAnalysisReportMarkdown ? (
                             <div className="whitespace-pre-wrap text-left text-[13px] leading-relaxed text-zinc-800">
                                 {forgeAnalysisReportMarkdown}
-                            </div>
+                </div>
                         ) : (
                             !forgeAnalysisLoading && (
                                 <p className="text-sm text-zinc-500">
@@ -2872,7 +2872,7 @@ const QuestionBankHome: React.FC = () => {
                                 <header className="flex flex-col gap-3">
                                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                     <h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight shrink-0">Neural Studio</h2>
-                                  </div>
+                                    </div>
                                   <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
                                     <div className="flex min-w-0 w-full flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm md:max-w-xl">
                                       <div>
@@ -2883,10 +2883,10 @@ const QuestionBankHome: React.FC = () => {
                                           Gemini API id in monospace under each option. Used for stems, options, explanations.
                                         </p>
                                         <div className="mt-2 flex flex-wrap gap-1.5">
-                                          {STUDIO_MODEL_IDS.map((m) => {
-                                            const meta = STUDIO_MODEL_META[m];
+                                      {STUDIO_MODEL_IDS.map((m) => {
+                                        const meta = STUDIO_MODEL_META[m];
                                             const active = selectedModel === m;
-                                            return (
+                                        return (
                                               <button
                                                 key={m}
                                                 type="button"
@@ -2899,16 +2899,16 @@ const QuestionBankHome: React.FC = () => {
                                                 } disabled:opacity-50`}
                                               >
                                                 <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-zinc-800">
-                                                  <iconify-icon icon={meta.icon} width="14" /> {meta.label}
+                                            <iconify-icon icon={meta.icon} width="14" /> {meta.label}
                                                 </span>
                                                 <span className="mt-0.5 font-mono text-[7px] font-medium leading-tight text-zinc-500 [overflow-wrap:anywhere]">
                                                   {m}
                                                 </span>
                                                 <span className="mt-0.5 text-[7px] font-medium text-zinc-400">{meta.versionLine}</span>
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
                                       </div>
                                       <div className="border-t border-zinc-100 pt-3">
                                         <label className="text-[9px] font-black uppercase tracking-wide text-zinc-500">
@@ -2941,7 +2941,7 @@ const QuestionBankHome: React.FC = () => {
                                                   {m}
                                                 </span>
                                                 <span className="mt-0.5 text-[7px] font-medium text-zinc-400">{meta.versionLine}</span>
-                                              </button>
+                                      </button>
                                             );
                                           })}
                                         </div>
@@ -2972,7 +2972,7 @@ const QuestionBankHome: React.FC = () => {
                                           className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shrink-0 sm:flex-none disabled:opacity-40"
                                         >
                                           <iconify-icon icon="mdi:cog-outline" width="18" /> Config
-                                        </button>
+                                      </button>
                                         <button
                                           type="button"
                                           onClick={() => void handleRunForge('text_only')}
@@ -2994,7 +2994,7 @@ const QuestionBankHome: React.FC = () => {
                                         >
                                           <iconify-icon icon="mdi:image-plus-outline" width="18" /> Fill figure questions
                                         </button>
-                                      </div>
+                                  </div>
                                       <p className="text-[9px] font-medium leading-snug text-zinc-500">
                                         Same models and prompts. <strong className="text-zinc-600">Text</strong> skips figure
                                         mandates and image rendering. <strong className="text-zinc-600">Figures</strong> uses
@@ -3002,8 +3002,8 @@ const QuestionBankHome: React.FC = () => {
                                         chapter. Syllabus chapters stay text-only; if every selected chapter is syllabus, use
                                         Fill text questions.
                                       </p>
-                                    </div>
-                                  </div>
+                                                  </div>
+                                                </div>
                                 </header>
                                 <div className="rounded-xl border border-indigo-200 bg-white px-4 py-3 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                   <div className="min-w-0">
@@ -3013,7 +3013,7 @@ const QuestionBankHome: React.FC = () => {
                                         ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || 'Chapter')
                                         : '—'}
                                     </p>
-                                  </div>
+                                                </div>
                                   <button
                                     type="button"
                                     onClick={() => setStudioChapterConfigOpen(true)}
@@ -3037,8 +3037,8 @@ const QuestionBankHome: React.FC = () => {
                                             {activeEditingChapterId
                                               ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || '')
                                               : ''}
-                                          </p>
-                                        </div>
+                                                </p>
+                                            </div>
                                         <Dialog.Close asChild>
                                           <button
                                             type="button"
@@ -3238,7 +3238,7 @@ const QuestionBankHome: React.FC = () => {
                                         ) : (
                                           <p className="py-10 text-center text-sm text-zinc-500">Select a chapter in the batch list, then configure.</p>
                                         )}
-                                      </div>
+                                    </div>
                                     </Dialog.Content>
                                   </Dialog.Portal>
                                 </Dialog.Root>
@@ -3301,11 +3301,11 @@ const QuestionBankHome: React.FC = () => {
                                             {grandTotals.questions}{' '}
                                             <span className="text-zinc-500 font-normal text-xs">items</span>
                                           </span>
-                                          <div className="mt-0.5 text-zinc-400">
-                                            <span className="text-rose-300">{grandTotals.figures} fig</span>
-                                            <span className="mx-1">·</span>
-                                            <span className="text-indigo-300">{grandTotals.questions - grandTotals.figures} text</span>
-                                          </div>
+                                            <div className="mt-0.5 text-zinc-400">
+                                              <span className="text-rose-300">{grandTotals.figures} fig</span>
+                                              <span className="mx-1">·</span>
+                                              <span className="text-indigo-300">{grandTotals.questions - grandTotals.figures} text</span>
+                                            </div>
                                         </div>
                                       </div>
                                     </div>
@@ -3314,8 +3314,8 @@ const QuestionBankHome: React.FC = () => {
                                         <div className="mb-4 flex flex-col gap-3">
                                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                             <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 shrink-0">
-                                              <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
-                                            </h3>
+                                          <iconify-icon icon="mdi:layers-triple" className="text-indigo-600" width="20" /> Selected batch
+                                        </h3>
                                             <div className="min-w-0 w-full sm:max-w-[min(100%,340px)] space-y-2">
                                               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5">
                                                 <input

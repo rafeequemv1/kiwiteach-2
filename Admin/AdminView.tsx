@@ -8,6 +8,7 @@ import QuestionDBHome from './QuestionDB/QuestionDBHome';
 import PromptsHome from './Prompts/PromptsHome';
 import LabHome from './Lab/LabHome';
 import QualityLab from './Lab/QualityLab';
+import QuestionDbLatexLab from './Lab/QuestionDbLatexLab';
 import TeacherSyllabusHub from '../Teacher/Syllabus/TeacherSyllabusHub';
 import OMRAccuracyTester from '../Quiz/components/OMR/OMRAccuracyTester';
 import InstituteOrgPanel from '../Settings/Institutes/InstituteOrgPanel';
@@ -40,6 +41,7 @@ type AdminSection =
   | 'lab'
   | 'syllabus'
   | 'quality-lab'
+  | 'question-db-latex'
   | 'omr-lab'
   | 'platform-branding'
   | 'blog'
@@ -135,6 +137,11 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
     subtitle: 'Model benchmarks and cost estimates',
     icon: 'mdi:matrix',
   },
+  'question-db-latex': {
+    title: 'Question DB · LaTeX check',
+    subtitle: 'Forge a tiny sample and preview KaTeX rendering',
+    icon: 'mdi:function-variant',
+  },
   'omr-lab': {
     title: 'OMR Lab',
     subtitle: 'Recognition tuning (developers)',
@@ -163,7 +170,7 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
 };
 
 /** Full-height tools with their own chrome */
-const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab'];
+const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab', 'question-db-latex'];
 
 /** Section body uses flex column + overflow hidden (roles manager, blog CMS) */
 const ROLES_SECTIONS: AdminSection[] = ['roles', 'blog'];
@@ -299,6 +306,8 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
         return <LabHome embedded onBack={() => setActiveSection(fallbackSection)} />;
       case 'quality-lab':
         return <QualityLab embedded onBack={() => setActiveSection(fallbackSection)} />;
+      case 'question-db-latex':
+        return <QuestionDbLatexLab embedded onBack={() => setActiveSection(fallbackSection)} />;
       case 'syllabus':
         return <TeacherSyllabusHub isDeveloper={isDeveloper} />;
       case 'omr-lab':
@@ -489,6 +498,13 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
             label: 'Quality Lab',
             icon: 'mdi:matrix',
             mobileLabel: 'Quality',
+            show: isDeveloper,
+          },
+          {
+            id: 'question-db-latex',
+            label: 'QDB · LaTeX',
+            icon: 'mdi:function-variant',
+            mobileLabel: 'LaTeX',
             show: isDeveloper,
           },
           {

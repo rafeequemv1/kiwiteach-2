@@ -301,13 +301,15 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
        - The output is a JSON string. You **MUST DOUBLE-ESCAPE** all backslashes.
        - **WRONG:** "\text{hello}", "\times", "\frac"
        - **CORRECT:** "\\text{hello}", "\\times", "\\frac"
-       - **Reason:** A single backslash \t is interpreted as a TAB character by parsers, destroying the LaTeX command.
+       - **Reason:** A single backslash \t is interpreted as a TAB character by parsers, destroying the LaTeX command (e.g. "\\triangle" becomes tab + "riangle").
     
-    2. **MANDATORY DELIMITERS**: ALL mathematical expressions, symbols, variables, and equations MUST be wrapped in \`$\` signs.
+    2. **MANDATORY DELIMITERS**: ALL mathematical expressions, symbols, variables, subscripts, Greek letters, and equations MUST be wrapped in \`$\` ... \`$\` (or \`$$...$$\` for multi-line steps).
        - Correct: "Calculate the velocity $v$ where $v = u + at$."
-    
+       - For step-by-step explanations, wrap **each** numeric or symbolic step in its own \`$...$\` span, e.g. $C = \\dfrac{40}{12} = 3.33$, never leave bare \`\\dfrac{...}{...}\` outside math delimiters.
+       - Use $\\log$, $\\ln$, $\\Delta$, $\\alpha$ inside \`$...$\`; never emit empty \`\\text{}\` for a symbol — write the real command (e.g. $\\alpha$ for degree of dissociation).
+
     3. **DIVISION SYNTAX**: 
-       - ALWAYS use \`\\dfrac{numerator}{denominator}\`. 
+       - ALWAYS use \`\\dfrac{numerator}{denominator}\` **inside** \`$...$\`. 
        - Example: $\\dfrac{GM}{r^2}$
        - BANNED: Do not use \`/\` for vertical division in math.
 
@@ -315,7 +317,26 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
        - Use \`\\times\` for multiplication (e.g., $4 \\times 10^5$).
        - Use standard units directly or with \`\\mathrm{}\`. Avoid nested \`\\text{}\` for simple units.
        - **Correct:** $0.5 \\mu\\mathrm{m}$ or $0.5 \\mu m$.
-       - **Avoid:** $0.5 \\text{\\text{mu}m}$.`
+       - **Avoid:** $0.5 \\text{\\text{mu}m}$.
+
+    5. **EXPLANATIONS & LINE BREAKS**:
+       - Use real line breaks between steps (paragraph breaks). Do **not** write the two-character sequence backslash + letter n as a fake newline inside JSON strings.
+       - Never output placeholder tokens like \`__MATH_BLOCK_0__\` or any similar markup — only valid LaTeX inside \`$...$\`.
+
+    6. **SUBSCRIPTS (NO \\_ OR \\\{ IN JSON)**:
+       - Never write \`\\_\`, \`\\\{\`, or \`\\\}\` for subscripts. Inside \`$...$\` use normal TeX: \`$X_{ethanol}$\`, \`$H_2O$\`.
+       - In JSON, braces in math are single characters inside the string (escape the string quotes only), e.g. \`"mole fraction $X_{ethanol} = 0.04$"\`.
+
+    7. **GREEK + UNITS**:
+       - Never glue a unit letter to a Greek command: **wrong** \`\\pim\`, \`\\pis\`; **right** \`$\\pi\\,\\mathrm{m}$\`, \`$50\\pi\\,\\mathrm{m}$\`.
+
+    8. **NO PLACEHOLDER GLYPHS**:
+       - Do not use empty boxes, □, U+FFFD, or “value here” placeholders in explanations. Use the actual number or a fully symbolic expression inside \`$...$\`.
+
+    9. **NO MATH INSIDE \\text OR \\mathrm**:
+       - Never wrap roots or fractions inside \`\\text{...}\` or \`\\mathrm{...}\` (e.g. **wrong** \`\\text{\\sqrt{2}}\` — KaTeX shows the word “sqrt”). **Right:** \`$\\sqrt{2}$\` or bare \`\\sqrt{2}\` inside a larger \`$...$\` block.
+       - Never wrap relation symbols or Greek in \`\\text\`: **wrong** \`\\text{\\le}\`, \`\\text{\\mu}\`; **right** \`$\\le$\`, \`$\\mu_s$\`.
+       - For “change in” quantity (e.g. ΔK), use \`\\Delta\` — do not invent garbled commands like \`\\triangleriangle\`.`
 };
 
 export const getSystemPrompt = (key: string): string => {

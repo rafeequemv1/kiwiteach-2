@@ -19,7 +19,7 @@ interface TestCreatorViewProps {
   initialKnowledgeBaseId?: string | null;
   initialTopic?: string;
     /** @deprecated Ignored — use chapter blueprint only */
-    initialManualQuestions?: Question[];
+  initialManualQuestions?: Question[];
   /** From exam paper preset / new-test picker */
   initialTotalTarget?: number;
   initialDistributionMode?: 'count' | 'percent';
@@ -253,7 +253,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     const getOptions = (): CreateTestOptions => {
         const finalQuestionsTotal =
             distributionMode === 'percent' ? totalTarget : blueprint.reduce((sum, b) => sum + b.count, 0);
-
+        
         const chaptersWithFinalCounts = blueprint.map(b => {
             const count = distributionMode === 'percent' ? Math.round((b.count / 100) * totalTarget) : b.count;
             return { ...b, count, source: 'db' as const };
@@ -387,7 +387,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                 <button type="button" onClick={() => setDistributionMode('percent')} className={`min-h-8 rounded-sm px-2 py-1 text-[8px] font-semibold uppercase tracking-wide transition-all ${distributionMode === 'percent' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>%</button>
                 <button type="button" onClick={() => setDistributionMode('count')} className={`min-h-8 rounded-sm px-2 py-1 text-[8px] font-semibold uppercase tracking-wide transition-all ${distributionMode === 'count' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>#</button>
             </div>
-            <div className="flex flex-col gap-0.5">
+                <div className="flex flex-col gap-0.5">
                 <label className="text-[7px] font-semibold uppercase tracking-wide text-zinc-500">Total Qs</label>
                 <div className="flex items-center gap-0.5">
                     <button
@@ -520,8 +520,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                                             onClick={() => addToBlueprint(ch)}
                                                             className={`mb-0.5 w-full cursor-pointer rounded-md px-2 py-1 text-left text-[8px] font-bold uppercase leading-snug transition-all ${
                                                                 inBlueprint
-                                                                    ? 'bg-zinc-900 text-white shadow-sm'
-                                                                    : 'text-zinc-600 hover:bg-zinc-50'
+                                                                        ? 'bg-zinc-900 text-white shadow-sm'
+                                                                        : 'text-zinc-600 hover:bg-zinc-50'
                                                             }`}
                                                         >
                                                             <span className="block truncate">{ch.name}</span>
@@ -580,7 +580,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                     </div>
                 </div>
             </div>
-            <div className="space-y-2">
+                <div className="space-y-2">
                 <h4 className="ml-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-400">Styles</h4>
                 <div className="space-y-1">
                     {Object.entries(globalInventoryStats.styles).map(([style, count]) => (
@@ -594,7 +594,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                     ))}
                 </div>
             </div>
-            <div className="space-y-2">
+                <div className="space-y-2">
                 <h4 className="ml-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-400">By chapter</h4>
                 <div className="space-y-1.5">
                     {selectionInventory.map((item) => (
@@ -671,7 +671,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                     {blueprint.length}
                                 </span>
                             )}
-                        </button>
+                            </button>
                         <button
                             type="button"
                             onClick={() => setCreatorPanel((p) => (p === 'mix' ? null : 'mix'))}
@@ -700,8 +700,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                     {blueprint.length}
                                 </span>
                             )}
-                        </button>
-                    </div>
+                            </button>
+                        </div>
                     <div className="flex flex-wrap items-stretch gap-2">
                         <select
                             value={targetOrgClassId}
@@ -764,7 +764,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                     {blueprint.length}
                                 </span>
                             )}
-                        </button>
+                            </button>
                         <button
                             type="button"
                             onClick={() => setCreatorPanel((p) => (p === 'mix' ? null : 'mix'))}
@@ -793,7 +793,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                     {blueprint.length}
                                 </span>
                             )}
-                        </button>
+                            </button>
                     </div>
 
                     <div className="min-w-0 max-w-xs flex-1 px-2">
@@ -847,10 +847,10 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                     className="group flex animate-slide-up items-center gap-2 rounded-lg border border-zinc-200/90 bg-white px-2.5 py-2 shadow-sm sm:gap-3 sm:px-3"
                                 >
                                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-900 text-[10px] font-bold text-white">{idx + 1}</div>
-                                    <div className="min-w-0 flex-1">
+                                        <div className="min-w-0 flex-1">
                                         <h3 className="truncate text-xs font-semibold leading-tight text-zinc-900">{item.name}</h3>
                                         <p className="truncate text-[10px] text-zinc-500">{item.subjectName}</p>
-                                    </div>
+                                        </div>
                                     <div className="flex shrink-0 items-center gap-0.5">
                                         <button
                                             type="button"
@@ -883,17 +883,17 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                         title="Remove chapter"
                                         aria-label="Remove chapter"
                                     >
-                                        <iconify-icon icon="mdi:trash-can-outline" width="18" />
-                                    </button>
+                                            <iconify-icon icon="mdi:trash-can-outline" width="18" />
+                                        </button>
                                 </div>
                             ))}
                             {blueprint.length === 0 && (
                                 <div className="flex flex-col items-center gap-3 py-16 text-center text-zinc-400">
                                     <iconify-icon icon="mdi:creation" width="48" />
                                     <p className="text-xs font-bold uppercase tracking-widest">Select chapters to begin</p>
+                        </div>
+                                    )}
                                 </div>
-                            )}
-                    </div>
                 </main>
             </div>
 
@@ -916,15 +916,15 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                 <span id="creator-panel-title" className="text-sm font-semibold text-zinc-900">
                                     {creatorPanelTitle(creatorPanel)}
                                 </span>
-                                <button
-                                    type="button"
+                    <button
+                        type="button"
                                     className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-800"
                                     onClick={() => setCreatorPanel(null)}
                                     aria-label="Close"
                                 >
                                     <iconify-icon icon="mdi:close" width="22" />
-                                </button>
-                            </div>
+                    </button>
+                </div>
                             <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
                                 {creatorPanel === 'curriculum' && (
                                     <div className="flex min-h-[min(60vh,480px)] flex-col">{chaptersAsideNodes}</div>
@@ -940,8 +940,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                 {creatorPanel === 'matrix' && <div className="p-1">{matrixPanelScroll}</div>}
                             </div>
                             <div className="shrink-0 border-t border-zinc-200 bg-zinc-50/90 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-                                <button
-                                    type="button"
+                    <button
+                        type="button"
                                     onClick={() => setCreatorPanel(null)}
                                     className="flex min-h-10 w-full items-center justify-center rounded-lg border border-zinc-200 bg-white py-2.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50"
                                 >
@@ -950,31 +950,31 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                             </div>
                         </div>
                     ) : (
-                        <div
-                            role="dialog"
-                            aria-modal="true"
-                            aria-labelledby="creator-sheet-title"
-                            className="animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-xl border border-zinc-200 border-b-0 bg-white shadow-lg"
-                        >
-                            <div className="flex justify-center pt-2 pb-1" aria-hidden>
-                                <div className="h-1 w-10 rounded-full bg-zinc-300" />
-                            </div>
-                            <div className="flex shrink-0 items-center justify-between border-b border-zinc-100 px-4 py-2.5">
-                                <span id="creator-sheet-title" className="text-xs font-black uppercase tracking-widest text-zinc-800">
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="creator-sheet-title"
+                        className="animate-slide-up fixed inset-x-0 bottom-0 z-[60] flex max-h-[90vh] flex-col rounded-t-xl border border-zinc-200 border-b-0 bg-white shadow-lg"
+                    >
+                        <div className="flex justify-center pt-2 pb-1" aria-hidden>
+                            <div className="h-1 w-10 rounded-full bg-zinc-300" />
+                        </div>
+                        <div className="flex shrink-0 items-center justify-between border-b border-zinc-100 px-4 py-2.5">
+                            <span id="creator-sheet-title" className="text-xs font-black uppercase tracking-widest text-zinc-800">
                                     {creatorPanelTitle(creatorPanel)}
-                                </span>
-                                <button
-                                    type="button"
-                                    className="rounded-xl p-2.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+                            </span>
+                            <button
+                                type="button"
+                                className="rounded-xl p-2.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
                                     onClick={() => setCreatorPanel(null)}
-                                    aria-label="Close"
-                                >
-                                    <iconify-icon icon="mdi:close" width="22" />
-                                </button>
-                            </div>
+                                aria-label="Close"
+                            >
+                                <iconify-icon icon="mdi:close" width="22" />
+                            </button>
+                        </div>
                             <div className="flex max-h-[min(72vh,calc(90vh-5.5rem))] min-h-0 flex-1 flex-col overflow-hidden">
                                 {creatorPanel === 'curriculum' && (
-                                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{chaptersAsideNodes}</div>
+                                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{chaptersAsideNodes}</div>
                                 )}
                                 {creatorPanel === 'mix' && (
                                     <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-4">
@@ -982,12 +982,12 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                             {mixStripLeading}
                                             <div className="flex flex-col gap-3 border-t border-zinc-100 pt-4">{mixStripSliders}</div>
                                         </div>
-                                    </div>
-                                )}
+                                </div>
+                            )}
                                 {creatorPanel === 'matrix' && (
                                     <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">{matrixPanelScroll}</div>
                                 )}
-                            </div>
+                        </div>
                             <div className="shrink-0 border-t border-zinc-100 bg-zinc-50/90 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
                                 <button
                                     type="button"
@@ -996,7 +996,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                 >
                                     Done
                                 </button>
-                            </div>
+                    </div>
                         </div>
                     )}
                 </>

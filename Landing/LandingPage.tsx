@@ -219,7 +219,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
     if (!isRecognizedMarketingPath(window.location.pathname)) {
       window.history.replaceState(null, '', pathForMarketingTab('home'));
       setActiveTab('home');
-      setBlogSlug(null);
+    setBlogSlug(null);
     }
   }, []);
 
@@ -566,7 +566,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
   );
 
   const renderHome = () => (
-    <motion.div
+    <motion.div 
       key="home"
       initial="hidden"
       animate="visible"
@@ -607,7 +607,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
             className="absolute bottom-[20%] right-[18%] size-3 fill-[#f2c44e]/18 text-[#f2c44e]/30"
             strokeWidth={1}
           />
-        </div>
+            </div>
         <div className="relative mx-auto grid max-w-7xl items-center gap-12 lg:grid-cols-2 lg:gap-16">
           <div className="space-y-8">
             <Badge
@@ -698,7 +698,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
                   loading="lazy"
                 />
               </AnimatePresence>
-            </div>
+        </div>
             <div className="mx-auto mt-5 min-h-[4.25rem] max-w-2xl md:min-h-[4.5rem]">
               <AnimatePresence initial={false} mode="wait">
                 <motion.p
@@ -751,7 +751,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
           <div className="mt-9 flex justify-center">
             <LandingCtaButton
               className="!text-white"
-              style={{ background: landingTheme.gradients.button }}
+            style={{ background: landingTheme.gradients.button }}
               onClick={isLoggedIn ? onDashboardClick : onSignUpClick}
             >
               Start saving time
@@ -765,7 +765,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
   );
 
   const renderTestPrep = () => (
-    <motion.div
+    <motion.div 
       key="test-prep"
       initial="hidden"
       animate="visible"
@@ -788,7 +788,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
         <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
           <Star className="absolute right-[10%] top-[18%] size-3 fill-[#f2c44e]/22 text-[#f2c44e]/38" strokeWidth={1} />
           <Star className="absolute bottom-[40%] left-[4%] size-3.5 fill-[#f2c44e]/18 text-[#f2c44e]/32" strokeWidth={1} />
-        </div>
+            </div>
         <div className="relative mx-auto grid max-w-7xl items-center gap-14 lg:grid-cols-2">
           <div className="space-y-7">
             <Badge
@@ -854,7 +854,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
                       loading="eager"
                     />
                   </AnimatePresence>
-                </div>
+            </div>
                 <div className="mt-3 flex justify-center gap-2">
                   {NEET_TEST_PREP_HERO_SLIDES.map((_, i) => (
                     <button
@@ -871,7 +871,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
                       }}
                     />
                   ))}
-                </div>
+          </div>
               </CardContent>
             </Card>
             <div className="mt-3 max-w-full sm:max-w-md">
@@ -891,18 +891,18 @@ const LandingPage: React.FC<LandingPageProps> = ({
                       >
                         <div className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-foreground ring-1 ring-[#f2c44e]/35">
                           <Hi className="size-4" strokeWidth={2} aria-hidden />
-                        </div>
+        </div>
                         <div className="min-w-0">
                           <p className="text-xs font-semibold leading-snug text-foreground">{item.title}</p>
                           <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{item.subtitle}</p>
-                        </div>
+          </div>
                       </motion.div>
                     );
                   })()}
                 </AnimatePresence>
               </div>
+              </div>
             </div>
-          </div>
         </div>
       </section>
 
@@ -956,11 +956,11 @@ const LandingPage: React.FC<LandingPageProps> = ({
                     decoding="async"
                     referrerPolicy="no-referrer"
                   />
-                </div>
-                <div>
+              </div>
+              <div>
                   <h4 className="font-heading text-xl font-semibold text-foreground">Rafeeque Mavoor</h4>
                   <p className="mt-1 text-sm font-medium text-primary">CEO &amp; Co-founder</p>
-                </div>
+              </div>
                 <p className="text-sm leading-relaxed text-muted-foreground">
                   IISER Thiruvananthapuram alumni. Building KiwiTeach so teachers spend less time inventing questions and
                   more time moving students forward.
@@ -981,14 +981,14 @@ const LandingPage: React.FC<LandingPageProps> = ({
                     decoding="async"
                     referrerPolicy="no-referrer"
                   />
-                </div>
-                <div>
+              </div>
+              <div>
                   <h4 className="font-heading text-xl font-semibold text-foreground">Favaz Ahammed</h4>
                   <p className="mt-1 text-sm font-medium text-primary">CTO &amp; Co-founder</p>
-                </div>
+              </div>
                 <p className="text-sm leading-relaxed text-muted-foreground">
                   IISER Pune alumni. Focused on reliable AI workflows so faculty can trust what ships to the classroom.
-                </p>
+              </p>
               </CardContent>
             </Card>
           </div>
@@ -1046,8 +1046,8 @@ const LandingPage: React.FC<LandingPageProps> = ({
                   document.getElementById('pyqs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 });
               }}
-            >
-              Jump to PYQs
+          >
+            Jump to PYQs
             </LandingCtaAnchor>
           </div>
         </div>
@@ -1110,11 +1110,11 @@ const LandingPage: React.FC<LandingPageProps> = ({
 
           <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 lg:flex">
             <div className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-zinc-200/80 bg-zinc-50/80 px-1 py-1 shadow-sm">
-              {landingNavLinks.map((link) => {
+            {landingNavLinks.map((link) => {
                 const active = isLandingNavLinkActive(link.id);
-                return (
+              return (
                   <a
-                    key={link.id}
+                  key={link.id}
                     href={landingNavIdToHref(link.id)}
                     aria-current={active ? 'page' : undefined}
                     onClick={(e) => {
@@ -1125,12 +1125,12 @@ const LandingPage: React.FC<LandingPageProps> = ({
                       active
                         ? 'bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200/80'
                         : 'text-zinc-600 hover:bg-white/80 hover:text-zinc-900 hover:ring-1 hover:ring-[#f2c44e]/35'
-                    }`}
-                  >
-                    {link.label}
+                  }`}
+                >
+                  {link.label}
                   </a>
-                );
-              })}
+              );
+            })}
             </div>
           </div>
 
@@ -1294,7 +1294,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
               <div className="flex items-center gap-3">
                 <KiwiTeachLogoMark decorative className="h-10 w-10" />
                 <span className="text-2xl font-semibold tracking-tight">KiwiTeach</span>
-              </div>
+                </div>
               <p className="max-w-md text-lg leading-relaxed text-muted-foreground">{LANDING_FOOTER_BLURB}</p>
               <div>
                 <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Follow us</p>
@@ -1309,7 +1309,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
                     const m = footerLinkToMarketing(link);
                     if (m) {
                       return (
-                        <li key={link}>
+                    <li key={link}>
                           <a
                             href={m.href}
                             onClick={(e) => {
@@ -1317,10 +1317,10 @@ const LandingPage: React.FC<LandingPageProps> = ({
                               pushMarketingRoute(m.tab);
                             }}
                             className="text-muted-foreground transition-colors hover:text-foreground no-underline"
-                          >
-                            {link}
+                        >
+                          {link}
                           </a>
-                        </li>
+                    </li>
                       );
                     }
                     return (

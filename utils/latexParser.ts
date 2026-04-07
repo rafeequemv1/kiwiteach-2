@@ -3,6 +3,192 @@ import katex from 'katex';
 import 'katex/dist/contrib/mhchem.js';
 
 /**
+ * KaTeX math mode treats `_` as subscripts. Old placeholders `__MATH_BLOCK_0__` inside `$...$`
+ * were parsed as nested subscripts and leaked visibly. Use BMP private-use sentinels instead.
+ */
+const KTX_START = '\uFFF9'; // interlinear annotation anchor — not used in exam prose
+const KTX_END = '\uFFF8';
+const KTX_CODE0 = 0xe000;
+
+function ktxPlaceholder(blockIndex: number): string {
+  return `${KTX_START}${String.fromCharCode(KTX_CODE0 + blockIndex)}${KTX_END}`;
+}
+
+/** Index after the `}` that matches `openIdx` (`openIdx` must point at `{`). */
+function endOfBalancedGroup(str: string, openIdx: number): number | null {
+  if (openIdx < 0 || openIdx >= str.length || str[openIdx] !== '{') return null;
+  let depth = 1;
+  let k = openIdx + 1;
+  while (k < str.length && depth > 0) {
+    const c = str[k];
+    if (c === '{') depth++;
+    else if (c === '}') depth--;
+    k++;
+  }
+  return depth === 0 ? k : null;
+}
+
+/** KaTeX renders \\sqrt as literal text inside \\text{…} / \\mathrm{…}. Unwrap when the body is only one math command. */
+const TEXT_WRAPPER_PREFIXES = ['\\text{', '\\mathrm{', '\\textbf{', '\\textit{'] as const;
+const UNWRAP_INNER_MATH_PREFIXES = ['\\sqrt', '\\dfrac', '\\frac', '\\sum', '\\int', '\\prod'] as const;
+
+/** `\text{\le}` etc. — math operators wrongly wrapped in text mode (saved tests / bad generation). */
+function unwrapTextWrappedSymbolCommands(str: string): string {
+  let s = str;
+  const pairs: [RegExp, string][] = [
+    [/\\text\{\\le\}/g, '\\le'],
+    [/\\text\{\\ge\}/g, '\\ge'],
+    [/\\text\{\\ne\}/g, '\\ne'],
+    [/\\text\{\\leq\}/g, '\\leq'],
+    [/\\text\{\\geq\}/g, '\\geq'],
+    [/\\text\{\\times\}/g, '\\times'],
+    [/\\text\{\\cdot\}/g, '\\cdot'],
+    [/\\text\{\\pm\}/g, '\\pm'],
+    [/\\text\{\\mp\}/g, '\\mp'],
+    [/\\text\{\\approx\}/g, '\\approx'],
+    [/\\text\{\\equiv\}/g, '\\equiv'],
+    [/\\text\{\\mu\}/g, '\\mu'],
+    [/\\text\{\\pi\}/g, '\\pi'],
+    [/\\mathrm\{\\le\}/g, '\\le'],
+    [/\\mathrm\{\\ge\}/g, '\\ge'],
+    [/\\mathrm\{\\mu\}/g, '\\mu'],
+    [/\\mathrm\{\\pi\}/g, '\\pi'],
+  ];
+  for (const [re, rep] of pairs) {
+    s = s.replace(re, rep);
+  }
+  return s;
+}
+
+function unwrapTextWrappedMathCommands(str: string): string {
+  let result = str;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer: for (const prefix of TEXT_WRAPPER_PREFIXES) {
+      let i = 0;
+      while (i < result.length) {
+        const j = result.indexOf(prefix, i);
+        if (j === -1) break;
+        const openIdx = j + prefix.length - 1;
+        if (openIdx >= result.length || result[openIdx] !== '{') {
+          i = j + 1;
+          continue;
+        }
+        const closeK = endOfBalancedGroup(result, openIdx);
+        if (closeK === null) {
+          i = j + 1;
+          continue;
+        }
+        const inner = result.slice(openIdx + 1, closeK - 1);
+        const lead = inner.match(/^\s*/)?.[0].length ?? 0;
+        const rest = inner.slice(lead);
+        if (!rest) {
+          i = closeK;
+          continue;
+        }
+        const contentStart = openIdx + 1 + lead;
+
+        for (const mc of UNWRAP_INNER_MATH_PREFIXES) {
+          if (!rest.startsWith(mc)) continue;
+          let p = contentStart + mc.length;
+          while (p < result.length && /\s/.test(result[p])) p++;
+          if (p >= result.length || result[p] !== '{') continue;
+          const endCmd = endOfBalancedGroup(result, p);
+          if (endCmd === null || endCmd > closeK) continue;
+          let spanEnd = endCmd;
+          if (mc === '\\dfrac' || mc === '\\frac') {
+            let p2 = spanEnd;
+            while (p2 < result.length && /\s/.test(result[p2])) p2++;
+            if (p2 < closeK && result[p2] === '{') {
+              const end2 = endOfBalancedGroup(result, p2);
+              if (end2 !== null && end2 <= closeK) spanEnd = end2;
+            }
+          }
+          if (mc === '\\sqrt') {
+            const tailRaw = result.slice(endCmd, closeK - 1);
+            const tailTrim = tailRaw.trim();
+            const okTail =
+              tailTrim === '' ||
+              (/^[\s_a-zA-Z0-9^+\-\\.]+$/.test(tailTrim) && !/[{}]/.test(tailTrim));
+            if (!okTail) continue;
+            const extracted = result.slice(contentStart, closeK - 1).replace(/\s+$/u, '');
+            result = result.slice(0, j) + extracted + result.slice(closeK);
+            changed = true;
+            break outer;
+          }
+          const tail = result.slice(spanEnd, closeK - 1).trim();
+          if (tail !== '') continue;
+          const extracted = result.slice(contentStart, spanEnd);
+          result = result.slice(0, j) + extracted + result.slice(closeK);
+          changed = true;
+          break outer;
+        }
+        i = closeK;
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * `\\dfrac{…}{…}` with nested `\\text`, `^\\text{o}`, etc. exceeds the regex “balanced braces” depth.
+ * Scan with real brace counting and render to KaTeX first so saved explanations still display.
+ */
+function preprocessDfracBlocks(str: string, renderedBlocks: string[]): string {
+  const cmd = '\\dfrac';
+  let i = 0;
+  let out = '';
+  while (i < str.length) {
+    const idx = str.indexOf(cmd, i);
+    if (idx === -1) {
+      out += str.slice(i);
+      break;
+    }
+    out += str.slice(i, idx);
+    let p = idx + cmd.length;
+    while (p < str.length && /\s/.test(str[p])) p++;
+    if (p >= str.length || str[p] !== '{') {
+      out += cmd;
+      i = idx + cmd.length;
+      continue;
+    }
+    const end1 = endOfBalancedGroup(str, p);
+    if (end1 === null) {
+      out += cmd;
+      i = idx + cmd.length;
+      continue;
+    }
+    let p2 = end1;
+    while (p2 < str.length && /\s/.test(str[p2])) p2++;
+    if (p2 >= str.length || str[p2] !== '{') {
+      out += str.slice(idx, end1);
+      i = end1;
+      continue;
+    }
+    const end2 = endOfBalancedGroup(str, p2);
+    if (end2 === null) {
+      out += cmd;
+      i = idx + cmd.length;
+      continue;
+    }
+    const full = str.slice(idx, end2);
+    const html = katex.renderToString(full.trim(), {
+      throwOnError: false,
+      errorColor: '#000000',
+      displayMode: false,
+      trust: true,
+      strict: false,
+      macros: { '\\frac': '\\dfrac' },
+    });
+    renderedBlocks.push(html);
+    out += ktxPlaceholder(renderedBlocks.length - 1);
+    i = end2;
+  }
+  return out;
+}
+
+/**
  * Robust LaTeX and Math Parser for Academic Content.
  * Handles standard delimiters ($, $$, \[, \() and "Lazy LaTeX" 
  * where common commands like \sqrt, \frac, and exponents are not wrapped.
@@ -12,9 +198,52 @@ export const parsePseudoLatexAndMath = (text: string): string => {
 
   let processedText = text;
 
+  // Strip legacy leaked placeholders from older renderer bugs (no HTML to restore).
+  processedText = processedText.replace(/__MATH_BLOCK_\d+__/g, '');
+
+  // Model typo: "triangleriangle" (ΔK / change) — map to capital Delta.
+  processedText = processedText.replace(/\\triangleriangle\b/gi, '\\Delta');
+
+  // Model placeholder glyphs (empty numeric slots) — avoid KaTeX / font tofu in explanations.
+  processedText = processedText.replace(/\u25A1/g, '?').replace(/\uFFFD/g, '?');
+
+  // JSON double-escape artifact: \_ \{name\} → _{name} (closing may be \} or }).
+  processedText = processedText.replace(/\\_\{([^}\\]{1,64})\\}/g, '_{$1}');
+  processedText = processedText.replace(/\\_\{([^}\\]{1,64})\}/g, '_{$1}');
+
+  // Greek glued to unit letters (\pi\b fails on \pim). Keep list short to limit false positives.
+  processedText = processedText.replace(/\\picm\b/gi, '\\pi\\,\\mathrm{cm}');
+  processedText = processedText.replace(/\\pim\b/gi, '\\pi\\,\\mathrm{m}');
+  processedText = processedText.replace(/\\pis\b/gi, '\\pi\\,\\mathrm{s}');
+  processedText = processedText.replace(/\\muM\b/g, '\\mu\\,\\mathrm{M}');
+  processedText = processedText.replace(/\\mum\b/gi, '\\mu\\,\\mathrm{m}');
+
   // Normalize over-escaped LaTeX commands from imported/generated text.
   // Example: "\\text{\\dfrac{m}{s}}" -> "\text{\dfrac{m}{s}}"
   processedText = processedText.replace(/\\\\([a-zA-Z]+)/g, '\\$1');
+
+  // \text{\le}, \text{\mu}, … then \text{\sqrt{…}} with optional _s g R tail — unwrap for KaTeX.
+  processedText = unwrapTextWrappedSymbolCommands(processedText);
+  processedText = unwrapTextWrappedMathCommands(processedText);
+  processedText = unwrapTextWrappedSymbolCommands(processedText);
+
+  // JSON.parse treats `\t` as a tab. That mangles LaTeX that starts with `t` after a backslash:
+  // "\triangle" → TAB + "riangle", "\times" → TAB + "imes", "\text{" → TAB + "ext{", etc.
+  // Restore before KaTeX / regex math pass (order: more specific patterns first).
+  processedText = processedText.replace(/\t(?=riangleq\b)/gi, '\\triangleq');
+  processedText = processedText.replace(/\t(?=riangle\$[HVSGUhvsgu])/gi, '\\Delta');
+  processedText = processedText.replace(/\t(?=riangle\b)/gi, '\\triangle');
+  processedText = processedText.replace(/\t(?=imes\b)/g, '\\times');
+  processedText = processedText.replace(/\t(?=heta\b)/gi, '\\theta');
+  processedText = processedText.replace(/\t(?=herefore\b)/g, '\\therefore');
+  processedText = processedText.replace(/\t(?=ext\{)/g, '\\text');
+
+  // Model often emits literal backslash-n as two characters for line breaks; real `\n` is rare in LaTeX prose.
+  processedText = processedText.replace(/\\n\\n/g, '\n\n');
+  processedText = processedText.replace(
+    /\\n(?=Step\s*\d|:?\s*Distractor|The\s+correct|Answer\s*:|Explanation\s*:|\d+\.\s|[-•#]\s)/gi,
+    '\n'
+  );
 
   // 1. PROTECTION PHASE: Handle common \ce arrows and AI artifacts manually
   
@@ -96,6 +325,9 @@ export const parsePseudoLatexAndMath = (text: string): string => {
       }
       return `\\dfrac{${n}}{${d}}`;
   });
+
+  // Gemini often leaves an empty \\text{} where α (degree of dissociation, etc.) should be — KaTeX then looks broken in plain text.
+  processedText = processedText.replace(/\\text\{\s*\}/g, '\\alpha');
   
   // 2. COMPREHENSIVE REGEX for KaTeX detection.
   // Separated into:
@@ -108,13 +340,20 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   const funcs = 'sqrt|frac|dfrac|mathrm|mathbf|text|textbf|textit|underline|sum|int|lim|vec|hat|bar|over|binom';
   
   // List of standalone symbols (Greek, operators) that don't necessarily need arguments
-  const symbols = 'alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|omicron|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|infty|pm|approx|neq|leq|geq|times|div|cdot|partial|nabla|forall|exists|empty|emptyset|to|rightarrow|leftarrow|leftrightarrow|implies|iff|angle|circ|degree';
+  const symbols =
+    'alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|omicron|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|' +
+    'arcsin|arccos|arctan|sinh|cosh|tanh|sin|cos|tan|cot|sec|csc|' +
+    'log|ln|lg|exp|lim|' +
+    'infty|pm|mp|approx|neq|leq|geq|le|ge|times|div|cdot|partial|nabla|forall|exists|empty|emptyset|to|rightarrow|leftarrow|leftrightarrow|implies|iff|angle|circ|degree|cdots|ldots|vdots|ddots';
 
-  // Recursive-like pattern for balanced braces (depth 2) to handle \dfrac{\sqrt{x}}{y}
-  // L0: [^{}]*
-  // L1: (?:[^{}]|{[^{}]*})*
-  // L2: (?:[^{}]|{(?:[^{}]|{[^{}]*})*})*
-  const balancedBraces = '(?:[^{}]|{(?:[^{}]|{[^{}]*})*})*';
+  // Balanced `{…}` for regex fallback (dfrac is handled separately with real brace counting).
+  let balancedBraces = '[^{}]*';
+  for (let d = 0; d < 7; d++) {
+    balancedBraces = `(?:[^{}]|{${balancedBraces}})*`;
+  }
+
+  const renderedBlocks: string[] = [];
+  processedText = preprocessDfracBlocks(processedText, renderedBlocks);
 
   const mathChemRegex = new RegExp(
     // 1. Explicit Math Environments
@@ -130,8 +369,6 @@ export const parsePseudoLatexAndMath = (text: string): string => {
     'gs'
   );
 
-  const renderedBlocks: string[] = [];
-  
   processedText = processedText.replace(mathChemRegex, (match) => {
     let mathContent = '';
     let isDisplayMode = false;
@@ -171,13 +408,32 @@ export const parsePseudoLatexAndMath = (text: string): string => {
           "\\frac": "\\dfrac" // Macro override just in case
         }
       });
-      const placeholder = `__MATH_BLOCK_${renderedBlocks.length}__`;
       renderedBlocks.push(renderedHtml);
-      return placeholder;
+      return ktxPlaceholder(renderedBlocks.length - 1);
     } catch (e) {
       console.error('KaTeX rendering error:', e);
       // Fallback: If it failed, strip the latex command and show text
       return match.replace(/^\\[a-zA-Z]+{/, '').replace(/}$/, '');
+    }
+  });
+
+  // Bare operators outside $...$ (e.g. "2.99 \times 10^{-23}" with broken delimiters).
+  const orphanOps =
+    'approx|times|cdot|pm|mp|equiv|ne|leq|geq|le|ge|div|cdots|ldots|partial|nabla|infty';
+  processedText = processedText.replace(new RegExp(`\\\\(${orphanOps})\\b`, 'g'), (match) => {
+    try {
+      const renderedHtml = katex.renderToString(match, {
+        throwOnError: false,
+        errorColor: '#000000',
+        displayMode: false,
+        trust: true,
+        strict: false,
+        macros: { '\\frac': '\\dfrac' },
+      });
+      renderedBlocks.push(renderedHtml);
+      return ktxPlaceholder(renderedBlocks.length - 1);
+    } catch {
+      return match;
     }
   });
 
@@ -187,15 +443,7 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   processedText = processedText.replace(/<->/g, ' ↔ ');
   processedText = processedText.replace(/<=>/g, ' ⇔ ');
 
-  // Standard Markdown/HTML sanitization (but skip already rendered math blocks)
-  const tempMap: Record<string, string> = {};
-  processedText = processedText.replace(/__MATH_BLOCK_(\d+)__/g, (match) => {
-      const id = `PLACEHOLDER_${Math.random().toString(36).substr(2, 9)}`;
-      tempMap[id] = match;
-      return id;
-  });
-
-  // Safe HTML Conversion for the "text" parts
+  // Safe HTML Conversion for text (KTX sentinels contain no & < > and survive this pass)
   processedText = processedText
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -208,14 +456,12 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   processedText = processedText.replace(/\*(.*?)\*/g, '<i>$1</i>');
   processedText = processedText.replace(/\n/g, '<br />');
 
-  // Restore placeholders
-  Object.keys(tempMap).forEach(id => {
-      processedText = processedText.replace(id, tempMap[id]);
-  });
-
-  // 4. Final Injection of KaTeX HTML
-  processedText = processedText.replace(/__MATH_BLOCK_(\d+)__/g, (_, index) => {
-    return renderedBlocks[parseInt(index, 10)];
+  // 4. Inject KaTeX HTML (sentinel → span; must run after escaping so markup is not mangled)
+  const ktxSlotRe = new RegExp(`${KTX_START}([\\uE000-\\uF8FF])${KTX_END}`, 'g');
+  processedText = processedText.replace(ktxSlotRe, (_, ch: string) => {
+    const idx = ch.charCodeAt(0) - KTX_CODE0;
+    const html = renderedBlocks[idx];
+    return html ?? '';
   });
 
   return processedText;

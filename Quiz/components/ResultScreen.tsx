@@ -235,7 +235,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [isReplacing, setIsReplacing] = useState<string | null>(null);
   const [saveComplete, setSaveComplete] = useState(false);
   const [isOmrOpen, setIsOmrOpen] = useState(false);
-  const [isControlsOpen, setIsControlsOpen] = useState(true);
+  /** Left rail: paper matrix, breakdown, page navigator (lg+). */
+  const [isInsightsOpen, setIsInsightsOpen] = useState(false);
+  /** Right rail: layout & formatting controls (lg+). */
+  const [isControlsOpen, setIsControlsOpen] = useState(false);
   const [pendingPrint, setPendingPrint] = useState(false);
 
   type ResultMobileSheet = null | 'insights' | 'layout';
@@ -1561,6 +1564,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       );
   };
 
+  const insightsPanelActive = isLgLayout ? isInsightsOpen : resultMobileSheet === 'insights';
   const layoutControlsActive = isLgLayout ? isControlsOpen : resultMobileSheet === 'layout';
   const scrollPageScaled = viewMode === 'scroll' && scrollPreviewScale < 0.998;
   const previewScale = scrollPageScaled ? scrollPreviewScale : 1;
@@ -1757,10 +1761,15 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 <div className="ml-auto flex shrink-0 items-center gap-1 lg:hidden">
                     <button
                         type="button"
-                        onClick={() => {
-                            if (isLgLayout) setIsControlsOpen((o) => !o);
-                            else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
-                        }}
+                        onClick={() => setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'))}
+                        className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${insightsPanelActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-600'}`}
+                        title="Paper insights & navigator"
+                    >
+                        <iconify-icon icon="mdi:chart-box-outline" width="18" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'))}
                         className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${layoutControlsActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-600'}`}
                         title="Layout controls"
                     >
@@ -1823,14 +1832,23 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               <div className="hidden items-center gap-2 lg:flex">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (isLgLayout) setIsControlsOpen((o) => !o);
-                    else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
-                  }}
-                  className={`flex h-10 w-10 items-center justify-center rounded-md border transition-colors ${layoutControlsActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-700'}`}
-                  title="Toggle Layout Controls"
+                  onClick={() => setIsInsightsOpen((o) => !o)}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${insightsPanelActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'}`}
+                  title="Paper matrix, breakdown & page navigator"
+                  aria-pressed={isInsightsOpen}
                 >
-                    <iconify-icon icon="mdi:tune-variant" width="20" />
+                    <iconify-icon icon="mdi:chart-box-outline" width="18" />
+                    Insights
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsControlsOpen((o) => !o)}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'}`}
+                  title="View mode, content toggles & paper formatting"
+                  aria-pressed={isControlsOpen}
+                >
+                    <iconify-icon icon="mdi:tune-variant" width="18" />
+                    Layout
                 </button>
                 <button
                     type="button"
@@ -1846,9 +1864,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
        </header>
 
        <div className="print-content-shell flex-1 flex min-h-0 overflow-hidden">
-            <aside className="no-print hidden w-64 shrink-0 flex-col border-r border-zinc-200 bg-white animate-fade-in lg:flex">
+            {isInsightsOpen && (
+            <aside className="no-print hidden w-64 shrink-0 flex-col overflow-y-auto border-r border-zinc-200 bg-white animate-fade-in lg:flex">
                 {insightsPanelScroll}
             </aside>
+            )}
 
             <main ref={mainHostRef} className="print-main-host min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-zinc-100 p-3 pb-24 custom-scrollbar sm:p-4 sm:pb-24 lg:p-8 lg:pb-8">
                 <div

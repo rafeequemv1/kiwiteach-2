@@ -29,7 +29,11 @@ ${CHOICE_DIVERSITY_BATCH_RULES}
   3. matching (MANDATORY): 
      - You MUST populate "columnA" and "columnB" with the actual list items (exactly 4 strings each).
      - **TEXT FORMATTING**: If you describe the columns in the question text or explanation, refer to them as "Column A" and "Column B".
-  4. statements: Statement I and Statement II.`;
+  4. statements: Statement I and Statement II.
+
+  MATH IN JSON (STEM, OPTIONS, EXPLANATION):
+  - Follow the **Latex** system prompt: double-escaped backslashes, every formula in \`$...$\` (or \`$$...$$\`), use \`\\dfrac\` not slash fractions, \`\\times\` / \`\\log\` / \`\\Delta\` as needed.
+  - Do not emit placeholder strings or non-LaTeX markup in explanations.`;
 
 export interface NeuralDocSection {
   title: string;
