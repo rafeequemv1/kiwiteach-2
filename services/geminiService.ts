@@ -112,10 +112,42 @@ const repairMalformedJsonLatex = (jsonStr: string): string => {
 /**
  * Gemini often puts LaTeX like \underbrace, \upsilon, \unit in JSON strings with a single backslash.
  * JSON.parse treats `\u` as the start of a Unicode escape (must be \u + 4 hex). That throws
- * "Bad Unicode escape in JSON". Escape any `\u` that is not a valid \uXXXX.
+ * "Bad Unicode escape in JSON". Escape that `\u` as `\\u` when it is not a real \uXXXX.
+ *
+ * Important: valid JSON uses `\\underbrace` in the raw text (backslash backslash u…) so the parsed
+ * string contains `\underbrace`. A naive `/\\u/g` replace matches the second `\` and the `u` and
+ * corrupts the JSON. Only treat `\u` as a unicode escape when the backslash run ending at `\` has
+ * **odd** length (that `\` actually starts an escape, not a paired `\\`).
  */
-const repairInvalidJsonUnicodeEscapes = (jsonStr: string): string =>
-    jsonStr.replace(/\\u(?![0-9a-fA-F]{4})/gi, "\\\\u");
+const repairInvalidJsonUnicodeEscapes = (jsonStr: string): string => {
+    if (!jsonStr) return jsonStr;
+    let result = "";
+    let i = 0;
+    while (i < jsonStr.length) {
+        if (jsonStr[i] === "\\" && i + 1 < jsonStr.length && jsonStr[i + 1] === "u") {
+            let start = i;
+            while (start > 0 && jsonStr[start - 1] === "\\") start--;
+            const runLen = i - start + 1;
+            const next4 = jsonStr.slice(i + 2, i + 6);
+            const validUnicode =
+                next4.length === 4 && /^[0-9a-fA-F]{4}$/.test(next4);
+
+            if (runLen % 2 === 1) {
+                if (validUnicode) {
+                    result += jsonStr.slice(i, i + 6);
+                    i += 6;
+                    continue;
+                }
+                result += "\\\\u";
+                i += 2;
+                continue;
+            }
+        }
+        result += jsonStr[i];
+        i += 1;
+    }
+    return result;
+};
 
 /**
  * Model often writes LaTeX like `\neq`, `\nabla` with a single backslash before `n`.
