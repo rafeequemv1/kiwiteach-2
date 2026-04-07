@@ -241,6 +241,17 @@ type ForgeStyleRowState = {
   diffLabel: string;
 };
 
+/** Live figure pipeline + reference preview in the forge overlay (standard + with figures). */
+type ForgeFigureUiState = {
+  modeLabel: string;
+  subLabel: string;
+  referenceThumbs: { dataUrl: string; label: string }[];
+  expectedOutputs: number | null;
+  renderedCount: number;
+  outputDataUrls: string[];
+  statusLine: string;
+};
+
 type ForgeDetailState = {
   chaptersTotal: number;
   chapterIndex: number;
@@ -272,6 +283,8 @@ type ForgeDetailState = {
   /** How E/M/H maps to styles for this chapter. */
   recipeNote: string;
   log: { id: number; t: number; msg: string }[];
+  /** Standard + Fill figure questions: reference thumbs, mode, and live render strip. */
+  figureUi: ForgeFigureUiState | null;
 };
 
 function questionsToNeetBankRows(
@@ -930,6 +943,7 @@ const QuestionBankHome: React.FC = () => {
             msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · text ${textForgeLabel} (${selectedModel}) · image ${imageForgeLabel} (${selectedImageModel}) · each chapter saves to hub when done`,
           },
         ],
+        figureUi: null,
       });
       setForgeProgress('Preparing forge…');
       let savedToHubThisRun = 0;
@@ -995,6 +1009,7 @@ const QuestionBankHome: React.FC = () => {
                   plannedStatements: 0,
                   plannedTotalQs: 0,
                   recipeNote: '',
+                  figureUi: null,
                 },
                 `Chapter ${i + 1}/${chapterIds.length}: ${String(chapter.name)}`
               );
@@ -1154,23 +1169,227 @@ const QuestionBankHome: React.FC = () => {
                       };
                       const visualModeForGen: 'image' | 'text' = includeFigures ? config.visualMode : 'text';
 
+                      if (includeFigures) {
+                        const selectedEntries = Object.entries(config.selectedFigures || {}) as [string, number][];
+                        const selectedWithCount = selectedEntries.filter(([, n]) => n > 0);
+                        const modeLabel =
+                          config.visualMode === 'image'
+                            ? sourceImages.length > 0
+                              ? 'Standard · chapter reference'
+                              : 'Standard · no reference asset'
+                            : 'Standard · synthetic (text)';
+                        const subLabel =
+                          config.visualMode === 'image'
+                            ? sourceImages.length > 0
+                              ? selectedWithCount.length > 0
+                                ? `${selectedWithCount.length} slot(s) in use · ${figureCount} figure budget`
+                                : 'No reference slots selected — layout shows placeholder; renders follow prompts if any'
+                              : 'No extractable DOCX/PDF images — compositions use prompts only'
+                            : `${config.syntheticFigureCount || 0} synthetic slot(s) · no chapter bitmap`;
+                        const referenceThumbs = selectedWithCount
+                          .map(([iStr, n]) => {
+                            const i = parseInt(iStr, 10);
+                            const img = sourceImages[i];
+                            if (!img?.data) return null;
+                            return {
+                              dataUrl: `data:${img.mimeType};base64,${img.data}`,
+                              label: `#${i + 1} ×${n}`,
+                            };
+                          })
+                          .filter((x): x is { dataUrl: string; label: string } => x !== null);
+                        patchForgeDetail({
+                          figureUi: {
+                            modeLabel,
+                            subLabel,
+                            referenceThumbs,
+                            expectedOutputs: null,
+                            renderedCount: 0,
+                            outputDataUrls: [],
+                            statusLine: 'Waiting on text generation…',
+                          },
+                        });
+                      }
+
                       const runFigurePipeline = async (gen: Question[]) => {
                           if (!includeFigures) return;
-                          const figureQs = gen.filter(q => q.figurePrompt);
-                          if (figureQs.length > 0 && figureCount > 0) {
-                              patchForgeDetail(
-                                { phase: 'figures', line: `${progressPrefix}: rendering figures…` },
-                                `Figures · ${figureQs.length} prompt(s)`
-                              );
-                              setForgeProgress(`${progressPrefix}: Processing Visuals...`);
-                              if (config.visualMode === 'image') {
-                                  if (sourceImages.length > 0) {
-                                      const sourceEditGroups: Record<number, Question[]> = {};
-                                      figureQs.forEach(q => { const sIdx = (q.sourceImageIndex !== undefined && sourceImages[q.sourceImageIndex]) ? q.sourceImageIndex : 0; const sourceImg = sourceImages[sIdx]; if (sourceImg?.data) q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`; if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = []; sourceEditGroups[sIdx].push(q); });
-                                      for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) { if (stopForgingRef.current) break; const imgIdx = parseInt(imgIdxStr); const sourceImg = sourceImages[imgIdx]; if (sourceImg?.data) { const prompts = groupQs.map(q => q.figurePrompt!).filter(Boolean); const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, prompts, false, selectedImageModel); groupQs.forEach((q, cIdx) => { if (images[cIdx]) q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; }); } }
+                          const figureQs = gen.filter((q) => q.figurePrompt);
+                          if (figureQs.length === 0 || figureCount <= 0) {
+                            setForgeDetail((p) =>
+                              p?.figureUi
+                                ? {
+                                    ...p,
+                                    phase: 'figures',
+                                    line: `${progressPrefix}: no figure images to render`,
+                                    figureUi: {
+                                      ...p.figureUi,
+                                      expectedOutputs: 0,
+                                      statusLine:
+                                        figureQs.length === 0
+                                          ? 'No figure_prompt fields in this batch.'
+                                          : 'Figure budget is zero — skipped image API.',
+                                    },
                                   }
-                              } else { const images = await generateCompositeFigures(figureQs.map(q => q.figurePrompt!), selectedImageModel); figureQs.forEach((q, idx) => { if (images[idx]) q.figureDataUrl = `data:image/png;base64,${images[idx]}`; }); }
+                                : p
+                            );
+                            return;
                           }
+
+                            patchForgeDetail(
+                              {
+                                phase: 'figures',
+                                line: `${progressPrefix}: rendering figures…`,
+                              },
+                              `Figures · ${figureQs.length} prompt(s)`
+                            );
+                            setForgeDetail((p) =>
+                              p?.figureUi
+                                ? {
+                                    ...p,
+                                    figureUi: {
+                                      ...p.figureUi,
+                                      expectedOutputs: figureQs.length,
+                                      renderedCount: 0,
+                                      outputDataUrls: [],
+                                      statusLine: `Starting ${figureQs.length} image render(s)…`,
+                                    },
+                                  }
+                                : p
+                            );
+                            setForgeProgress(`${progressPrefix}: Processing Visuals...`);
+                            const bumpOutputs = (newPngBase64s: string[]) => {
+                              if (newPngBase64s.length === 0) return;
+                              const newUrls = newPngBase64s.map(
+                                (b64) => `data:image/png;base64,${b64}`
+                              );
+                              setForgeDetail((p) =>
+                                p?.figureUi
+                                  ? {
+                                      ...p,
+                                      figureUi: {
+                                        ...p.figureUi,
+                                        renderedCount: p.figureUi.renderedCount + newUrls.length,
+                                        outputDataUrls: [...p.figureUi.outputDataUrls, ...newUrls].slice(
+                                          -36
+                                        ),
+                                        statusLine: `Rendered ${p.figureUi.renderedCount + newUrls.length}/${figureQs.length}`,
+                                      },
+                                    }
+                                  : p
+                              );
+                            };
+
+                            if (config.visualMode === 'image') {
+                                if (sourceImages.length > 0) {
+                                    const sourceEditGroups: Record<number, Question[]> = {};
+                                    figureQs.forEach((q) => {
+                                      const sIdx =
+                                        q.sourceImageIndex !== undefined &&
+                                        sourceImages[q.sourceImageIndex]
+                                          ? q.sourceImageIndex
+                                          : 0;
+                                      const sourceImg = sourceImages[sIdx];
+                                      if (sourceImg?.data) {
+                                        q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`;
+                                      }
+                                      if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = [];
+                                      sourceEditGroups[sIdx].push(q);
+                                    });
+                                    for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) {
+                                      if (stopForgingRef.current) break;
+                                      const imgIdx = parseInt(imgIdxStr, 10);
+                                      const sourceImg = sourceImages[imgIdx];
+                                      if (!sourceImg?.data) continue;
+                                      setForgeDetail((p) =>
+                                        p?.figureUi
+                                          ? {
+                                              ...p,
+                                              line: `${progressPrefix}: figures · reference #${imgIdx + 1} (${groupQs.length})…`,
+                                              figureUi: {
+                                                ...p.figureUi,
+                                                statusLine: `Rendering ${groupQs.length} from ref #${imgIdx + 1}…`,
+                                              },
+                                            }
+                                          : p
+                                      );
+                                      const prompts = groupQs.map((q) => q.figurePrompt!).filter(Boolean);
+                                      const images = await generateCompositeStyleVariants(
+                                        sourceImg.data,
+                                        sourceImg.mimeType,
+                                        prompts,
+                                        false,
+                                        selectedImageModel
+                                      );
+                                      const outs: string[] = [];
+                                      groupQs.forEach((q, cIdx) => {
+                                        if (images[cIdx]) {
+                                          q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`;
+                                          outs.push(images[cIdx]!);
+                                        }
+                                      });
+                                      bumpOutputs(outs);
+                                    }
+                                } else {
+                                    setForgeDetail((p) =>
+                                      p?.figureUi
+                                        ? {
+                                            ...p,
+                                            figureUi: {
+                                              ...p.figureUi,
+                                              statusLine: 'No reference bitmaps — prompt-only composition…',
+                                            },
+                                          }
+                                        : p
+                                    );
+                                    const images = await generateCompositeFigures(
+                                      figureQs.map((q) => q.figurePrompt!),
+                                      selectedImageModel
+                                    );
+                                    const outs: string[] = [];
+                                    figureQs.forEach((q, idx) => {
+                                      if (images[idx]) {
+                                        q.figureDataUrl = `data:image/png;base64,${images[idx]}`;
+                                        outs.push(images[idx]!);
+                                      }
+                                    });
+                                    bumpOutputs(outs);
+                                }
+                            } else {
+                                setForgeDetail((p) =>
+                                  p?.figureUi
+                                    ? {
+                                        ...p,
+                                        figureUi: {
+                                          ...p.figureUi,
+                                          statusLine: 'Synthetic batch (single API call)…',
+                                        },
+                                      }
+                                    : p
+                                );
+                                const images = await generateCompositeFigures(
+                                  figureQs.map((q) => q.figurePrompt!),
+                                  selectedImageModel
+                                );
+                                const outs: string[] = [];
+                                figureQs.forEach((q, idx) => {
+                                  if (images[idx]) {
+                                    q.figureDataUrl = `data:image/png;base64,${images[idx]}`;
+                                    outs.push(images[idx]!);
+                                  }
+                                });
+                                bumpOutputs(outs);
+                            }
+
+                            setForgeDetail((p) =>
+                              p?.figureUi
+                                ? {
+                                    ...p,
+                                    figureUi: {
+                                      ...p.figureUi,
+                                      statusLine: `Figure pass complete · ${p.figureUi.renderedCount}/${figureQs.length} ok`,
+                                    },
+                                  }
+                                : p
+                            );
                       };
 
                       if (willSplitStyles) {
@@ -1812,7 +2031,7 @@ const QuestionBankHome: React.FC = () => {
         {(isSaving || isForgingBatch) && (
             isForgingBatch && forgeDetail ? (
             <div className="fixed inset-0 z-[200] flex animate-fade-in items-center justify-center bg-zinc-950/60 p-3 backdrop-blur-sm [color-scheme:light]">
-              <div className="flex max-h-[min(92vh,820px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl sm:max-w-2xl">
+              <div className="flex max-h-[min(92vh,860px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl sm:max-w-2xl lg:max-w-3xl">
                 <div className="shrink-0 border-b border-zinc-100 bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-3 sm:px-5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1858,6 +2077,157 @@ const QuestionBankHome: React.FC = () => {
                     <p className="text-[9px] font-black uppercase tracking-widest text-indigo-600">Gemini</p>
                     <p className="mt-1 font-mono text-[11px] leading-relaxed text-indigo-950">{forgeDetail.geminiLine || '—'}</p>
                   </section>
+
+                  {forgeDetail.figureUi ? (
+                    <section className="rounded-xl border border-violet-200 bg-gradient-to-b from-violet-50/90 to-white p-3 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-violet-700">Figure pipeline</p>
+                          <p className="mt-1 text-[11px] font-bold leading-snug text-violet-950">
+                            {forgeDetail.figureUi.modeLabel}
+                          </p>
+                          <p className="mt-0.5 text-[9px] leading-relaxed text-violet-800/90">
+                            {forgeDetail.figureUi.subLabel}
+                          </p>
+                        </div>
+                        {forgeDetail.synthesisLabel ? (
+                          <span className="shrink-0 rounded-md bg-white px-2 py-0.5 text-[8px] font-black uppercase tracking-wide text-zinc-600 ring-1 ring-violet-100">
+                            {forgeDetail.synthesisLabel}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-violet-600/85">
+                        Reference (selected slots)
+                      </p>
+                      <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] custom-scrollbar">
+                        {forgeDetail.figureUi.referenceThumbs.length > 0 ? (
+                          forgeDetail.figureUi.referenceThumbs.map((t, i) => (
+                            <div
+                              key={`${t.label}-${i}`}
+                              className="w-20 shrink-0 overflow-hidden rounded-xl border border-violet-200 bg-white shadow-sm sm:w-24"
+                            >
+                              <div className="flex h-[4.5rem] items-center justify-center bg-white sm:h-[5rem]">
+                                <img
+                                  src={t.dataUrl}
+                                  alt=""
+                                  className="max-h-full max-w-full object-contain"
+                                />
+                              </div>
+                              <p className="border-t border-violet-100 bg-violet-100/60 py-0.5 text-center text-[7px] font-bold text-violet-900">
+                                {t.label}
+                              </p>
+                            </div>
+                          ))
+                        ) : (
+                          [0, 1, 2, 3].map((i) => (
+                            <div
+                              key={i}
+                              className="flex h-[5.25rem] w-20 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-violet-200/90 bg-white/70 px-1"
+                            >
+                              <iconify-icon icon="mdi:image-off-outline" width="22" className="text-violet-300" />
+                              <span className="text-center text-[7px] font-semibold leading-tight text-violet-500">
+                                No ref
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="mt-3 rounded-lg border border-violet-100 bg-white/80 p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[8px] font-black uppercase tracking-widest text-violet-600/90">
+                            {forgeDetail.phase === 'figures' ? 'Live render' : 'Figure stage'}
+                          </p>
+                          {forgeDetail.figureUi.expectedOutputs != null &&
+                          forgeDetail.figureUi.expectedOutputs > 0 ? (
+                            <span className="text-[9px] font-black tabular-nums text-violet-900">
+                              {forgeDetail.figureUi.renderedCount}/{forgeDetail.figureUi.expectedOutputs}
+                            </span>
+                          ) : null}
+                        </div>
+                        {forgeDetail.figureUi.expectedOutputs === 0 ? (
+                          <p className="mt-2 text-[10px] font-medium leading-snug text-amber-900">
+                            {forgeDetail.figureUi.statusLine}
+                          </p>
+                        ) : forgeDetail.figureUi.expectedOutputs != null &&
+                          forgeDetail.figureUi.expectedOutputs > 0 ? (
+                          <>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-200/80">
+                              <div
+                                className="h-full rounded-full bg-violet-600 transition-[width] duration-300 ease-out"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    (forgeDetail.figureUi.renderedCount /
+                                      forgeDetail.figureUi.expectedOutputs) *
+                                      100
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="mt-2 font-mono text-[10px] leading-relaxed text-violet-950">
+                              {forgeDetail.figureUi.statusLine}
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-200/70">
+                              <div className="h-full w-[35%] animate-pulse rounded-full bg-violet-400/90" />
+                            </div>
+                            <p className="mt-2 font-mono text-[10px] leading-relaxed text-violet-950">
+                              {forgeDetail.figureUi.statusLine}
+                            </p>
+                          </>
+                        )}
+                      </div>
+
+                      <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-emerald-700/90">
+                        Created figures (scroll sideways)
+                      </p>
+                      <div className="mt-1.5 flex min-h-[6rem] gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] custom-scrollbar">
+                        {forgeDetail.figureUi.outputDataUrls.length > 0 ? (
+                          forgeDetail.figureUi.outputDataUrls.map((url, i) => (
+                            <div
+                              key={`out-${i}-${url.length}`}
+                              className="w-24 shrink-0 overflow-hidden rounded-xl border border-emerald-200 bg-white shadow-sm ring-1 ring-emerald-100/80 sm:w-28"
+                            >
+                              <div className="flex h-24 items-center justify-center bg-zinc-50/80">
+                                <img src={url} alt="" className="max-h-full max-w-full object-contain" />
+                              </div>
+                              <p className="border-t border-emerald-100 bg-emerald-50/90 py-0.5 text-center text-[7px] font-bold text-emerald-900">
+                                #{i + 1}
+                              </p>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="flex min-h-[5.5rem] w-full items-center justify-center rounded-xl border border-dashed border-violet-200/80 bg-violet-50/30 px-3 text-center text-[9px] font-medium leading-relaxed text-violet-700/85">
+                            {forgeDetail.phase === 'figures'
+                              ? 'Thumbnails appear here as each image API call completes.'
+                              : 'Previews show after the figure-rendering step runs.'}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  ) : forgeDetail.synthesisLabel === 'Syllabus-focused' ? (
+                    <section className="rounded-xl border border-zinc-200 bg-zinc-50/90 p-3">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Figures</p>
+                      <p className="mt-1 text-[10px] font-semibold leading-snug text-zinc-700">
+                        Syllabus mode — topic text only. No chapter figure or synthetic image pipeline for this
+                        run.
+                      </p>
+                      <div className="mt-3 flex gap-2 overflow-x-auto pb-1 custom-scrollbar">
+                        {[0, 1, 2].map((i) => (
+                          <div
+                            key={i}
+                            className="flex h-14 w-24 shrink-0 flex-col items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-white text-[7px] font-bold uppercase tracking-wide text-zinc-400"
+                          >
+                            Topic
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
 
                   {forgeDetail.plannedTotalQs > 0 || forgeDetail.recipeNote ? (
                     <section className="rounded-xl border border-zinc-200 bg-white p-3">
