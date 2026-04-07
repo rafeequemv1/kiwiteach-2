@@ -694,7 +694,16 @@ export const generateQuizQuestions = async (
   } catch (error: any) { throw new Error(`Forge failed: ${error.message}`); }
 };
 
-export const generateCompositeStyleVariants = async (sourceBase64: string, sourceMimeType: string, prompts: string[], useAsIs: boolean = false): Promise<string[]> => {
+/** Default for Neural Studio figure pipeline; override via Admin image-model selector. */
+export const COMPOSITE_IMAGE_MODEL_DEFAULT = 'gemini-3-pro-image-preview' as const;
+
+export const generateCompositeStyleVariants = async (
+  sourceBase64: string,
+  sourceMimeType: string,
+  prompts: string[],
+  useAsIs: boolean = false,
+  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
+): Promise<string[]> => {
     const results: string[] = [];
     const cleanedSource = cleanBase64(sourceBase64);
     if (!cleanedSource) return [];
@@ -728,7 +737,7 @@ EXECUTION RULES (STRICT FIDELITY & CLEANING):
 Prompt: ${prompt}`;
             
             const response = await adminGeminiGenerateContent({
-                model: 'gemini-3-pro-image-preview',
+                model: imageModelId,
                 contents: { parts: [imagePart, { text: instruction }] },
             });
             const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
@@ -746,7 +755,10 @@ Prompt: ${prompt}`;
     return results;
 };
 
-export const generateCompositeFigures = async (prompts: string[]): Promise<string[]> => {
+export const generateCompositeFigures = async (
+  prompts: string[],
+  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
+): Promise<string[]> => {
     const results: string[] = [];
     for (const prompt of prompts) {
         if (!prompt) {
@@ -770,7 +782,7 @@ RULES:
 4. **CLARITY**: Ensure lines are distinct and parts are easily distinguishable.`;
             
             const response = await adminGeminiGenerateContent({
-                model: 'gemini-3-pro-image-preview',
+                model: imageModelId,
                 contents: { parts: [{ text: instruction }] },
             });
             const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);

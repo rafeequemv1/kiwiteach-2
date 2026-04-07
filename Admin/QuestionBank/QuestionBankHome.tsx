@@ -174,14 +174,49 @@ const STUDIO_TEXT_CALL_OVERHEAD_INR: Record<keyof typeof COST_ESTIMATES, number>
   'gemini-flash-lite-latest': 0.05,
 };
 
-/** `gemini-3-pro-image-preview` — one billable call per figure prompt in the composite pipeline. */
-const STUDIO_IMAGE_CALL_INR = 6.5;
+/** INR per figure API call — approximate; varies by Google billing. */
+const STUDIO_IMAGE_MODEL_IDS = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'] as const;
+type StudioImageModelId = (typeof STUDIO_IMAGE_MODEL_IDS)[number];
+const STUDIO_IMAGE_MODEL_META: Record<
+  StudioImageModelId,
+  { label: string; icon: string; versionLine: string }
+> = {
+  'gemini-3-pro-image-preview': {
+    label: 'Gemini 3 Pro Image',
+    icon: 'mdi:image-filter-hdr',
+    versionLine: 'Preview · figure trace & synthetic',
+  },
+  'gemini-2.5-flash-image': {
+    label: 'Gemini 2.5 Flash Image',
+    icon: 'mdi:flash',
+    versionLine: 'Stable · faster / lower cost',
+  },
+};
+const STUDIO_IMAGE_CALL_INR: Record<StudioImageModelId, number> = {
+  'gemini-3-pro-image-preview': 6.5,
+  'gemini-2.5-flash-image': 3.5,
+};
 
 const STUDIO_MODEL_IDS = ['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-flash-lite-latest'] as const;
-const STUDIO_MODEL_META: Record<(typeof STUDIO_MODEL_IDS)[number], { label: string; icon: string }> = {
-  'gemini-3-pro-preview': { label: 'Pro', icon: 'mdi:diamond-stone' },
-  'gemini-3-flash-preview': { label: 'Flash', icon: 'mdi:lightning-bolt' },
-  'gemini-flash-lite-latest': { label: 'Flash Lite', icon: 'mdi:feather' },
+const STUDIO_MODEL_META: Record<
+  (typeof STUDIO_MODEL_IDS)[number],
+  { label: string; icon: string; versionLine: string }
+> = {
+  'gemini-3-pro-preview': {
+    label: 'Gemini 3 Pro',
+    icon: 'mdi:diamond-stone',
+    versionLine: 'Preview · text generation',
+  },
+  'gemini-3-flash-preview': {
+    label: 'Gemini 3 Flash',
+    icon: 'mdi:lightning-bolt',
+    versionLine: 'Preview · text generation',
+  },
+  'gemini-flash-lite-latest': {
+    label: 'Gemini Flash-Lite',
+    icon: 'mdi:feather',
+    versionLine: 'Latest · text generation',
+  },
 };
 
 const FORGE_STYLE_LABELS: Record<QuestionType, string> = {
@@ -285,6 +320,7 @@ const QuestionBankHome: React.FC = () => {
   const [selectedChapterIds, setSelectedChapterIds] = useState<Set<string>>(new Set());
   const [activeEditingChapterId, setActiveEditingChapterId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3-pro-preview');
+  const [selectedImageModel, setSelectedImageModel] = useState<StudioImageModelId>('gemini-3-pro-image-preview');
   
   const [mode, setMode] = useState<'browse' | 'studio' | 'review' | 'graph'>('browse');
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
@@ -531,11 +567,13 @@ const QuestionBankHome: React.FC = () => {
       return { questions: q, figures: f };
   }, [selectedChapterIds, chapterConfigs]);
 
-  /** Live forge estimate: question variable cost + per text call overhead + per figure image call. */
+  /** Live forge estimate: text (per-Q + per text API) + image (per figure API) shown separately and summed. */
   const forgeCostPreview = useMemo(() => {
     const modelKey = selectedModel as keyof typeof COST_ESTIMATES;
     const rate = COST_ESTIMATES[modelKey] || 0;
     const overhead = STUDIO_TEXT_CALL_OVERHEAD_INR[modelKey] ?? 0;
+    const imgKey = selectedImageModel as StudioImageModelId;
+    const imageRate = STUDIO_IMAGE_CALL_INR[imgKey] ?? STUDIO_IMAGE_CALL_INR['gemini-3-pro-image-preview'];
     const q = grandTotals.questions;
     let textCalls = 0;
     let imageCalls = 0;
@@ -547,10 +585,14 @@ const QuestionBankHome: React.FC = () => {
     });
     const variableInr = q * rate;
     const textOverheadInr = textCalls * overhead;
-    const imageInr = imageCalls * STUDIO_IMAGE_CALL_INR;
-    const totalInr = variableInr + textOverheadInr + imageInr;
+    const textSubtotalInr = variableInr + textOverheadInr;
+    const imageInr = imageCalls * imageRate;
+    const totalInr = textSubtotalInr + imageInr;
+    const textMeta = STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META];
+    const imgMeta = STUDIO_IMAGE_MODEL_META[imgKey];
     return {
       inrTotal: totalInr.toFixed(2),
+      textSubtotalInr: textSubtotalInr.toFixed(2),
       rate,
       questions: q,
       textCalls,
@@ -558,9 +600,15 @@ const QuestionBankHome: React.FC = () => {
       variableInr: variableInr.toFixed(2),
       textOverheadInr: textOverheadInr.toFixed(2),
       imageInr: imageInr.toFixed(2),
-      modelLabel: STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel,
+      imageRate,
+      textModelLabel: textMeta?.label ?? selectedModel,
+      textModelApiId: selectedModel,
+      textModelVersionLine: textMeta?.versionLine ?? '',
+      imageModelLabel: imgMeta?.label ?? selectedImageModel,
+      imageModelApiId: selectedImageModel,
+      imageModelVersionLine: imgMeta?.versionLine ?? '',
     };
-  }, [grandTotals.questions, selectedChapterIds, chapterConfigs, selectedModel]);
+  }, [grandTotals.questions, selectedChapterIds, chapterConfigs, selectedModel, selectedImageModel]);
 
   const selectedChapterIdsKey = useMemo(
     () => Array.from(selectedChapterIds).sort().join(','),
@@ -841,8 +889,11 @@ const QuestionBankHome: React.FC = () => {
       setIsForgingBatch(true); 
       stopForgingRef.current = false;
       forgeRunSnapshotRef.current = [];
-      const modelLabelForge =
+      const textForgeLabel =
         STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel;
+      const imageForgeLabel =
+        STUDIO_IMAGE_MODEL_META[selectedImageModel]?.label ?? selectedImageModel;
+      const modelLabelForge = `${textForgeLabel} · figures: ${imageForgeLabel}`;
       forgeLogIdRef.current = 1;
       const forgeModeLabel =
         forgeVisualPhase === 'text_only' ? 'text questions only' : 'text + figures (chapter config)';
@@ -876,7 +927,7 @@ const QuestionBankHome: React.FC = () => {
           {
             id: 1,
             t: Date.now(),
-            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · model ${modelLabelForge} · each chapter saves to hub when done`,
+            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · text ${textForgeLabel} (${selectedModel}) · image ${imageForgeLabel} (${selectedImageModel}) · each chapter saves to hub when done`,
           },
         ],
       });
@@ -1116,9 +1167,9 @@ const QuestionBankHome: React.FC = () => {
                                   if (sourceImages.length > 0) {
                                       const sourceEditGroups: Record<number, Question[]> = {};
                                       figureQs.forEach(q => { const sIdx = (q.sourceImageIndex !== undefined && sourceImages[q.sourceImageIndex]) ? q.sourceImageIndex : 0; const sourceImg = sourceImages[sIdx]; if (sourceImg?.data) q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`; if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = []; sourceEditGroups[sIdx].push(q); });
-                                      for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) { if (stopForgingRef.current) break; const imgIdx = parseInt(imgIdxStr); const sourceImg = sourceImages[imgIdx]; if (sourceImg?.data) { const prompts = groupQs.map(q => q.figurePrompt!).filter(Boolean); const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, prompts); groupQs.forEach((q, cIdx) => { if (images[cIdx]) q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; }); } }
+                                      for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) { if (stopForgingRef.current) break; const imgIdx = parseInt(imgIdxStr); const sourceImg = sourceImages[imgIdx]; if (sourceImg?.data) { const prompts = groupQs.map(q => q.figurePrompt!).filter(Boolean); const images = await generateCompositeStyleVariants(sourceImg.data, sourceImg.mimeType, prompts, false, selectedImageModel); groupQs.forEach((q, cIdx) => { if (images[cIdx]) q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`; }); } }
                                   }
-                              } else { const images = await generateCompositeFigures(figureQs.map(q => q.figurePrompt!)); figureQs.forEach((q, idx) => { if (images[idx]) q.figureDataUrl = `data:image/png;base64,${images[idx]}`; }); }
+                              } else { const images = await generateCompositeFigures(figureQs.map(q => q.figurePrompt!), selectedImageModel); figureQs.forEach((q, idx) => { if (images[idx]) q.figureDataUrl = `data:image/png;base64,${images[idx]}`; }); }
                           }
                       };
 
@@ -2134,7 +2185,9 @@ const QuestionBankHome: React.FC = () => {
                                 AI batch quality report
                             </Dialog.Title>
                             <Dialog.Description className="mt-0.5 text-[10px] font-medium text-zinc-500">
-                                {forgeAnalysisPayload?.label ?? '—'} · model {STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel}
+                                {forgeAnalysisPayload?.label ?? '—'} · text{' '}
+                                <span className="font-mono">{selectedModel}</span> · image{' '}
+                                <span className="font-mono">{selectedImageModel}</span>
                             </Dialog.Description>
                         </div>
                         <Dialog.Close asChild>
@@ -2450,16 +2503,79 @@ const QuestionBankHome: React.FC = () => {
                                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                     <h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight shrink-0">Neural Studio</h2>
                                   </div>
-                                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                                    <div className="flex flex-wrap items-center gap-1 bg-white p-0.5 rounded-lg border border-zinc-200 w-full md:w-fit">
-                                      {STUDIO_MODEL_IDS.map((m) => {
-                                        const meta = STUDIO_MODEL_META[m];
-                                        return (
-                                          <button key={m} type="button" onClick={() => setSelectedModel(m)} className={`flex-1 sm:flex-none px-2.5 py-1.5 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all flex items-center justify-center gap-1 ${selectedModel === m ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
-                                            <iconify-icon icon={meta.icon} width="14" /> {meta.label}
-                                          </button>
-                                        );
-                                      })}
+                                  <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+                                    <div className="flex min-w-0 w-full flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm md:max-w-xl">
+                                      <div>
+                                        <label className="text-[9px] font-black uppercase tracking-wide text-zinc-500">
+                                          Text generation model
+                                        </label>
+                                        <p className="mt-0.5 text-[8px] font-medium leading-snug text-zinc-400">
+                                          Gemini API id in monospace under each option. Used for stems, options, explanations.
+                                        </p>
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                          {STUDIO_MODEL_IDS.map((m) => {
+                                            const meta = STUDIO_MODEL_META[m];
+                                            const active = selectedModel === m;
+                                            return (
+                                              <button
+                                                key={m}
+                                                type="button"
+                                                disabled={isForgingBatch}
+                                                onClick={() => setSelectedModel(m)}
+                                                className={`flex min-w-[7.5rem] flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-all sm:min-w-[8.5rem] ${
+                                                  active
+                                                    ? 'border-indigo-400 bg-indigo-50 shadow-sm ring-1 ring-indigo-100'
+                                                    : 'border-zinc-200 bg-zinc-50/80 hover:border-zinc-300'
+                                                } disabled:opacity-50`}
+                                              >
+                                                <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-zinc-800">
+                                                  <iconify-icon icon={meta.icon} width="14" /> {meta.label}
+                                                </span>
+                                                <span className="mt-0.5 font-mono text-[7px] font-medium leading-tight text-zinc-500 [overflow-wrap:anywhere]">
+                                                  {m}
+                                                </span>
+                                                <span className="mt-0.5 text-[7px] font-medium text-zinc-400">{meta.versionLine}</span>
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                      <div className="border-t border-zinc-100 pt-3">
+                                        <label className="text-[9px] font-black uppercase tracking-wide text-zinc-500">
+                                          Figure / image model
+                                        </label>
+                                        <p className="mt-0.5 text-[8px] font-medium leading-snug text-zinc-400">
+                                          Used only when you run <strong className="font-semibold text-zinc-600">Fill figure questions</strong>{' '}
+                                          (composite trace and synthetic diagrams).
+                                        </p>
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                          {STUDIO_IMAGE_MODEL_IDS.map((m) => {
+                                            const meta = STUDIO_IMAGE_MODEL_META[m];
+                                            const active = selectedImageModel === m;
+                                            return (
+                                              <button
+                                                key={m}
+                                                type="button"
+                                                disabled={isForgingBatch}
+                                                onClick={() => setSelectedImageModel(m)}
+                                                className={`flex min-w-[7.5rem] flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-all sm:min-w-[8.5rem] ${
+                                                  active
+                                                    ? 'border-violet-400 bg-violet-50 shadow-sm ring-1 ring-violet-100'
+                                                    : 'border-zinc-200 bg-zinc-50/80 hover:border-zinc-300'
+                                                } disabled:opacity-50`}
+                                              >
+                                                <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-zinc-800">
+                                                  <iconify-icon icon={meta.icon} width="14" /> {meta.label}
+                                                </span>
+                                                <span className="mt-0.5 font-mono text-[7px] font-medium leading-tight text-zinc-500 [overflow-wrap:anywhere]">
+                                                  {m}
+                                                </span>
+                                                <span className="mt-0.5 text-[7px] font-medium text-zinc-400">{meta.versionLine}</span>
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
                                     </div>
                                     <div className="flex flex-col gap-2 w-full md:w-auto md:min-w-[200px]">
                                       <label className="text-[9px] font-black uppercase tracking-wide text-zinc-500">Prompt set</label>
@@ -2767,22 +2883,40 @@ const QuestionBankHome: React.FC = () => {
                                             <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">Est. cost (live)</span>
                                             <div className="flex items-baseline gap-1.5 tabular-nums">
                                               <span className="text-2xl font-bold tracking-tight">₹{forgeCostPreview.inrTotal}</span>
-                                              <span className="text-[10px] font-medium uppercase text-indigo-300">INR</span>
+                                              <span className="text-[10px] font-medium uppercase text-indigo-300">INR total</span>
                                             </div>
-                                            <p className="mt-1 text-[9px] font-medium leading-snug text-zinc-400">
-                                              {forgeCostPreview.questions} Q × ₹{forgeCostPreview.rate.toFixed(2)} ({forgeCostPreview.modelLabel})
-                                              <br />
-                                              + {forgeCostPreview.textCalls} text API × ₹
-                                              {(
-                                                STUDIO_TEXT_CALL_OVERHEAD_INR[
-                                                  selectedModel as keyof typeof STUDIO_TEXT_CALL_OVERHEAD_INR
-                                                ] ?? 0
-                                              ).toFixed(2)}{' '}
-                                              · {forgeCostPreview.imageCalls} image × ₹{STUDIO_IMAGE_CALL_INR.toFixed(2)}
-                                            </p>
-                                            <p className="mt-0.5 text-[8px] text-zinc-500">
-                                              ≈ ₹{forgeCostPreview.variableInr} output + ₹{forgeCostPreview.textOverheadInr} calls + ₹
-                                              {forgeCostPreview.imageInr} figures
+                                            <div className="mt-2 space-y-1.5 text-[8px] font-medium leading-snug text-zinc-300">
+                                              <p>
+                                                <span className="font-black uppercase tracking-wide text-emerald-300/90">Text</span>{' '}
+                                                <span className="font-mono text-zinc-400">{forgeCostPreview.textModelApiId}</span>
+                                                <span className="text-zinc-500"> · {forgeCostPreview.textModelVersionLine}</span>
+                                                <br />
+                                                <span className="tabular-nums text-zinc-400">
+                                                  ₹{forgeCostPreview.textSubtotalInr} = {forgeCostPreview.questions} Q × ₹
+                                                  {forgeCostPreview.rate.toFixed(2)} + {forgeCostPreview.textCalls} call
+                                                  {forgeCostPreview.textCalls === 1 ? '' : 's'} × ₹
+                                                  {(
+                                                    STUDIO_TEXT_CALL_OVERHEAD_INR[
+                                                      selectedModel as keyof typeof STUDIO_TEXT_CALL_OVERHEAD_INR
+                                                    ] ?? 0
+                                                  ).toFixed(2)}{' '}
+                                                  (≈ ₹{forgeCostPreview.variableInr} + ₹{forgeCostPreview.textOverheadInr})
+                                                </span>
+                                              </p>
+                                              <p>
+                                                <span className="font-black uppercase tracking-wide text-violet-300/90">Image</span>{' '}
+                                                <span className="font-mono text-zinc-400">{forgeCostPreview.imageModelApiId}</span>
+                                                <span className="text-zinc-500"> · {forgeCostPreview.imageModelVersionLine}</span>
+                                                <br />
+                                                <span className="tabular-nums text-zinc-400">
+                                                  ₹{forgeCostPreview.imageInr} = {forgeCostPreview.imageCalls} figure
+                                                  {forgeCostPreview.imageCalls === 1 ? '' : 's'} × ₹
+                                                  {forgeCostPreview.imageRate.toFixed(2)}
+                                                </span>
+                                              </p>
+                                            </div>
+                                            <p className="mt-1 text-[8px] text-zinc-500">
+                                              Approximate only; actual Google AI billing may differ.
                                             </p>
                                             {applyActiveStandardMixToAllChapters && (
                                               <p className="mt-1 text-[9px] font-semibold text-amber-200/90">
