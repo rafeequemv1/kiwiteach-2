@@ -193,6 +193,9 @@ const FORGE_STYLE_LABELS: Record<QuestionType, string> = {
 
 type ForgePhase = 'prep' | 'chapter' | 'gemini' | 'figures' | 'done';
 
+/** Text-only forge skips figure mandates and image pipeline; with_figures uses chapter visual settings (standard mode). */
+type ForgeVisualPhase = 'text_only' | 'with_figures';
+
 type ForgeStyleRowState = {
   key: QuestionType;
   label: string;
@@ -384,6 +387,14 @@ const QuestionBankHome: React.FC = () => {
   const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
   const [graphPositions, setGraphPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+
+  /** Syllabus chapters never run the figure leg — hide/disable “figure” forge when every selected chapter is syllabus. */
+  const studioForgeSelectionAllSyllabus = useMemo(() => {
+    if (selectedChapterIds.size === 0) return false;
+    return Array.from(selectedChapterIds).every(
+      (id) => chapterConfigs[id]?.synthesisMode === 'syllabus'
+    );
+  }, [selectedChapterIds, chapterConfigs]);
 
   const statsCache = useRef<Record<string, { data: Record<string, ChapterStats>, timestamp: number }>>({});
 
@@ -822,7 +833,7 @@ const QuestionBankHome: React.FC = () => {
     if (typeof patch.line === 'string') setForgeProgress(patch.line);
   }, []);
 
-  const handleRunForge = async () => {
+  const handleRunForge = async (forgeVisualPhase: ForgeVisualPhase) => {
       const chapterIds = Array.from(selectedChapterIds);
       if (chapterIds.length === 0) return alert("Select chapters.");
       setMode('browse');
@@ -833,6 +844,8 @@ const QuestionBankHome: React.FC = () => {
       const modelLabelForge =
         STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META]?.label ?? selectedModel;
       forgeLogIdRef.current = 1;
+      const forgeModeLabel =
+        forgeVisualPhase === 'text_only' ? 'text questions only' : 'text + figures (chapter config)';
       setForgeDetail({
         chaptersTotal: chapterIds.length,
         chapterIndex: 1,
@@ -863,7 +876,7 @@ const QuestionBankHome: React.FC = () => {
           {
             id: 1,
             t: Date.now(),
-            msg: `Started · ${chapterIds.length} chapter(s) · model ${modelLabelForge} · each chapter saves to hub when done`,
+            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · model ${modelLabelForge} · each chapter saves to hub when done`,
           },
         ],
       });
@@ -1047,16 +1060,25 @@ const QuestionBankHome: React.FC = () => {
                       config.total = Object.values(config.types).reduce((a: number, b: number) => a + b, 0);
                       const diffForGen = config.diff;
                       const typesForGen = { ...config.types };
-                      let figureCount = 0; let sourceImages: {data: string, mimeType: string}[] = [];
-                      if (config.visualMode === 'image') {
-                        figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0);
-                        patchForgeDetail(
-                          { line: `${progressPrefix}: scanning chapter visuals…`, phase: 'chapter' },
-                          'Scanning reference images / PDF'
-                        );
-                        setForgeProgress(`${progressPrefix}: Scanning Visuals...`);
-                        sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null);
-                      } else figureCount = config.syntheticFigureCount || 0;
+                      const includeFigures = forgeVisualPhase === 'with_figures';
+                      let figureCount = 0;
+                      let sourceImages: { data: string; mimeType: string }[] = [];
+                      if (includeFigures) {
+                        if (config.visualMode === 'image') {
+                          figureCount = (Object.values(config.selectedFigures || {}) as number[]).reduce(
+                            (a: number, b: number) => a + b,
+                            0
+                          );
+                          patchForgeDetail(
+                            { line: `${progressPrefix}: scanning chapter visuals…`, phase: 'chapter' },
+                            'Scanning reference images / PDF'
+                          );
+                          setForgeProgress(`${progressPrefix}: Scanning Visuals...`);
+                          sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null);
+                        } else {
+                          figureCount = config.syntheticFigureCount || 0;
+                        }
+                      }
 
                       const willSplitStyles = shouldSplitStandardForgeByStyle(typesForGen, diffForGen, figureCount);
                       patchForgeDetail({
@@ -1068,12 +1090,21 @@ const QuestionBankHome: React.FC = () => {
                         plannedMatching: typesForGen.matching,
                         plannedStatements: typesForGen.statements,
                         plannedTotalQs: config.total,
-                        recipeNote: willSplitStyles
-                          ? 'Split-by-style: your chapter E/M/H mix is scaled per style (largest remainder) — each style’s call gets its own Easy/Medium/Hard counts adding up to that style’s question total.'
-                          : 'Single Gemini call: one JSON array with your exact style counts and global E/M/H totals.',
+                        recipeNote:
+                          (includeFigures ? '' : 'Text-only forge: no figure prompts or image generation. ') +
+                          (willSplitStyles
+                            ? 'Split-by-style: your chapter E/M/H mix is scaled per style (largest remainder) — each style’s call gets its own Easy/Medium/Hard counts adding up to that style’s question total.'
+                            : 'Single Gemini call: one JSON array with your exact style counts and global E/M/H totals.'),
                       });
 
+                      const sourceCtxForGen = {
+                        text: rawText,
+                        ...(includeFigures && sourceImages.length > 0 ? { images: sourceImages } : {}),
+                      };
+                      const visualModeForGen: 'image' | 'text' = includeFigures ? config.visualMode : 'text';
+
                       const runFigurePipeline = async (gen: Question[]) => {
+                          if (!includeFigures) return;
                           const figureQs = gen.filter(q => q.figurePrompt);
                           if (figureQs.length > 0 && figureCount > 0) {
                               patchForgeDetail(
@@ -1139,7 +1170,7 @@ const QuestionBankHome: React.FC = () => {
                                   String(chapter.name),
                                   diffSlice,
                                   n,
-                                  { text: rawText, images: sourceImages },
+                                  sourceCtxForGen,
                                   styleKey,
                                   (status) => {
                                     setForgeProgress(`${progressPrefix}: ${FORGE_STYLE_LABELS[styleKey]} (${sub}/4) · ${status}`);
@@ -1149,7 +1180,7 @@ const QuestionBankHome: React.FC = () => {
                                   false,
                                   undefined,
                                   selectedModel,
-                                  config.visualMode,
+                                  visualModeForGen,
                                   undefined,
                                   undefined,
                                   undefined,
@@ -1196,7 +1227,7 @@ const QuestionBankHome: React.FC = () => {
                               String(chapter.name),
                               diffForGen,
                               config.total,
-                              { text: rawText, images: sourceImages },
+                              sourceCtxForGen,
                               typesForGen,
                               (status) => {
                                 setForgeProgress(`${progressPrefix}: ${status}`);
@@ -1204,9 +1235,9 @@ const QuestionBankHome: React.FC = () => {
                               },
                               figureCount,
                               false,
-                              JSON.stringify(config.selectedFigures || {}),
+                              includeFigures ? JSON.stringify(config.selectedFigures || {}) : undefined,
                               selectedModel,
-                              config.visualMode,
+                              visualModeForGen,
                               undefined,
                               undefined,
                               undefined,
@@ -2446,18 +2477,45 @@ const QuestionBankHome: React.FC = () => {
                                         ))}
                                       </select>
                                     </div>
-                                    <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-                                      <button
-                                        type="button"
-                                        onClick={() => setStudioChapterConfigOpen(true)}
-                                        disabled={!activeConfig}
-                                        className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shrink-0 flex-1 sm:flex-none disabled:opacity-40"
-                                      >
-                                        <iconify-icon icon="mdi:cog-outline" width="18" /> Config
-                                      </button>
-                                      <button type="button" onClick={handleRunForge} disabled={isForgingBatch} className="bg-zinc-900 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 flex-1 sm:flex-none disabled:opacity-50">
-                                        <iconify-icon icon="mdi:lightning-bolt" width="18" /> Forge
-                                      </button>
+                                    <div className="flex w-full min-w-0 flex-col gap-2 md:max-w-xl">
+                                      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-stretch">
+                                        <button
+                                          type="button"
+                                          onClick={() => setStudioChapterConfigOpen(true)}
+                                          disabled={!activeConfig}
+                                          className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shrink-0 sm:flex-none disabled:opacity-40"
+                                        >
+                                          <iconify-icon icon="mdi:cog-outline" width="18" /> Config
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleRunForge('text_only')}
+                                          disabled={isForgingBatch}
+                                          className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 sm:flex-1 disabled:opacity-50"
+                                        >
+                                          <iconify-icon icon="mdi:text-box-outline" width="18" /> Fill text questions
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleRunForge('with_figures')}
+                                          disabled={isForgingBatch || studioForgeSelectionAllSyllabus}
+                                          title={
+                                            studioForgeSelectionAllSyllabus
+                                              ? 'Syllabus mode is text-only. Use Fill text questions.'
+                                              : 'Uses Visual mode in chapter config (reference images or synthetic figure count).'
+                                          }
+                                          className="bg-zinc-900 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 sm:flex-1 disabled:opacity-50"
+                                        >
+                                          <iconify-icon icon="mdi:image-plus-outline" width="18" /> Fill figure questions
+                                        </button>
+                                      </div>
+                                      <p className="text-[9px] font-medium leading-snug text-zinc-500">
+                                        Same models and prompts. <strong className="text-zinc-600">Text</strong> skips figure
+                                        mandates and image rendering. <strong className="text-zinc-600">Figures</strong> uses
+                                        chapter Config → Visual mode on each <strong className="text-zinc-600">standard</strong>{' '}
+                                        chapter. Syllabus chapters stay text-only; if every selected chapter is syllabus, use
+                                        Fill text questions.
+                                      </p>
                                     </div>
                                   </div>
                                 </header>
