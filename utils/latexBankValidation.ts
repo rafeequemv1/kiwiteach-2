@@ -7,6 +7,14 @@ export type LatexFieldIssue = {
   preview: string;
 };
 
+export type BankRowLike = {
+  question_text?: unknown;
+  options?: unknown;
+  explanation?: unknown;
+  column_a?: unknown;
+  column_b?: unknown;
+};
+
 function htmlHasKatexError(html: string): boolean {
   return /\bkatex-error\b/i.test(html);
 }
@@ -15,13 +23,7 @@ function htmlHasKatexError(html: string): boolean {
  * Runs the same pseudo-LaTeX → KaTeX path as the student UI, then checks for KaTeX error nodes
  * (`katex-error` class), which appear when `throwOnError: false` but math failed to parse.
  */
-export function validateBankQuestionStrings(input: {
-  question_text: unknown;
-  options: unknown;
-  explanation: unknown;
-  column_a?: unknown;
-  column_b?: unknown;
-}): { ok: true } | { ok: false; issues: LatexFieldIssue[] } {
+export function validateBankQuestionStrings(input: BankRowLike): { ok: true } | { ok: false; issues: LatexFieldIssue[] } {
   const issues: LatexFieldIssue[] = [];
 
   const check = (field: string, raw: unknown) => {
@@ -56,6 +58,12 @@ export function validateBankQuestionStrings(input: {
   return issues.length === 0 ? { ok: true } : { ok: false, issues };
 }
 
+/** Non-throwing list of issues (empty if OK). */
+export function getLatexIssuesForBankRow(row: BankRowLike): LatexFieldIssue[] {
+  const v = validateBankQuestionStrings(row);
+  return v.ok ? [] : v.issues;
+}
+
 export function validateQuestionLatexForBank(q: Question): { ok: true } | { ok: false; issues: LatexFieldIssue[] } {
   return validateBankQuestionStrings({
     question_text: q.text,
@@ -65,14 +73,6 @@ export function validateQuestionLatexForBank(q: Question): { ok: true } | { ok: 
     column_b: q.columnB ?? q.column_b,
   });
 }
-
-export type BankRowLike = {
-  question_text?: unknown;
-  options?: unknown;
-  explanation?: unknown;
-  column_a?: unknown;
-  column_b?: unknown;
-};
 
 /**
  * Throws if any row fails LaTeX validation (forge / review commit). Message lists up to a few failures.
