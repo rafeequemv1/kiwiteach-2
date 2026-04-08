@@ -424,6 +424,8 @@ const QuestionBankHome: React.FC = () => {
   /** null = use KB prompt preferences (builtin / local / active cloud set). UUID = force that cloud set for forge. */
   const [forgePromptSetOverrideId, setForgePromptSetOverrideId] = useState<string | null>(null);
   const [forgePromptSets, setForgePromptSets] = useState<KbPromptSetRow[]>([]);
+  /** When on, chapter source text over the model budget is split into sequential Gemini calls (counts auto-scaled per segment). */
+  const [forgeSplitLongSource, setForgeSplitLongSource] = useState(false);
 
   const [activeChapterSyllabus, setActiveChapterSyllabus] = useState<string[]>([]);
   const [isFetchingSyllabus, setIsFetchingSyllabus] = useState(false);
@@ -941,7 +943,7 @@ const QuestionBankHome: React.FC = () => {
           {
             id: 1,
             t: Date.now(),
-            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · text ${textForgeLabel} (${selectedModel}) · image ${imageForgeLabel} (${selectedImageModel}) · each chapter saves to hub when done`,
+            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · text ${textForgeLabel} (${selectedModel}) · image ${imageForgeLabel} (${selectedImageModel})${forgeSplitLongSource ? ' · long-source multi-call ON (auto chunks)' : ''} · each chapter saves to hub when done`,
           },
         ],
         figureUi: null,
@@ -1105,7 +1107,8 @@ const QuestionBankHome: React.FC = () => {
                               undefined,
                               excludedTopicLabelsNormalized,
                               selectedKbId,
-                              forgePromptSetOverrideId
+                              forgePromptSetOverrideId,
+                              forgeSplitLongSource
                           );
                           chapterGeneratedQs.push(...gen);
                           producedBeforeInsert += gen.length;
@@ -1458,7 +1461,8 @@ const QuestionBankHome: React.FC = () => {
           undefined,
                                   excludedTopicLabelsNormalized,
                                   selectedKbId,
-                                  forgePromptSetOverrideId
+                                  forgePromptSetOverrideId,
+                                  forgeSplitLongSource
                               );
                               genParts.push(...part);
                               producedBeforeInsert += part.length;
@@ -1515,7 +1519,8 @@ const QuestionBankHome: React.FC = () => {
                               undefined,
                               excludedTopicLabelsNormalized,
                               selectedKbId,
-                              forgePromptSetOverrideId
+                              forgePromptSetOverrideId,
+                              forgeSplitLongSource
                           );
                           producedBeforeInsert += gen.length;
                           setForgeDetail((p) =>
@@ -2966,6 +2971,21 @@ const QuestionBankHome: React.FC = () => {
                                         ))}
                                       </select>
                                     </div>
+                                    <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-200/90 bg-zinc-50/80 px-2.5 py-1.5 text-[9px] font-semibold text-zinc-600 transition-colors hover:bg-zinc-100 md:self-start">
+                                      <input
+                                        type="checkbox"
+                                        className="h-3.5 w-3.5 shrink-0 rounded border-zinc-300 text-rose-600 focus:ring-rose-500/30"
+                                        checked={forgeSplitLongSource}
+                                        onChange={(e) => setForgeSplitLongSource(e.target.checked)}
+                                        disabled={isForgingBatch}
+                                      />
+                                      <span className="leading-tight">
+                                        Split long source
+                                        <span className="block font-normal text-zinc-500">
+                                          Extra calls only if chapter text exceeds model budget; question counts scale per segment.
+                                        </span>
+                                      </span>
+                                    </label>
                                     <div className="flex w-full min-w-0 flex-col gap-2 md:max-w-xl">
                                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-stretch">
                                         <button

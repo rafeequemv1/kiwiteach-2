@@ -1,6 +1,7 @@
 
 import katex from 'katex';
-import 'katex/dist/contrib/mhchem.js';
+/** ESM entry — must match `katex` package import (not UMD `dist/contrib/mhchem.js` or \\ce never registers). */
+import 'katex/contrib/mhchem';
 
 /**
  * KaTeX math mode treats `_` as subscripts. Old placeholders `__MATH_BLOCK_0__` inside `$...$`
@@ -12,6 +13,69 @@ const KTX_CODE0 = 0xe000;
 
 function ktxPlaceholder(blockIndex: number): string {
   return `${KTX_START}${String.fromCharCode(KTX_CODE0 + blockIndex)}${KTX_END}`;
+}
+
+/** Passed to every KaTeX render here so typo commands still resolve if they slip into math mode. */
+const KATEX_PAPER_MACROS: Record<string, string> = {
+  '\\frac': '\\dfrac',
+  '\\triangleriangle': '\\Delta',
+  '\\Triangleriangle': '\\Delta',
+};
+
+/**
+ * Gen-AI typo \\triangleriangle (often \\triangleriangleH_{mix}) — normalize to \\Delta everywhere we can.
+ * Handles missing/extra backslashes and stray whitespace after \\.
+ */
+function normalizeTriangleriangleTypo(s: string): string {
+  let t = s;
+  t = t.replace(/\\{1,3}\s*triangleriangle/gi, '\\Delta');
+  t = t.replace(/(^|[^\\])triangleriangle/gi, '$1\\Delta');
+  return t;
+}
+
+/** Hold `\ce{…}` while running global \frac/\int/slash preprocessors — those corrupt mhchem. */
+const CE_HOLD_START = '\uFFF7';
+const CE_HOLD_END = '\uFFF6';
+const CE_HOLD_CODE0 = 0xe600;
+
+function ceHoldPlaceholder(i: number): string {
+  return `${CE_HOLD_START}${String.fromCharCode(CE_HOLD_CODE0 + i)}${CE_HOLD_END}`;
+}
+
+function protectMhchemSegments(s: string): { t: string; parts: string[] } {
+  const parts: string[] = [];
+  let i = 0;
+  let out = '';
+  while (i < s.length) {
+    const k = s.indexOf('\\ce', i);
+    if (k === -1) {
+      out += s.slice(i);
+      break;
+    }
+    out += s.slice(i, k);
+    let p = k + 3;
+    while (p < s.length && /\s/.test(s[p])) p++;
+    if (p < s.length && s[p] === '{') {
+      const close = endOfBalancedGroup(s, p);
+      if (close !== null) {
+        parts.push(s.slice(k, close));
+        out += ceHoldPlaceholder(parts.length - 1);
+        i = close;
+        continue;
+      }
+    }
+    out += s.slice(k, k + 3);
+    i = k + 3;
+  }
+  return { t: out, parts };
+}
+
+function restoreMhchemSegments(s: string, parts: string[]): string {
+  let t = s;
+  for (let idx = 0; idx < parts.length; idx++) {
+    t = t.split(ceHoldPlaceholder(idx)).join(parts[idx]);
+  }
+  return t;
 }
 
 /** Index after the `}` that matches `openIdx` (`openIdx` must point at `{`). */
@@ -147,8 +211,9 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   // Strip legacy leaked placeholders from older renderer bugs (no HTML to restore).
   processedText = processedText.replace(/__MATH_BLOCK_\d+__/g, '');
 
-  // Model typo: "triangleriangle" (ΔK / change) — map to capital Delta.
-  processedText = processedText.replace(/\\triangleriangle\b/gi, '\\Delta');
+  processedText = normalizeTriangleriangleTypo(processedText);
+  // Model typo: "triangleriangle" (ΔH_mix / ΔV_mix) — map to Δ. No \b: stems use \triangleriangleH_{mix}.
+  processedText = processedText.replace(/\\triangleriangle/gi, '\\Delta');
   // Duplicate token / bad export: "\triangletriangle" (meant Δ, e.g. ΔK) — not valid KaTeX.
   processedText = processedText.replace(/\\triangletriangle(?=[A-Za-z])/gi, '\\Delta ');
   processedText = processedText.replace(/\\triangletriangle/gi, '\\Delta');
@@ -180,6 +245,9 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   // Normalize over-escaped LaTeX commands from imported/generated text.
   // Example: "\\text{\\dfrac{m}{s}}" -> "\text{\dfrac{m}{s}}"
   processedText = processedText.replace(/\\\\([a-zA-Z]+)/g, '\\$1');
+  // Re-apply after unescape in case JSON had "\\triangleriangle…".
+  processedText = processedText.replace(/\\triangleriangle/gi, '\\Delta');
+  processedText = normalizeTriangleriangleTypo(processedText);
 
   // \text{\le}, \text{\mu}, … then \text{\sqrt{…}} with optional _s g R tail — unwrap for KaTeX.
   processedText = unwrapTextWrappedSymbolCommands(processedText);
@@ -200,7 +268,7 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   // Model often emits literal backslash-n as two characters for line breaks; real `\n` is rare in LaTeX prose.
   processedText = processedText.replace(/\\n\\n/g, '\n\n');
   processedText = processedText.replace(
-    /\\n(?=Step\s*\d|:?\s*Distractor|The\s+correct|Answer\s*:|Explanation\s*:|\d+\.\s|[-•#]\s)/gi,
+    /\\n(?=Step\s*\d|:?\s*Distractor|The\s+correct|Answer\s*:|Explanation\s*:|\d+\.\s|[-•#]\s|\*\*Statement|Statement\s+(?:[IVXLCM]+|\d+)\b|\*\*Assertion|Assertion\b|\*\*Reason|\*\*Reasoning|\s*Column\s+[AB]\b|\s*List\s+(?:[IV]|[12])\b)/gi,
     '\n'
   );
 
@@ -215,6 +283,11 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   
   // Handle "Lazy" \ce usage (e.g., \ce -> without braces)
   processedText = processedText.replace(/\\ce\s*->/gi, ' $\\rightarrow$ ');
+
+  // Shield mhchem bodies from global \dfrac, \displaystyle\int, and slash→\dfrac rules below.
+  const mhchemShield = protectMhchemSegments(processedText);
+  processedText = mhchemShield.t;
+  const mhchemParts = mhchemShield.parts;
 
   // Convert bare text arrows to LaTeX
   processedText = processedText.replace(/([a-zA-Z0-9)])\s*(->|=>|-->|==>)\s*([a-zA-Z0-9(])/g, '$1 $\\rightarrow$ $3');
@@ -285,6 +358,8 @@ export const parsePseudoLatexAndMath = (text: string): string => {
       return `\\dfrac{${n}}{${d}}`;
   });
 
+  processedText = restoreMhchemSegments(processedText, mhchemParts);
+
   // Gemini often leaves an empty \\text{} where α (degree of dissociation, etc.) should be — KaTeX then looks broken in plain text.
   processedText = processedText.replace(/\\text\{\s*\}/g, '\\alpha');
   
@@ -329,9 +404,12 @@ export const parsePseudoLatexAndMath = (text: string): string => {
     }
   }
 
+  processedText = normalizeTriangleriangleTypo(processedText);
+  processedText = processedText.replace(/\\triangleriangle/gi, '\\Delta');
+
   const mathChemRegex = new RegExp(
-    // 1. Explicit Math Environments
-    '(\\\\\\\[[\\s\\S]*?\\\\\\]|\\\\\\(.*?\\\\\\)|\\\\ce\\{(?:[^{}]|{[^{}]*})*\\}|\\$\\$[\\s\\S]*?\\$\\$|\\$[^$\\n]+?\\$|' +
+    // 1. Explicit Math Environments (\ce uses full balanced braces — nested ^{2+} etc.)
+    '(\\\\\\\[[\\s\\S]*?\\\\\\]|\\\\\\(.*?\\\\\\)|\\\\ce\\{' + balancedBraces + '\\}|\\$\\$[\\s\\S]*?\\$\\$|\\$[^$\\n]+?\\$|' +
     // 2. Functions with braces (Depth 2 support)
     // Matches \cmd{arg1}{arg2} or \cmd{arg1}
     '\\\\(?:' + funcs + ')\\s*\\{' + balancedBraces + '\\}(?:\\s*\\{' + balancedBraces + '\\})?|' +
@@ -370,6 +448,9 @@ export const parsePseudoLatexAndMath = (text: string): string => {
       isDisplayMode = false;
     }
 
+    mathContent = normalizeTriangleriangleTypo(mathContent);
+    mathContent = mathContent.replace(/\\triangleriangle/gi, '\\Delta');
+
     try {
       const renderedHtml = katex.renderToString(mathContent.trim(), {
         throwOnError: false, 
@@ -377,10 +458,8 @@ export const parsePseudoLatexAndMath = (text: string): string => {
         displayMode: isDisplayMode,
         trust: true,
         strict: false,
-        macros: {
-          "\\ce": "\\ce", // Ensure mhchem macro is recognized if available
-          "\\frac": "\\dfrac" // Macro override just in case
-        }
+        // Do not override \\ce — breaks mhchem contrib. \\frac→\\dfrac for normal math only.
+        macros: { ...KATEX_PAPER_MACROS },
       });
       renderedBlocks.push(renderedHtml);
       return ktxPlaceholder(renderedBlocks.length - 1);
@@ -396,14 +475,17 @@ export const parsePseudoLatexAndMath = (text: string): string => {
     'approx|times|cdot|pm|mp|equiv|ne|leq|geq|le|ge|div|cdots|ldots|partial|nabla|infty';
   processedText = processedText.replace(new RegExp(`\\\\(${orphanOps})\\b`, 'g'), (match) => {
     try {
-      const renderedHtml = katex.renderToString(match, {
+      const renderedHtml = katex.renderToString(
+        normalizeTriangleriangleTypo(match).replace(/\\triangleriangle/gi, '\\Delta'),
+        {
         throwOnError: false,
         errorColor: '#000000',
         displayMode: false,
         trust: true,
         strict: false,
-        macros: { '\\frac': '\\dfrac' },
-      });
+        macros: { ...KATEX_PAPER_MACROS },
+      }
+      );
       renderedBlocks.push(renderedHtml);
       return ktxPlaceholder(renderedBlocks.length - 1);
     } catch {

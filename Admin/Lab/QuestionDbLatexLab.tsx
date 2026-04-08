@@ -5,10 +5,11 @@ import { supabase } from '../../supabase/client';
 import { generateQuizQuestions, ensureApiKey } from '../../services/geminiService';
 import { listKbPromptSets, type KbPromptSetRow } from '../../services/kbPromptService';
 import { Question } from '../../Quiz/types';
-import { renderWithSmiles } from '../../utils/smilesRenderer';
-import { parsePseudoLatexAndMath } from '../../utils/latexParser';
+import { PaperRich } from '../../utils/paperRich';
 import { getLatexIssuesForBankRow, type LatexFieldIssue } from '../../utils/latexBankValidation';
 import { LATEX_RENDER_GALLERY } from './latexRenderGalleryData';
+import { LATEX_LAB_DEMO_PAPER_QUESTIONS } from './latexDemoPaperData';
+import LatexLabPaperDemoPanel from './LatexLabPaperDemoPanel';
 
 interface QuestionDbLatexLabProps {
   onBack: () => void;
@@ -21,7 +22,7 @@ const MODEL_OPTIONS = [
   { id: 'gemini-flash-lite-latest', label: 'Gemini Flash Lite' },
 ] as const;
 
-type LabMode = 'sample' | 'scan' | 'gallery';
+type LabMode = 'sample' | 'scan' | 'gallery' | 'paper';
 
 type ScanResultView = 'failures_table' | 'all_rendered';
 
@@ -409,6 +410,15 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
               >
                 Render matrix
               </button>
+              <button
+                type="button"
+                onClick={() => setLabMode('paper')}
+                className={`rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
+                  labMode === 'paper' ? 'bg-white text-violet-900 shadow-sm' : 'text-violet-200 hover:text-white'
+                }`}
+              >
+                Paper demo
+              </button>
             </div>
             <button
               type="button"
@@ -426,13 +436,26 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
               <div className="space-y-3 text-[11px] leading-relaxed text-zinc-600">
                 <p className="font-semibold text-zinc-800">Symbol & structure matrix</p>
                 <p>
-                  Each row uses the same pipeline as the question paper:{' '}
-                  <span className="font-mono text-[10px]">parsePseudoLatexAndMath</span> → KaTeX HTML, plus{' '}
-                  <span className="font-mono text-[10px]">[SMILES:…]</span> where shown.
+                  Same as the test paper preview:{' '}
+                  <span className="font-mono text-[10px]">PaperRich</span> →{' '}
+                  <span className="font-mono text-[10px]">parsePseudoLatexAndMath</span> → KaTeX HTML (no SMILES
+                  canvas).
                 </p>
                 <p className="text-zinc-500">
-                  Raw LaTeX is on the left; rendered output on the right. Use this to spot parser gaps vs invalid bank
-                  strings.
+                  Raw string on the left; paper-identical render on the right. Sample / scan blocks below also use this
+                  path so the lab matches print preview.
+                </p>
+              </div>
+            ) : labMode === 'paper' ? (
+              <div className="space-y-3 text-[11px] leading-relaxed text-zinc-600">
+                <p className="font-semibold text-zinc-800">Full paper preview</p>
+                <p>
+                  Static fixtures: MCQ, reasoning, statements, matching (arrays + stem-only columns), roots,
+                  fractions, degrees, temperature, integrals, matrices, mhchem, and parser regressions.
+                </p>
+                <p className="text-zinc-500">
+                  Uses <span className="font-mono text-[10px]">resolveMatchingPaperColumns</span> for tables — same as the
+                  result / print layout.
                 </p>
               </div>
             ) : labMode === 'sample' ? (
@@ -643,7 +666,9 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
           </aside>
 
           <main className="min-h-0 flex-1 overflow-y-auto bg-white p-5">
-            {labMode === 'gallery' ? (
+            {labMode === 'paper' ? (
+              <LatexLabPaperDemoPanel questions={LATEX_LAB_DEMO_PAPER_QUESTIONS} />
+            ) : labMode === 'gallery' ? (
               <div className="space-y-10 pb-8">
                 <div className="rounded-xl border border-violet-200 bg-violet-50/60 px-4 py-3 text-[11px] text-violet-950">
                   <p className="font-semibold">Coverage note</p>
@@ -678,8 +703,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                             </pre>
                           </div>
                           <div className="min-h-[3rem] bg-white p-3 text-sm leading-relaxed text-zinc-900">
-                            <div className="math-content">
-                              {renderWithSmiles(parsePseudoLatexAndMath(item.code), 120)}
+                            <div className="math-content text-inherit leading-relaxed [&_.katex]:text-inherit">
+                              <PaperRich text={item.code} />
                             </div>
                           </div>
                         </div>
@@ -717,7 +742,7 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                             <span className="rounded-md bg-white px-2 py-0.5 text-[10px] font-semibold text-zinc-600 ring-1 ring-zinc-200">
                               {q.difficulty || difficulty}
                             </span>
-                            <span className="text-[10px] text-zinc-500">KaTeX + SMILES preview</span>
+                            <span className="text-[10px] text-zinc-500">Paper preview (KaTeX, same as print)</span>
                           </div>
 
                           {showRaw ? (
@@ -725,8 +750,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                               {q.text}
                             </pre>
                           ) : null}
-                          <div className="math-content mb-4 text-base font-semibold leading-relaxed text-zinc-900">
-                            {renderWithSmiles(parsePseudoLatexAndMath(q.text || ''), 160)}
+                          <div className="math-content mb-4 text-base font-semibold leading-relaxed text-zinc-900 [&_.katex]:text-inherit">
+                            <PaperRich text={q.text || ''} />
                           </div>
 
                           <div className="mb-4 grid gap-2 sm:grid-cols-2">
@@ -747,8 +772,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                                     {opt}
                                   </pre>
                                 ) : null}
-                                <span className="math-content inline">
-                                  {renderWithSmiles(parsePseudoLatexAndMath(opt), 90)}
+                                <span className="math-content inline [&_.katex]:text-inherit">
+                                  <PaperRich text={opt} className="min-w-0" />
                                 </span>
                               </div>
                             ))}
@@ -763,8 +788,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                                 {q.explanation || ''}
                               </pre>
                             ) : null}
-                            <div className="math-content text-xs leading-relaxed text-zinc-700">
-                              {renderWithSmiles(parsePseudoLatexAndMath(q.explanation || ''), 120)}
+                            <div className="math-content text-xs leading-relaxed text-zinc-700 [&_.katex]:text-inherit">
+                              <PaperRich text={q.explanation || ''} />
                             </div>
                           </div>
                         </article>
@@ -1066,8 +1091,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                                 {r.question_text}
                               </pre>
                             ) : null}
-                            <div className="math-content mb-4 text-base font-semibold leading-relaxed text-zinc-900">
-                              {renderWithSmiles(parsePseudoLatexAndMath(r.question_text || ''), 160)}
+                            <div className="math-content mb-4 text-base font-semibold leading-relaxed text-zinc-900 [&_.katex]:text-inherit">
+                              <PaperRich text={r.question_text || ''} />
                             </div>
 
                             {r.options.length > 0 ? (
@@ -1085,8 +1110,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                                         {opt}
                                       </pre>
                                     ) : null}
-                                    <span className="math-content inline">
-                                      {renderWithSmiles(parsePseudoLatexAndMath(opt), 90)}
+                                    <span className="math-content inline [&_.katex]:text-inherit">
+                                      <PaperRich text={opt} className="min-w-0" />
                                     </span>
                                   </div>
                                 ))}
@@ -1099,15 +1124,15 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                                 <div className="grid gap-2 sm:grid-cols-2">
                                   <div>
                                     {r.column_a.map((cell, ci) => (
-                                      <div key={`a-${ci}`} className="math-content border-b border-zinc-100 py-1">
-                                        {renderWithSmiles(parsePseudoLatexAndMath(cell), 80)}
+                                      <div key={`a-${ci}`} className="math-content border-b border-zinc-100 py-1 [&_.katex]:text-inherit">
+                                        <PaperRich text={cell} />
                                       </div>
                                     ))}
                                   </div>
                                   <div>
                                     {r.column_b.map((cell, ci) => (
-                                      <div key={`b-${ci}`} className="math-content border-b border-zinc-100 py-1">
-                                        {renderWithSmiles(parsePseudoLatexAndMath(cell), 80)}
+                                      <div key={`b-${ci}`} className="math-content border-b border-zinc-100 py-1 [&_.katex]:text-inherit">
+                                        <PaperRich text={cell} />
                                       </div>
                                     ))}
                                   </div>
@@ -1124,8 +1149,8 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
                                   {r.explanation}
                                 </pre>
                               ) : null}
-                              <div className="math-content text-xs leading-relaxed text-zinc-700">
-                                {renderWithSmiles(parsePseudoLatexAndMath(r.explanation || ''), 120)}
+                              <div className="math-content text-xs leading-relaxed text-zinc-700 [&_.katex]:text-inherit">
+                                <PaperRich text={r.explanation || ''} />
                               </div>
                             </div>
                           </article>

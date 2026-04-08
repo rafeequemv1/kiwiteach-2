@@ -4,6 +4,13 @@ import { Question, QuestionType, TypeDistribution } from "../Quiz/types";
 import { supabase } from "../supabase/client";
 import { adminGeminiGenerateContent } from "./adminGeminiProxy";
 import { FORGE_FORMAT_PROTOCOLS, CHOICE_DIVERSITY_BATCH_RULES } from "./neuralStudioPromptBlueprint";
+import {
+  distributeIntegerByWeights,
+  getMaxSourceCharsPerForgeCall,
+  sourceChunkPreamble,
+  splitRawTextIntoForgeChunks,
+  scaleTypeWeightsToTotal,
+} from "./forgeSourceChunking";
 import { getReferenceLayerBlock } from "./neetReferenceLayer";
 import * as pdfjs from "pdfjs-dist";
 
@@ -528,8 +535,79 @@ export const generateQuizQuestions = async (
   excludedTopicLabels?: string[],
   knowledgeBaseId?: string | null,
   /** When set with knowledgeBaseId, merge this cloud prompt set instead of KB prefs alone. */
-  promptSetIdOverride?: string | null
+  promptSetIdOverride?: string | null,
+  /**
+   * When true, long SOURCE MATERIAL is split into multiple API calls (counts scaled per segment).
+   * One call if the text already fits — no extra cost. Reference images attach only to the first segment.
+   */
+  splitLongSource: boolean = false
 ): Promise<Question[]> => {
+  const srcTextFull = sourceContext?.text ?? "";
+  if (splitLongSource && srcTextFull.length > 0 && count > 0) {
+    const maxChars = getMaxSourceCharsPerForgeCall(modelName);
+    const chunks = splitRawTextIntoForgeChunks(srcTextFull, maxChars);
+    if (chunks.length > 1) {
+      const weights = chunks.map((c) => c.length);
+      const subCounts = distributeIntegerByWeights(count, weights);
+      const subFigures =
+        figureCount > 0
+          ? distributeIntegerByWeights(figureCount, weights)
+          : chunks.map(() => 0);
+      const merged: Question[] = [];
+      const batchId = Date.now();
+      for (let i = 0; i < chunks.length; i++) {
+        const sc = subCounts[i];
+        if (sc <= 0) continue;
+        const segText = sourceChunkPreamble(i, chunks.length, topic) + chunks[i];
+        const subCtx: { text: string; images?: { data: string; mimeType: string }[] } = {
+          text: segText,
+          ...(i === 0 && sourceContext?.images?.length ? { images: sourceContext.images } : {}),
+        };
+        const subDiff =
+          typeof difficulty === "object" && difficulty !== null
+            ? scaleDifficultyCountsToTotal(difficulty, sc)
+            : difficulty;
+        let subQType: QuestionType | TypeDistribution = qType;
+        if (typeof qType === "object" && qType !== null && !Array.isArray(qType)) {
+          subQType = scaleTypeWeightsToTotal(
+            qType as { mcq: number; reasoning: number; matching: number; statements: number },
+            sc
+          );
+        }
+        const fc = subFigures[i] ?? 0;
+        onProgress?.(`Gemini · source ${i + 1}/${chunks.length} · ${sc} Q (batch ${count})…`);
+        const part = await generateQuizQuestions(
+          topic,
+          subDiff,
+          sc,
+          subCtx,
+          subQType,
+          (s) => onProgress?.(`[seg ${i + 1}/${chunks.length}] ${s}`),
+          fc,
+          useSmiles,
+          fc > 0 ? figureBreakdown : undefined,
+          modelName,
+          visualMode,
+          syllabusTopics,
+          pyqContext,
+          isLengthy,
+          isConfusingChoices,
+          excludedTopicLabels,
+          knowledgeBaseId,
+          promptSetIdOverride,
+          false
+        );
+        part.forEach((q, idx) => {
+          merged.push({ ...q, id: `forge-${batchId}-${i}-${idx}` });
+        });
+        if (i < chunks.length - 1) {
+          await new Promise((r) => setTimeout(r, 450 + Math.floor(Math.random() * 350)));
+        }
+      }
+      return merged;
+    }
+  }
+
   const { fetchMergedPromptsForKbGeneration } = await import("./kbPromptService");
   const kbPromptMap =
     knowledgeBaseId && typeof knowledgeBaseId === "string" && knowledgeBaseId.trim()

@@ -4,7 +4,12 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { supabase } from '../../supabase/client';
 import { Question, BrandingConfig, LayoutConfig } from '../types';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
-import { renderWithSmiles } from '../../utils/smilesRenderer';
+import { PaperRich } from '../../utils/paperRich';
+import {
+  matchingRowLetter,
+  ROMAN_ROW_SUFFIX,
+  resolveMatchingPaperColumns,
+} from '../../utils/matchingPaperColumns';
 import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
 import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
@@ -36,6 +41,41 @@ interface PageLayout {
     isCover?: boolean;
 }
 
+/** Reading order: page by page, left column top→bottom then right column (matches typical NEET booklet). */
+function paperQuestionNumberByStableId(pages: PageLayout[]): Map<string, number> {
+  const map = new Map<string, number>();
+  let n = 0;
+  for (const p of pages) {
+    if (p.isCover) continue;
+    if (p.leftCol[0]?.type === 'answer-key') continue;
+    for (const b of [...p.leftCol, ...p.rightCol]) {
+      if (b.type !== 'question-core' || !b.question) continue;
+      const id = String(b.question.originalId || b.question.id);
+      if (map.has(id)) continue;
+      n += 1;
+      map.set(id, n);
+    }
+  }
+  return map;
+}
+
+function questionsInPaperReadingOrder(pages: PageLayout[], fallback: Question[]): Question[] {
+  const ordered: Question[] = [];
+  const seen = new Set<string>();
+  for (const p of pages) {
+    if (p.isCover) continue;
+    if (p.leftCol[0]?.type === 'answer-key') continue;
+    for (const b of [...p.leftCol, ...p.rightCol]) {
+      if (b.type !== 'question-core' || !b.question) continue;
+      const id = String(b.question.originalId || b.question.id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      ordered.push(b.question);
+    }
+  }
+  return ordered.length > 0 ? ordered : fallback;
+}
+
 function ptToPx(pt: number): number {
   return pt * (96 / 72);
 }
@@ -46,42 +86,6 @@ function htmlToPlainText(htmlLike: string | null | undefined): string {
   const div = document.createElement('div');
   div.innerHTML = htmlLike;
   return (div.textContent || '').replace(/\s+/g, ' ').trim();
-}
-
-/** Row labels for matching tables: P, Q, R, S, … (aligns with typical option keying). */
-function matchingRowLetter(index: number): string {
-  return String.fromCharCode(80 + Math.max(0, index));
-}
-
-const ROMAN_ROW_SUFFIX = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii'] as const;
-
-/**
- * When columnA/columnB arrays exist, question text often repeats those lists after a
- * "Column A" / "Column I" header. The paper layout shows a single table instead.
- */
-function matchingStemTextForPaper(raw: string): string {
-  const t = (raw || '').replace(/<br\s*\/?>/gi, '\n').trim();
-  if (!t) return t;
-  let cut = t.length;
-  // Start at a list header only (not "in Column B" mid-sentence). Column B-only dupes are
-  // almost always preceded by a Column A / Column I block, which this removes in one go.
-  const blockStarts = [
-    /\r?\n\s*Column\s+A\b[\s\S]*$/i,
-    /\r?\n\s*Column\s+I\b[\s\S]*$/i,
-    /\r?\n\s*Column\s+II\b[\s\S]*$/i,
-    /\r?\n\s*Column\s+1\b[\s\S]*$/i,
-  ];
-  for (const re of blockStarts) {
-    const m = re.exec(t);
-    if (m && m.index !== undefined && m.index < cut) cut = m.index;
-  }
-  if (cut < t.length) {
-    return t
-      .slice(0, cut)
-      .replace(/[:\s\u3000]+$/g, '')
-      .trim();
-  }
-  return t;
 }
 
 /** Max plain-text length per option to allow exam-style 2×2 choice layout (stem + choices stay one block). */
@@ -299,7 +303,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [flaggingQuestionId, setFlaggingQuestionId] = useState<string | null>(null);
   const [viewerUserId, setViewerUserId] = useState<string | null>(null);
 
-  const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? true);
+  const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? false);
   const [showChapterListOnCover, setShowChapterListOnCover] = useState(initialLayoutConfig?.showChapterListOnCover ?? true);
   // Keep saved/imported question order by default; grouping can still be toggled manually.
   const [groupBySubject, setGroupBySubject] = useState(initialLayoutConfig?.groupBySubject ?? false);
@@ -407,6 +411,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     subjectToPages: Record<string, number[]>;
     globalStats: any;
   } = statsResult;
+
+  const paperQuestionNumberById = useMemo(() => paperQuestionNumberByStableId(pages), [pages]);
+  const questionsOrderedForAnswerKey = useMemo(
+    () => questionsInPaperReadingOrder(pages, currentQuestions),
+    [pages, currentQuestions]
+  );
 
   const totalChaptersCount = useMemo(() => {
     return Object.values(chapterSummary).reduce((acc: number, sub: Record<string, number>) => acc + Object.keys(sub).length, 0);
@@ -854,15 +864,18 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const FOOTER_RESERVE_PX = 10;
   const SAFETY_BUFFER = 0;
   const INVISIBLE_FOOTER_FILL_LINES = 24;
-  /** mt-auto strip under the padded area (topic / engine / page x of y). ~px at 96dpi. */
-  const PAGE_FOOTER_META_STRIP_PX = 34;
-  /** Thin rule + mb-3 above the two columns. */
-  const TOP_COLUMN_CHROME_PX = 14;
+  /** mt-auto strip: page number only (tuned vs real DOM for pagination). */
+  const PAGE_FOOTER_META_STRIP_PX = 14;
+  /** Brand strip + horizontal rule + gap before columns (keep in sync with question-page header DOM). */
+  const TOP_COLUMN_CHROME_PX = 36;
+  /** Top padding for question pages = marginY × this (65% less whitespace above branding than full marginY). */
+  const QUESTION_PAGE_TOP_MARGIN_FRAC = 0.35;
 
   const getColumnHeightLimit = (_pIdx: number) => {
-      const marginYPx = paperConfig.marginY * MM_TO_PX;
+      const marginBottomPx = paperConfig.marginY * MM_TO_PX;
+      const marginTopPx = paperConfig.marginY * MM_TO_PX * QUESTION_PAGE_TOP_MARGIN_FRAC;
       const bodyBelowMeta = PAGE_HEIGHT_PX - PAGE_FOOTER_META_STRIP_PX;
-      const innerContentPx = bodyBelowMeta - 2 * marginYPx;
+      const innerContentPx = bodyBelowMeta - marginTopPx - marginBottomPx;
       return innerContentPx - TOP_COLUMN_CHROME_PX - SAFETY_BUFFER;
   };
 
@@ -870,7 +883,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     setIsPaginating(true);
     const measureAndPaginate = () => {
         const examDensity = !includeExplanations;
-        const packingBlockBuffer = examDensity ? 0.85 : 1.45;
+        const packingBlockBuffer = examDensity ? 0.45 : 1.45;
         const gapCandidates = examDensity
           ? ([6, 7, 8, 9, 10, 11, 12, 13, 14] as const)
           : ([15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] as const);
@@ -950,12 +963,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
              const coreDiv = document.createElement('div'); 
              coreDiv.style.display = 'flex'; coreDiv.style.flexDirection = 'column'; coreDiv.style.marginBottom = '2px'; coreDiv.style.color = 'black';
-             const colA = q.columnA || q.column_a;
-             const colB = q.columnB || q.column_b;
-             const stemRaw =
-               q.type === 'matching' && colA && colB && colA.length > 0
-                 ? matchingStemTextForPaper(String(q.text || ''))
-                 : String(q.text || '');
+             const matchingForMeasure = resolveMatchingPaperColumns(q);
+             const colA = matchingForMeasure?.colA;
+             const colB = matchingForMeasure?.colB;
+             const stemRaw = matchingForMeasure?.stemForPaper ?? String(q.text || '');
+             const matchHeadL = matchingForMeasure?.headerLeft ?? 'Column A';
+             const matchHeadR = matchingForMeasure?.headerRight ?? 'Column B';
              const renderedQText = parsePseudoLatexAndMath(stemRaw);
              const qText = document.createElement('div'); 
              qText.innerHTML = `<b style="color: black;">${qIndex + 1}.</b> ${renderedQText}${showDifficulty ? ` <span style="font-size: 0.7em; font-weight: 900; border: 0.5pt solid black; padding: 1px 2px; text-transform: uppercase; margin-left: 4px; color: black;">${q.difficulty}</span>` : ''}`; 
@@ -977,11 +990,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                  coreDiv.appendChild(srcImg);
              }
 
-             if (q.type === 'matching' && colA && colB && colA.length > 0) {
+             if (colA && colB && colA.length > 0) {
                 const table = document.createElement('table');
                 table.style.width = '100%'; table.style.borderCollapse = 'collapse'; table.style.marginTop = '4px'; table.style.fontSize = '0.9em'; table.style.color = 'black'; table.style.border = '0.5pt solid black';
                 table.innerHTML = `
-                  <thead><tr style="border-bottom: 0.5pt solid black; background-color: #f8fafc;"><th style="text-align: left; width: 50%; padding: 4px; border-right: 0.5pt solid black; color: black;">Column A</th><th style="text-align: left; width: 50%; padding: 4px; color: black;">Column B</th></tr></thead>
+                  <thead><tr style="border-bottom: 0.5pt solid black; background-color: #f8fafc;"><th style="text-align: left; width: 50%; padding: 4px; border-right: 0.5pt solid black; color: black;">${matchHeadL}</th><th style="text-align: left; width: 50%; padding: 4px; color: black;">${matchHeadR}</th></tr></thead>
                   <tbody>${colA.map((ca: string, i: number) => `<tr style="border-bottom: 0.25pt solid #ddd;"><td style="padding: 4px; border-right: 0.5pt solid black; color: black;">(${matchingRowLetter(i)}) ${parsePseudoLatexAndMath(ca)}</td><td style="padding: 4px; color: black;">(${ROMAN_ROW_SUFFIX[i] ?? i + 1}) ${parsePseudoLatexAndMath(colB[i] || '')}</td></tr>`).join('')}</tbody>
                 `;
                 coreDiv.appendChild(table);
@@ -1043,12 +1056,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
             }
 
             let tableHeight = 0;
-            if (q.type === 'matching' && colA && colB && colA.length > 0) {
+            if (colA && colB && colA.length > 0) {
               const tableOnly = document.createElement('div');
               const table = document.createElement('table');
               table.style.width = '100%'; table.style.borderCollapse = 'collapse'; table.style.marginTop = '4px'; table.style.fontSize = '0.9em'; table.style.color = 'black'; table.style.border = '0.5pt solid black';
               table.innerHTML = `
-                <thead><tr style="border-bottom: 0.5pt solid black; background-color: #f8fafc;"><th style="text-align: left; width: 50%; padding: 4px; border-right: 0.5pt solid black; color: black;">Column A</th><th style="text-align: left; width: 50%; padding: 4px; color: black;">Column B</th></tr></thead>
+                <thead><tr style="border-bottom: 0.5pt solid black; background-color: #f8fafc;"><th style="text-align: left; width: 50%; padding: 4px; border-right: 0.5pt solid black; color: black;">${matchHeadL}</th><th style="text-align: left; width: 50%; padding: 4px; color: black;">${matchHeadR}</th></tr></thead>
                 <tbody>${colA.map((ca: string, i: number) => `<tr style="border-bottom: 0.25pt solid #ddd;"><td style="padding: 4px; border-right: 0.5pt solid black; color: black;">(${matchingRowLetter(i)}) ${parsePseudoLatexAndMath(ca)}</td><td style="padding: 4px; color: black;">(${ROMAN_ROW_SUFFIX[i] ?? i + 1}) ${parsePseudoLatexAndMath(colB[i] || '')}</td></tr>`).join('')}</tbody>
               `;
               tableOnly.appendChild(table);
@@ -1057,15 +1070,15 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               measureContainer.removeChild(tableOnly);
             }
 
-            const pretextFudge = examDensity ? 4 : 10;
+            const pretextFudge = examDensity ? 2 : 10;
             const pretextBasedCoreH = Math.ceil(pretextCoreHeight + tableHeight + pretextFudge);
             measureContainer.appendChild(coreDiv);
             const domCoreH = coreDiv.getBoundingClientRect().height;
             measureContainer.removeChild(coreDiv);
-            const isMatchingTable = q.type === 'matching' && colA && colB && colA.length > 0;
+            const isMatchingTable = !!(colA && colB && colA.length > 0);
             const useExamDomCore = examDensity && !isMatchingTable && domCoreH >= 6;
             const coreH = useExamDomCore
-              ? Math.ceil(domCoreH + 3)
+              ? Math.ceil(domCoreH + 1)
               : Math.max(pretextBasedCoreH, domCoreH * 0.92);
             unitBlocks.push({ type: 'question-core', question: q, globalIndex: qIndex, height: coreH });
 
@@ -1371,7 +1384,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     if (block.type === 'explanation-box') return Math.round(6 + gapPx);
     if (block.type === 'question-core') {
       if (next?.type === 'explanation-box' && next.question?.id === block.question?.id) return 2;
-      const base = includeExplanations ? 2 : 0.5;
+      // Former Tailwind space-y-1 (~4px) between column blocks is folded into margin so pagination and DOM stay aligned.
+      const base = includeExplanations ? 6 : 4.5;
       return Math.round(base + gapPx);
     }
     return undefined;
@@ -1385,10 +1399,24 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       showChoices: boolean;
       showSourceFigure: boolean;
       showDifficulty: boolean;
+      /** 1-based index following on-paper reading order (pagination / column packing). */
+      displayQuestionNumber?: number;
       onDelete?: (id: string) => void;
       onReplace?: (q: Question) => void;
       onFlag?: (q: Question, reason?: QuestionFlagReason) => void;
-  }> = ({ block, nextBlock, questionGapPx, examDensity, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
+  }> = ({
+    block,
+    nextBlock,
+    questionGapPx,
+    examDensity,
+    showChoices,
+    showSourceFigure,
+    showDifficulty,
+    displayQuestionNumber,
+    onDelete,
+    onReplace,
+    onFlag,
+  }) => {
       if (block.type === 'subject-header') return <div className="border-y border-black py-0.25 text-center font-black text-[0.9em] uppercase tracking-widest bg-white mb-3 mt-1 text-black">PART: {block.content}</div>;
       const q = block.question;
       if (!q) return null;
@@ -1412,13 +1440,16 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
           );
       }
 
-      const colA = q.columnA || q.column_a;
-      const colB = q.columnB || q.column_b;
-      const displayStem =
-        q.type === 'matching' && colA && colB && colA.length > 0
-          ? matchingStemTextForPaper(String(q.text || ''))
-          : String(q.text || '');
+      const matchingPaper = resolveMatchingPaperColumns(q);
+      const colA = matchingPaper?.colA;
+      const colB = matchingPaper?.colB;
+      const displayStem = matchingPaper?.stemForPaper ?? String(q.text || '');
+      const matchingTableHeaders = matchingPaper
+        ? { left: matchingPaper.headerLeft, right: matchingPaper.headerRight }
+        : { left: 'Column A', right: 'Column B' };
       const stableQid = String(q.originalId || q.id);
+      /** Remount KaTeX when paper typography changes so layout toggles always re-parse math. */
+      const paperMathLayoutKey = `${paperConfig.fontSize}:${paperConfig.lineHeight}:${paperConfig.gap}:${encodeURIComponent(paperConfig.fontFamily)}`;
       const isFlagged = flaggedQuestionIds.has(stableQid);
       const flagReasonStored = flagReasonsByQuestionId[stableQid];
       const flagTip = isFlagged ? flagReasonTooltip(flagReasonStored) : undefined;
@@ -1427,6 +1458,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       const sizeMap: Record<FigureSize, string> = { small: 'S', medium: 'M', large: 'L' };
       const heightMap: Record<FigureSize, string> = { small: '80px', medium: '120px', large: '180px' };
       const currentSize = figureSizes[q.id] || 'medium';
+      const stemNumber =
+        typeof displayQuestionNumber === 'number' ? displayQuestionNumber : (block.globalIndex ?? 0) + 1;
 
       return (
           <div
@@ -1512,9 +1545,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               </div>
   
               <div className="flex gap-1.5 items-start">
-                  <b className="shrink-0 text-black">{block.globalIndex! + 1}.</b>
+                  <b className="shrink-0 text-black tabular-nums">{stemNumber}.</b>
                   <div className="flex-1 text-black">
-                      <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(displayStem) }} />
+                      <PaperRich key={`${paperMathLayoutKey}-stem-${stableQid}`} text={displayStem} />
                       {showDifficulty && <span className="ml-1 px-1 py-0.25 rounded text-[0.6em] font-black uppercase border border-black align-middle inline-block leading-none text-black">{q.difficulty}</span>}
                   </div>
               </div>
@@ -1537,20 +1570,26 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                       <img src={q.sourceFigureDataUrl} className="max-h-[80px] object-contain mix-blend-multiply opacity-80" alt="Source Asset" />
                   </div>
               )}
-              {q.type === 'matching' && colA && colB && colA.length > 0 && (
+              {colA && colB && colA.length > 0 && (
                   <div className="ml-5 mt-2 mb-1.5 border border-black overflow-hidden rounded-sm">
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em', color: 'black' }}>
                           <thead>
                               <tr style={{ borderBottom: '0.5pt solid black', backgroundColor: '#f8fafc' }}>
-                                  <th style={{ textAlign: 'left', width: '50%', padding: '4px', borderRight: '0.5pt solid black', color: 'black' }}>Column A</th>
-                                  <th style={{ textAlign: 'left', width: '50%', padding: '4px', color: 'black' }}>Column B</th>
+                                  <th style={{ textAlign: 'left', width: '50%', padding: '4px', borderRight: '0.5pt solid black', color: 'black' }}>{matchingTableHeaders.left}</th>
+                                  <th style={{ textAlign: 'left', width: '50%', padding: '4px', color: 'black' }}>{matchingTableHeaders.right}</th>
                               </tr>
                           </thead>
                           <tbody>
                               {colA.map((ca: string, i: number) => (
                                   <tr key={i} style={{ borderBottom: '0.25pt solid #eee' }}>
-                                      <td style={{ padding: '4px', borderRight: '0.5pt solid black', color: 'black' }}>({matchingRowLetter(i)}) <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(ca) }} /></td>
-                                      <td style={{ padding: '4px', color: 'black' }}>({ROMAN_ROW_SUFFIX[i] ?? i + 1}) <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(colB[i] || '') }} /></td>
+                                      <td style={{ padding: '4px', borderRight: '0.5pt solid black', color: 'black' }}>
+                                        ({matchingRowLetter(i)}){' '}
+                                        <PaperRich key={`${paperMathLayoutKey}-ca-${stableQid}-${i}`} text={ca} />
+                                      </td>
+                                      <td style={{ padding: '4px', color: 'black' }}>
+                                        ({ROMAN_ROW_SUFFIX[i] ?? i + 1}){' '}
+                                        <PaperRich key={`${paperMathLayoutKey}-cb-${stableQid}-${i}`} text={colB[i] || ''} />
+                                      </td>
                                   </tr>
                               ))}
                           </tbody>
@@ -1563,7 +1602,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                           {q.options.map((o: string, i: number) => (
                               <div key={i} className="flex min-w-0 gap-1.5 items-start">
                                   <span className="shrink-0 text-black">({i + 1})</span>
-                                  <span className="min-w-0" dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(o) }} />
+                                  <PaperRich key={`${paperMathLayoutKey}-opt-${stableQid}-${i}`} text={o} className="min-w-0" />
                               </div>
                           ))}
                       </div>
@@ -1572,7 +1611,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                           {q.options.map((o: string, i: number) => (
                               <div key={i} className="flex gap-1.5 items-start leading-tight">
                                   <span className="shrink-0 text-black">({i + 1})</span>
-                                  <span dangerouslySetInnerHTML={{ __html: parsePseudoLatexAndMath(o) }} />
+                                  <PaperRich key={`${paperMathLayoutKey}-opt-${stableQid}-${i}`} text={o} />
                               </div>
                           ))}
                       </div>
@@ -1908,37 +1947,43 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                         const innerCol = (
                                 <div className="relative flex h-full min-h-0 flex-col">
                                 {!isAnswerKeyPage && !p.isCover && (
-                                    <>
-                                        <div
-                                            aria-hidden="true"
-                                            className="absolute left-1/2 w-[0.5pt] bg-black -translate-x-1/2 z-10 pointer-events-none"
-                                            style={{
-                                                top: `${paperConfig.marginY + 3}mm`,
-                                                bottom: '7.25mm'
-                                            }}
-                                        />
-                                        <div
-                                            aria-hidden="true"
-                                            className="absolute h-[0.5pt] bg-black z-10 pointer-events-none"
-                                            style={{
-                                                left: `${paperConfig.marginX}mm`,
-                                                right: `${paperConfig.marginX}mm`,
-                                                bottom: '6.4mm'
-                                            }}
-                                        />
-                                    </>
+                                    <div
+                                        aria-hidden="true"
+                                        className="absolute h-[0.5pt] bg-black z-10 pointer-events-none"
+                                        style={{
+                                            left: `${paperConfig.marginX}mm`,
+                                            right: `${paperConfig.marginX}mm`,
+                                            bottom: '6.4mm',
+                                        }}
+                                    />
                                 )}
                                 <div 
                                   className="flex-1 flex flex-col"
-                                  style={{
-                                    padding: p.isCover ? `1.5mm` : `${paperConfig.marginY}mm ${paperConfig.marginX}mm`,
-                                    fontSize: `${paperConfig.fontSize}pt`,
-                                    lineHeight: `${paperConfig.lineHeight}`,
-                                    transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
-                                  }}
+                                  style={
+                                    p.isCover
+                                      ? {
+                                          padding: '1.5mm',
+                                          fontSize: `${paperConfig.fontSize}pt`,
+                                          lineHeight: `${paperConfig.lineHeight}`,
+                                          transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
+                                        }
+                                      : {
+                                          paddingTop: `${paperConfig.marginY * QUESTION_PAGE_TOP_MARGIN_FRAC}mm`,
+                                          paddingRight: `${paperConfig.marginX}mm`,
+                                          paddingBottom: `${paperConfig.marginY}mm`,
+                                          paddingLeft: `${paperConfig.marginX}mm`,
+                                          fontSize: `${paperConfig.fontSize}pt`,
+                                          lineHeight: `${paperConfig.lineHeight}`,
+                                          transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
+                                        }
+                                  }
                                 >
                                 {isAnswerKeyPage ? (
-                                    <AnswerKeyPage questions={currentQuestions} brandConfig={brandConfig} topic={editableTopic} />
+                                    <AnswerKeyPage
+                                      questions={questionsOrderedForAnswerKey}
+                                      brandConfig={brandConfig}
+                                      topic={editableTopic}
+                                    />
                                 ) : p.isCover ? (
                                     <div className="flex-1 flex flex-col border-[1.2pt] border-black p-[2.5mm] relative">
                                         <div className="flex flex-col items-center text-center mt-0.5 mb-1 shrink-0">
@@ -2008,11 +2053,31 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                     </div>
                                 ) : (
                                     <div className="flex-1 flex flex-col text-black bg-white relative h-full">
-                                        <div className="w-full h-[0.5pt] bg-black mb-3 shrink-0"></div>
-                                        
-                                        <div className="flex-1 relative flex" style={{ gap: `${paperConfig.gap}mm` }}>
-                                            
-                                            <div className="flex-1 overflow-hidden space-y-1 relative z-10 pr-1">
+                                        <div className="mb-0.5 flex min-h-[6mm] shrink-0 items-center justify-between gap-2 px-0.5">
+                                          <span className="max-w-[65%] truncate text-[8pt] font-black uppercase tracking-wide text-black leading-none">
+                                            {brandConfig.name}
+                                          </span>
+                                          {brandConfig.logo ? (
+                                            <img
+                                              src={brandConfig.logo}
+                                              alt=""
+                                              className="h-6 max-h-[7mm] w-auto max-w-[30mm] object-contain object-right"
+                                            />
+                                          ) : (
+                                            <span className="shrink-0" aria-hidden />
+                                          )}
+                                        </div>
+                                        <div className="mb-2 h-[0.5pt] w-full shrink-0 bg-black" />
+
+                                        <div
+                                            className="relative flex min-h-0 flex-1"
+                                            style={{ gap: `${paperConfig.gap}mm` }}
+                                        >
+                                            <div
+                                                aria-hidden="true"
+                                                className="pointer-events-none absolute bottom-0 left-1/2 top-0 z-0 w-[0.5pt] -translate-x-1/2 bg-black"
+                                            />
+                                            <div className="relative z-10 flex-1 overflow-hidden pr-1">
                                                 {p.leftCol.map((b, bi) => (
                                                   <BlockRenderer
                                                     key={bi}
@@ -2023,13 +2088,20 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                                     showChoices={showChoices}
                                                     showSourceFigure={showSourceFigure}
                                                     showDifficulty={showDifficulty}
+                                                    displayQuestionNumber={
+                                                      b.type === 'question-core' && b.question
+                                                        ? paperQuestionNumberById.get(
+                                                            String(b.question.originalId || b.question.id)
+                                                          )
+                                                        : undefined
+                                                    }
                                                     onDelete={handleDeleteQuestion}
                                                     onReplace={handleReplaceQuestion}
                                                     onFlag={handleFlagQuestion}
                                                   />
                                                 ))}
                                             </div>
-                                            <div className="flex-1 overflow-hidden space-y-1 relative z-10 pl-1">
+                                            <div className="relative z-10 flex-1 overflow-hidden pl-1">
                                                 {p.rightCol.map((b, bi) => (
                                                   <BlockRenderer
                                                     key={bi}
@@ -2040,6 +2112,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                                     showChoices={showChoices}
                                                     showSourceFigure={showSourceFigure}
                                                     showDifficulty={showDifficulty}
+                                                    displayQuestionNumber={
+                                                      b.type === 'question-core' && b.question
+                                                        ? paperQuestionNumberById.get(
+                                                            String(b.question.originalId || b.question.id)
+                                                          )
+                                                        : undefined
+                                                    }
                                                     onDelete={handleDeleteQuestion}
                                                     onReplace={handleReplaceQuestion}
                                                     onFlag={handleFlagQuestion}
@@ -2065,16 +2144,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                     </div>
                                 )}
                                 </div>
-                                <div className="mt-auto pt-0 pb-0 px-6 flex justify-between items-center text-[6pt] font-black text-black/40 uppercase tracking-[0.15em] leading-none shrink-0">
-                                    <div className="flex flex-col items-start gap-0">
-                                        <div className="w-full h-[0.5pt] bg-black/10 mb-0"></div>
-                                        <span className="leading-none">{editableTopic}</span>
-                                    </div>
-                                    <span className="font-serif italic text-black font-normal normal-case pt-0 leading-none">integrated assessment engine</span>
-                                    <div className="flex flex-col items-end leading-none">
-                                        <div className="w-[22mm] h-[0.5pt] bg-black/20"></div>
-                                        <span className="mt-0">Page {idx + 1} / {pages.length}</span>
-                                    </div>
+                                <div
+                                    className="mt-auto flex shrink-0 justify-end pb-0.5 pt-0.5 leading-none"
+                                    style={{ paddingRight: `${paperConfig.marginX}mm` }}
+                                >
+                                    <span className="text-[6pt] font-semibold tabular-nums text-black">
+                                        Page {idx + 1} / {pages.length}
+                                    </span>
                                 </div>
                                 </div>
                         );
