@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { supabase } from './client';
 import { landingTheme } from '../Landing/theme';
+import { KiwiTeachLogoMark } from '../Landing/KiwiTeachLogoMark';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -116,7 +117,15 @@ const AuthUI: React.FC<AuthUIProps> = ({
           : 'Choose a new password for your account.';
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-teal-50/50 via-[#f5f6fb] to-indigo-50/40 p-4 font-sans">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-teal-50/50 via-[#f5f6fb] to-indigo-50/40 p-4 font-sans">
+      {(mode === 'login' || mode === 'signup') && (
+        <div className="mb-5 flex flex-col items-center gap-2.5 text-center">
+          <KiwiTeachLogoMark className="h-10 w-10 rounded-[11px] opacity-[0.92] shadow-sm ring-1 ring-black/[0.04]" decorative />
+          <p className="text-[13px] font-medium tracking-tight text-zinc-500">
+            Welcome to <span className="text-zinc-800">KiwiTeach</span>
+          </p>
+        </div>
+      )}
       <Card
         size="sm"
         className={cn(

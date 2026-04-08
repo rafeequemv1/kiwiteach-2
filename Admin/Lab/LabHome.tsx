@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '../../supabase/client';
 import { forgeSequentialQuestions, ensureApiKey, downsampleImage, getSystemPrompt } from '../../services/geminiService';
 import { bankLabelForTextGenerationModel } from '../../services/studioGenerationModelLabels';
+import { assertBankRowsPassLatexValidation } from '../../utils/latexBankValidation';
 import { Question, QuestionType } from '../../Quiz/types';
 import QuestionPaperItem from '../../Quiz/components/QuestionPaperItem';
 
@@ -147,6 +148,7 @@ const LabHome: React.FC<LabHomeProps> = ({ onBack, embedded }) => {
               generation_model: item.generation_model ?? bankLabelForTextGenerationModel(config.model),
           }));
 
+          assertBankRowsPassLatexValidation(cleanData, { chapterName: 'Batch Forge (Lab)' });
           const { error } = await supabase.from('question_bank_neet').insert(cleanData);
           if (error) throw error;
           

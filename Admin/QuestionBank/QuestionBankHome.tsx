@@ -25,6 +25,7 @@ import {
   type AnalysisTableRow,
 } from '../../services/forgeBatchAnalysis';
 import { QuestionType, Question } from '../../Quiz/types';
+import { assertBankRowsPassLatexValidation } from '../../utils/latexBankValidation';
 
 /** Scale Easy/Medium/Hard template to sum exactly to `total` (largest remainder). Used when splitting forge into per-style API calls. */
 function scaleDifficultyToTotal(
@@ -1543,6 +1544,7 @@ const QuestionBankHome: React.FC = () => {
                       selectedModel,
                       batchPromptSetName
                     );
+                    assertBankRowsPassLatexValidation(rows, { chapterName: String(chapter.name) });
                     const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
                     if (insertErr) {
                       throw new Error(
@@ -1710,6 +1712,7 @@ const QuestionBankHome: React.FC = () => {
             };
           })
         );
+        assertBankRowsPassLatexValidation(rows);
         const { error } = await supabase.from('question_bank_neet').insert(rows);
         if (error) throw error;
         alert(`Synced ${reviewQueue.length} items.`);

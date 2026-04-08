@@ -132,63 +132,6 @@ function unwrapTextWrappedMathCommands(str: string): string {
 }
 
 /**
- * `\\dfrac{…}{…}` with nested `\\text`, `^\\text{o}`, etc. exceeds the regex “balanced braces” depth.
- * Scan with real brace counting and render to KaTeX first so saved explanations still display.
- */
-function preprocessDfracBlocks(str: string, renderedBlocks: string[]): string {
-  const cmd = '\\dfrac';
-  let i = 0;
-  let out = '';
-  while (i < str.length) {
-    const idx = str.indexOf(cmd, i);
-    if (idx === -1) {
-      out += str.slice(i);
-      break;
-    }
-    out += str.slice(i, idx);
-    let p = idx + cmd.length;
-    while (p < str.length && /\s/.test(str[p])) p++;
-    if (p >= str.length || str[p] !== '{') {
-      out += cmd;
-      i = idx + cmd.length;
-      continue;
-    }
-    const end1 = endOfBalancedGroup(str, p);
-    if (end1 === null) {
-      out += cmd;
-      i = idx + cmd.length;
-      continue;
-    }
-    let p2 = end1;
-    while (p2 < str.length && /\s/.test(str[p2])) p2++;
-    if (p2 >= str.length || str[p2] !== '{') {
-      out += str.slice(idx, end1);
-      i = end1;
-      continue;
-    }
-    const end2 = endOfBalancedGroup(str, p2);
-    if (end2 === null) {
-      out += cmd;
-      i = idx + cmd.length;
-      continue;
-    }
-    const full = str.slice(idx, end2);
-    const html = katex.renderToString(full.trim(), {
-      throwOnError: false,
-      errorColor: '#000000',
-      displayMode: false,
-      trust: true,
-      strict: false,
-      macros: { '\\frac': '\\dfrac' },
-    });
-    renderedBlocks.push(html);
-    out += ktxPlaceholder(renderedBlocks.length - 1);
-    i = end2;
-  }
-  return out;
-}
-
-/**
  * Robust LaTeX and Math Parser for Academic Content.
  * Handles standard delimiters ($, $$, \[, \() and "Lazy LaTeX" 
  * where common commands like \sqrt, \frac, and exponents are not wrapped.
@@ -205,7 +148,10 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   processedText = processedText.replace(/\\triangleriangle\b/gi, '\\Delta');
 
   // Model placeholder glyphs (empty numeric slots) — avoid KaTeX / font tofu in explanations.
-  processedText = processedText.replace(/\u25A1/g, '?').replace(/\uFFFD/g, '?');
+  processedText = processedText
+    .replace(/\u25A1/g, '?')
+    .replace(/\uFFFD/g, '?')
+    .replace(/\u25AF/g, '?');
 
   // JSON double-escape artifact: \_ \{name\} → _{name} (closing may be \} or }).
   processedText = processedText.replace(/\\_\{([^}\\]{1,64})\\}/g, '_{$1}');
@@ -348,12 +294,13 @@ export const parsePseudoLatexAndMath = (text: string): string => {
 
   // Balanced `{…}` for regex fallback (dfrac is handled separately with real brace counting).
   let balancedBraces = '[^{}]*';
-  for (let d = 0; d < 7; d++) {
+  for (let d = 0; d < 12; d++) {
     balancedBraces = `(?:[^{}]|{${balancedBraces}})*`;
   }
 
   const renderedBlocks: string[] = [];
-  processedText = preprocessDfracBlocks(processedText, renderedBlocks);
+  // Note: do not pre-render \\dfrac into sentinels here — that breaks $...$ blocks (e.g.
+  // $\\sqrt{\\dfrac{a}{b}}$) by injecting BMP sentinels into math KaTeX must parse.
 
   const mathChemRegex = new RegExp(
     // 1. Explicit Math Environments
@@ -361,8 +308,8 @@ export const parsePseudoLatexAndMath = (text: string): string => {
     // 2. Functions with braces (Depth 2 support)
     // Matches \cmd{arg1}{arg2} or \cmd{arg1}
     '\\\\(?:' + funcs + ')\\s*\\{' + balancedBraces + '\\}(?:\\s*\\{' + balancedBraces + '\\})?|' +
-    // 3. Standalone Symbols (must be matched as whole words to avoid prefix matching)
-    '\\\\(?:' + symbols + ')\\b|' +
+    // 3. Standalone symbols + optional subscript/superscript (\\omega_0 — \b after \\omega alone fails)
+    '\\\\(?:' + symbols + ')(?:_[a-zA-Z0-9]+|_\\{[^{}]+\\}|\\^[a-zA-Z0-9]+|\\^\\{[^{}]+\\})?\\b|' +
     // 4. Lazy Sub/Superscripts (trailing check)
     // Allows optional space around operator: x ^ 2
     '(?<=[\\s\\w)\\]}.,:;+\\-*/=<>|]|^)[a-zA-Z0-9]*\\s*[\\^_]\\s*\\{?[a-zA-Z0-9+\\-]+\\}?(?=[\\s\\w)\\]}.,:;+\\-*/=<>|]|$))',
