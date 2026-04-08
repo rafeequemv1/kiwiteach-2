@@ -8,6 +8,7 @@ import { Question } from '../../Quiz/types';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { getLatexIssuesForBankRow, type LatexFieldIssue } from '../../utils/latexBankValidation';
+import { LATEX_RENDER_GALLERY } from './latexRenderGalleryData';
 
 interface QuestionDbLatexLabProps {
   onBack: () => void;
@@ -20,7 +21,7 @@ const MODEL_OPTIONS = [
   { id: 'gemini-flash-lite-latest', label: 'Gemini Flash Lite' },
 ] as const;
 
-type LabMode = 'sample' | 'scan';
+type LabMode = 'sample' | 'scan' | 'gallery';
 
 type ScanResultView = 'failures_table' | 'all_rendered';
 
@@ -380,7 +381,7 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex rounded-lg bg-black/20 p-0.5">
+            <div className="flex flex-wrap rounded-lg bg-black/20 p-0.5">
               <button
                 type="button"
                 onClick={() => setLabMode('sample')}
@@ -399,6 +400,15 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
               >
                 Scan bank
               </button>
+              <button
+                type="button"
+                onClick={() => setLabMode('gallery')}
+                className={`rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
+                  labMode === 'gallery' ? 'bg-white text-violet-900 shadow-sm' : 'text-violet-200 hover:text-white'
+                }`}
+              >
+                Render matrix
+              </button>
             </div>
             <button
               type="button"
@@ -412,7 +422,20 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
           <aside className="w-full shrink-0 space-y-4 overflow-y-auto border-b border-zinc-200 bg-zinc-50/90 p-5 md:w-[300px] md:border-b-0 md:border-r">
-            {labMode === 'sample' ? (
+            {labMode === 'gallery' ? (
+              <div className="space-y-3 text-[11px] leading-relaxed text-zinc-600">
+                <p className="font-semibold text-zinc-800">Symbol & structure matrix</p>
+                <p>
+                  Each row uses the same pipeline as the question paper:{' '}
+                  <span className="font-mono text-[10px]">parsePseudoLatexAndMath</span> → KaTeX HTML, plus{' '}
+                  <span className="font-mono text-[10px]">[SMILES:…]</span> where shown.
+                </p>
+                <p className="text-zinc-500">
+                  Raw LaTeX is on the left; rendered output on the right. Use this to spot parser gaps vs invalid bank
+                  strings.
+                </p>
+              </div>
+            ) : labMode === 'sample' ? (
               <>
                 <div>
                   <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -620,7 +643,52 @@ const QuestionDbLatexLab: React.FC<QuestionDbLatexLabProps> = ({ onBack, embedde
           </aside>
 
           <main className="min-h-0 flex-1 overflow-y-auto bg-white p-5">
-            {labMode === 'sample' ? (
+            {labMode === 'gallery' ? (
+              <div className="space-y-10 pb-8">
+                <div className="rounded-xl border border-violet-200 bg-violet-50/60 px-4 py-3 text-[11px] text-violet-950">
+                  <p className="font-semibold">Coverage note</p>
+                  <p className="mt-1 text-violet-900/90">
+                    This matrix is representative, not exhaustive. Extend{' '}
+                    <span className="font-mono text-[10px]">Admin/Lab/latexRenderGalleryData.ts</span> when you add new
+                    patterns from the bank.
+                  </p>
+                </div>
+                {LATEX_RENDER_GALLERY.map((section) => (
+                  <section key={section.title} className="scroll-mt-4">
+                    <h3 className="mb-1 text-sm font-bold tracking-tight text-zinc-900">{section.title}</h3>
+                    {section.description ? (
+                      <p className="mb-3 text-[11px] text-zinc-500">{section.description}</p>
+                    ) : (
+                      <div className="mb-3" />
+                    )}
+                    <div className="overflow-hidden rounded-xl border border-zinc-200">
+                      {section.items.map((item, idx) => (
+                        <div
+                          key={`${section.title}-${idx}`}
+                          className="grid border-b border-zinc-200 last:border-b-0 md:grid-cols-2"
+                        >
+                          <div className="border-b border-zinc-200 bg-zinc-900 p-3 md:border-b-0 md:border-r md:border-zinc-200">
+                            {item.label ? (
+                              <span className="mb-1 block text-[9px] font-bold uppercase tracking-wider text-violet-300">
+                                {item.label}
+                              </span>
+                            ) : null}
+                            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-snug text-zinc-100">
+                              {item.code}
+                            </pre>
+                          </div>
+                          <div className="min-h-[3rem] bg-white p-3 text-sm leading-relaxed text-zinc-900">
+                            <div className="math-content">
+                              {renderWithSmiles(parsePseudoLatexAndMath(item.code), 120)}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : labMode === 'sample' ? (
               <>
                 {!results?.length && !busy ? (
                   <div className="flex h-full min-h-[240px] flex-col items-center justify-center text-center text-zinc-400">

@@ -82,12 +82,15 @@ function unwrapTextWrappedMathCommands(str: string): string {
         }
         const inner = result.slice(openIdx + 1, closeK - 1);
         const lead = inner.match(/^\s*/)?.[0].length ?? 0;
-        const rest = inner.slice(lead);
+        const innerAfterLead = inner.slice(lead);
+        const disp = innerAfterLead.match(/^\\displaystyle\s*/i);
+        const displaySkip = disp ? disp[0].length : 0;
+        const rest = innerAfterLead.slice(displaySkip);
         if (!rest) {
           i = closeK;
           continue;
         }
-        const contentStart = openIdx + 1 + lead;
+        const contentStart = openIdx + 1 + lead + displaySkip;
 
         for (const mc of UNWRAP_INNER_MATH_PREFIXES) {
           if (!rest.startsWith(mc)) continue;
@@ -146,6 +149,16 @@ export const parsePseudoLatexAndMath = (text: string): string => {
 
   // Model typo: "triangleriangle" (ΔK / change) — map to capital Delta.
   processedText = processedText.replace(/\\triangleriangle\b/gi, '\\Delta');
+  // Duplicate token / bad export: "\triangletriangle" (meant Δ, e.g. ΔK) — not valid KaTeX.
+  processedText = processedText.replace(/\\triangletriangle(?=[A-Za-z])/gi, '\\Delta ');
+  processedText = processedText.replace(/\\triangletriangle/gi, '\\Delta');
+
+  // `\int` (and similar) inside `\text{\displaystyle ...}` renders as raw text in KaTeX.
+  processedText = processedText.replace(/\\text\{\s*\\displaystyle\s*\\int\s*\}/gi, '\\int');
+  processedText = processedText.replace(/\\mathrm\{\s*\\displaystyle\s*\\int\s*\}/gi, '\\int');
+
+  // LLM / DB line wraps mid-fraction: \dfrac{F}\n{m_1+...}  →  \dfrac{F}{m_1+...
+  processedText = processedText.replace(/\\(?:dfrac|frac)\{([^{}]+)\}\s*\r?\n\s*\{/g, '\\dfrac{$1}{');
 
   // Model placeholder glyphs (empty numeric slots) — avoid KaTeX / font tofu in explanations.
   processedText = processedText
@@ -301,6 +314,20 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   const renderedBlocks: string[] = [];
   // Note: do not pre-render \\dfrac into sentinels here — that breaks $...$ blocks (e.g.
   // $\\sqrt{\\dfrac{a}{b}}$) by injecting BMP sentinels into math KaTeX must parse.
+
+  // `$...$` split across one line break never matches `\$[^$\n]+?\$`; join into a single pair.
+  {
+    let mergeGuard = 0;
+    let prevMerge = '';
+    while (prevMerge !== processedText && mergeGuard < 48) {
+      prevMerge = processedText;
+      processedText = processedText.replace(
+        /\$([^$\n]+)\r?\n[ \t]*([^$\n]*)\$/g,
+        '$$$1 $2$$'
+      );
+      mergeGuard++;
+    }
+  }
 
   const mathChemRegex = new RegExp(
     // 1. Explicit Math Environments

@@ -86,16 +86,23 @@ function matchingStemTextForPaper(raw: string): string {
 
 /** Max plain-text length per option to allow exam-style 2×2 choice layout (stem + choices stay one block). */
 const COMPACT_OPTION_MAX_PLAIN_LEN = 60;
+const COMPACT_OPTION_MAX_PLAIN_LEN_EXAM = 84;
+/** When exam-dense, avoid grid if total plain length is huge (one long option can still pass per-option cap). */
+const COMPACT_OPTION_TOTAL_PLAIN_MAX_EXAM = 260;
 
-function shouldUseCompactOptionGrid(options: string[] | undefined | null): boolean {
+function shouldUseCompactOptionGrid(options: string[] | undefined | null, examDense = false): boolean {
   if (!options || options.length !== 4) return false;
+  const maxLen = examDense ? COMPACT_OPTION_MAX_PLAIN_LEN_EXAM : COMPACT_OPTION_MAX_PLAIN_LEN;
+  let totalPlain = 0;
   for (const o of options) {
     const raw = String(o || '');
     if (!raw.trim()) return false;
     if (/<img\b/i.test(raw)) return false;
     const plain = htmlToPlainText(parsePseudoLatexAndMath(raw));
-    if (plain.length > COMPACT_OPTION_MAX_PLAIN_LEN) return false;
+    if (plain.length > maxLen) return false;
+    totalPlain += plain.length;
   }
+  if (examDense && totalPlain > COMPACT_OPTION_TOTAL_PLAIN_MAX_EXAM) return false;
   return true;
 }
 
@@ -277,13 +284,14 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   
   const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(initialLayoutConfig?.viewMode || 'scroll');
   const [showChoices, setShowChoices] = useState(true);
-  const [includeExplanations, setIncludeExplanations] = useState(initialLayoutConfig?.includeExplanations ?? true);
+  /** Default off: exam-style packing and print; saved tests restore from `initialLayoutConfig`. */
+  const [includeExplanations, setIncludeExplanations] = useState(initialLayoutConfig?.includeExplanations ?? false);
   const [showSourceFigure, setShowSourceFigure] = useState(false);
   const [showTopics, setShowTopics] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
   const [showDifficulty, setShowDifficulty] = useState(initialLayoutConfig?.showDifficulty ?? false);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
-  /** Gap after each question (px); pagination picks 15–25 for tight bottom fill, display uses chosen value. */
+  /** Gap after each question (px); pagination sweeps a range (tighter when explanations are off). */
   const [appliedQuestionGapPx, setAppliedQuestionGapPx] = useState(20);
   const [allowPastReplacements, setAllowPastReplacements] = useState(sourceOptions?.allowPastQuestions ?? false);
   const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
@@ -850,10 +858,6 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const PAGE_FOOTER_META_STRIP_PX = 34;
   /** Thin rule + mb-3 above the two columns. */
   const TOP_COLUMN_CHROME_PX = 14;
-  /** Per-block slack in pagination height sums (replaces former space-optimizer-driven buffer). */
-  const PACKING_BLOCK_BUFFER = 1.45;
-  const GAP_CANDIDATES = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] as const;
-  const TARGET_QUESTION_GAP_PX = 20;
 
   const getColumnHeightLimit = (_pIdx: number) => {
       const marginYPx = paperConfig.marginY * MM_TO_PX;
@@ -865,6 +869,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   useEffect(() => {
     setIsPaginating(true);
     const measureAndPaginate = () => {
+        const examDensity = !includeExplanations;
+        const packingBlockBuffer = examDensity ? 0.85 : 1.45;
+        const gapCandidates = examDensity
+          ? ([6, 7, 8, 9, 10, 11, 12, 13, 14] as const)
+          : ([15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] as const);
+        const targetQuestionGapPx = examDensity ? 10 : 20;
+
         const pageWidthMm = 210;
         const availableWidthMm = pageWidthMm - (paperConfig.marginX * 2) - paperConfig.gap;
         const colWidthMm = availableWidthMm / 2;
@@ -978,7 +989,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
              if (showChoices && Array.isArray(q.options)) {
                  const opts = document.createElement('div');
-                 const compactOpts = shouldUseCompactOptionGrid(q.options);
+                 const compactOpts = shouldUseCompactOptionGrid(q.options, examDensity);
                  opts.innerHTML = choicesInnerHtmlForMeasure(q.options, compactOpts);
                  coreDiv.appendChild(opts);
              }
@@ -993,7 +1004,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
             if (showChoices && Array.isArray(q.options)) {
               const optionLineHeight = Math.max(14, lineHeightPx * 0.95);
-              const compactOpts = shouldUseCompactOptionGrid(q.options);
+              const compactOpts = shouldUseCompactOptionGrid(q.options, examDensity);
               if (compactOpts) {
                 const halfW = Math.max(28, (contentWidthPx - 28) / 2);
                 for (const pair of [
@@ -1046,11 +1057,16 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               measureContainer.removeChild(tableOnly);
             }
 
-            const pretextBasedCoreH = Math.ceil(pretextCoreHeight + tableHeight + 10);
+            const pretextFudge = examDensity ? 4 : 10;
+            const pretextBasedCoreH = Math.ceil(pretextCoreHeight + tableHeight + pretextFudge);
             measureContainer.appendChild(coreDiv);
             const domCoreH = coreDiv.getBoundingClientRect().height;
             measureContainer.removeChild(coreDiv);
-            const coreH = Math.max(pretextBasedCoreH, domCoreH * 0.92);
+            const isMatchingTable = q.type === 'matching' && colA && colB && colA.length > 0;
+            const useExamDomCore = examDensity && !isMatchingTable && domCoreH >= 6;
+            const coreH = useExamDomCore
+              ? Math.ceil(domCoreH + 3)
+              : Math.max(pretextBasedCoreH, domCoreH * 0.92);
             unitBlocks.push({ type: 'question-core', question: q, globalIndex: qIndex, height: coreH });
 
              if (includeExplanations) {
@@ -1096,7 +1112,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
              const hasQuestionCore = unitBlocks.some((b) => b.type === 'question-core');
              unitPackList.push({
                blocks: unitBlocks,
-               baseSum: unitBlocks.reduce((sum, b) => sum + b.height + PACKING_BLOCK_BUFFER, 0),
+               baseSum: unitBlocks.reduce((sum, b) => sum + b.height + packingBlockBuffer, 0),
                hasQuestionCore,
                forceBreak: forcedBreaks.has(q.id),
                questionCount: unitBlocks.filter((b) => b.type === 'question-core').length,
@@ -1296,9 +1312,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
         let bestTuple: [number, number] = [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
         let bestPages: PageLayout[] | null = null;
-        let bestGap = TARGET_QUESTION_GAP_PX;
+        let bestGap = targetQuestionGapPx;
 
-        for (const packGap of GAP_CANDIDATES) {
+        for (const packGap of gapCandidates) {
           const { draftPages, tuple } = paginateForGap(packGap);
           if (!bestPages || scoreTupleBetter(tuple, bestTuple)) {
             bestTuple = tuple;
@@ -1355,7 +1371,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     if (block.type === 'explanation-box') return Math.round(6 + gapPx);
     if (block.type === 'question-core') {
       if (next?.type === 'explanation-box' && next.question?.id === block.question?.id) return 2;
-      return Math.round(2 + gapPx);
+      const base = includeExplanations ? 2 : 0.5;
+      return Math.round(base + gapPx);
     }
     return undefined;
   };
@@ -1364,13 +1381,14 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       block: QuizBlock;
       nextBlock?: QuizBlock;
       questionGapPx: number;
+      examDensity: boolean;
       showChoices: boolean;
       showSourceFigure: boolean;
       showDifficulty: boolean;
       onDelete?: (id: string) => void;
       onReplace?: (q: Question) => void;
       onFlag?: (q: Question, reason?: QuestionFlagReason) => void;
-  }> = ({ block, nextBlock, questionGapPx, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
+  }> = ({ block, nextBlock, questionGapPx, examDensity, showChoices, showSourceFigure, showDifficulty, onDelete, onReplace, onFlag }) => {
       if (block.type === 'subject-header') return <div className="border-y border-black py-0.25 text-center font-black text-[0.9em] uppercase tracking-widest bg-white mb-3 mt-1 text-black">PART: {block.content}</div>;
       const q = block.question;
       if (!q) return null;
@@ -1540,7 +1558,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                   </div>
               )}
               {showChoices && q.options && (
-                  shouldUseCompactOptionGrid(q.options) ? (
+                  shouldUseCompactOptionGrid(q.options, examDensity) ? (
                       <div className="ml-5 mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 font-medium text-black leading-tight">
                           {q.options.map((o: string, i: number) => (
                               <div key={i} className="flex min-w-0 gap-1.5 items-start">
@@ -2001,6 +2019,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                                     block={b}
                                                     nextBlock={p.leftCol[bi + 1]}
                                                     questionGapPx={appliedQuestionGapPx}
+                                                    examDensity={!includeExplanations}
                                                     showChoices={showChoices}
                                                     showSourceFigure={showSourceFigure}
                                                     showDifficulty={showDifficulty}
@@ -2017,6 +2036,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                                                     block={b}
                                                     nextBlock={p.rightCol[bi + 1]}
                                                     questionGapPx={appliedQuestionGapPx}
+                                                    examDensity={!includeExplanations}
                                                     showChoices={showChoices}
                                                     showSourceFigure={showSourceFigure}
                                                     showDifficulty={showDifficulty}
