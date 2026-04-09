@@ -9,6 +9,7 @@ import {
   profileToGlobalTypes,
   type ChapterRowForProfileExpand,
 } from '../services/expandExamPaperProfile';
+import { paperChapterSubjectLine } from '../utils/paperSubjectLabel';
 
 export interface NewTestPickerConfirmPayload {
   chapters: SelectedChapter[];
@@ -43,6 +44,7 @@ interface ChapterRow {
   subject_id: string;
   subject_name?: string | null;
   class_name?: string | null;
+  biology_branch?: 'botany' | 'zoology' | null;
 }
 
 interface NewTestChapterPickerModalProps {
@@ -52,18 +54,26 @@ interface NewTestChapterPickerModalProps {
   title?: string;
 }
 
-const buildSelectedChapter = (ch: ChapterRow, count: number): SelectedChapter => ({
-  id: ch.id,
-  name: ch.name,
-  subjectName: ch.subject_name || '',
-  className: ch.class_name || '',
-  count: Math.max(0, Math.round(count)),
-  figureCount: 0,
-  difficulty: 'Global',
-  source: 'db',
-  selectionMode: 'count',
-  visualMode: 'image',
-});
+const buildSelectedChapter = (ch: ChapterRow, count: number): SelectedChapter => {
+  const sn = (ch.subject_name || '').trim().toLowerCase();
+  let biology_branch: 'botany' | 'zoology' | null = null;
+  if (sn === 'botany') biology_branch = 'botany';
+  else if (sn === 'zoology') biology_branch = 'zoology';
+  else if (ch.biology_branch === 'botany' || ch.biology_branch === 'zoology') biology_branch = ch.biology_branch;
+  return {
+    id: ch.id,
+    name: ch.name,
+    subjectName: ch.subject_name || '',
+    biology_branch,
+    className: ch.class_name || '',
+    count: Math.max(0, Math.round(count)),
+    figureCount: 0,
+    difficulty: 'Global',
+    source: 'db',
+    selectionMode: 'count',
+    visualMode: 'image',
+  };
+};
 
 const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   open,
@@ -89,6 +99,8 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [presetsLoading, setPresetsLoading] = useState(false);
   const [wizardStep, setWizardStep] = useState<1 | 2>(1);
+  /** Target count of questions that include a figure (passed to test creator as global figure mix). */
+  const [manualFigureQuestionCount, setManualFigureQuestionCount] = useState(0);
 
   const toggleInSet = useCallback((set: Set<string>, id: string, on: boolean) => {
     const next = new Set(set);
@@ -119,7 +131,10 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   }, [open]);
 
   useEffect(() => {
-    if (open) setWizardStep(1);
+    if (open) {
+      setWizardStep(1);
+      setManualFigureQuestionCount(0);
+    }
   }, [open]);
 
   useEffect(() => {
@@ -225,7 +240,7 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
     }
     supabase
       .from('chapters')
-      .select('id, name, chapter_number, subject_id, subject_name, class_name')
+      .select('id, name, chapter_number, subject_id, subject_name, class_name, biology_branch')
       .eq('kb_id', selectedKb)
       .in('subject_id', Array.from(selectedSubjectIds))
       .order('chapter_number', { ascending: true })
@@ -247,22 +262,29 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
     return n;
   }, [selectedClassIds, subjectsByClass]);
 
-  /** Subjects currently selected, for pill labels (deduped by id). */
-  const selectedSubjectPillOptions = useMemo(() => {
+  const subjectFilterPills = useMemo(() => {
     const map = new Map<string, string>();
     for (const cid of selectedClassIds) {
       for (const s of subjectsByClass[cid] || []) {
         if (selectedSubjectIds.has(s.id)) map.set(s.id, s.name);
       }
     }
-    return [...map.entries()];
+    const out: [string, string][] = [...map.entries()];
+    out.sort((a, b) => a[1].localeCompare(b[1]));
+    return out;
   }, [selectedClassIds, subjectsByClass, selectedSubjectIds]);
 
   const filteredChapters = useMemo(() => {
     let list = chapters;
     if (activeClassPill) {
-      const cn = classes.find((c) => c.id === activeClassPill)?.name?.trim() || '';
-      list = list.filter((c) => (c.class_name || '').trim() === cn);
+      // Use subject_ids under this KB class — chapter.class_name can be missing or out of sync with kb_classes.name.
+      const subjectIdsForClass = new Set((subjectsByClass[activeClassPill] || []).map((s) => s.id));
+      if (subjectIdsForClass.size > 0) {
+        list = list.filter((c) => subjectIdsForClass.has(c.subject_id));
+      } else {
+        const cn = classes.find((c) => c.id === activeClassPill)?.name?.trim() || '';
+        list = cn ? list.filter((c) => (c.class_name || '').trim() === cn) : [];
+      }
     }
     if (activeSubjectPill) {
       list = list.filter((c) => c.subject_id === activeSubjectPill);
@@ -270,7 +292,7 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
     const q = search.trim().toLowerCase();
     if (q) list = list.filter((c) => c.name.toLowerCase().includes(q));
     return list;
-  }, [chapters, search, activeClassPill, activeSubjectPill, classes]);
+  }, [chapters, search, activeClassPill, activeSubjectPill, classes, subjectsByClass]);
 
   const toggleChapter = (id: string) => {
     setSelectedIds((prev) => {
@@ -313,7 +335,9 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   const selectAllSubjects = () => {
     const ids = new Set<string>();
     for (const cid of selectedClassIds) {
-      (subjectsByClass[cid] || []).forEach((s) => ids.add(s.id));
+      for (const s of subjectsByClass[cid] || []) {
+        ids.add(s.id);
+      }
     }
     setSelectedSubjectIds(ids);
   };
@@ -330,6 +354,10 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
     return s;
   }, [selectedIds, chapterCounts, defaultQuestionsPerChapter]);
 
+  useEffect(() => {
+    setManualFigureQuestionCount((n) => Math.max(0, Math.min(n, manualTotalQuestions || 0)));
+  }, [manualTotalQuestions]);
+
   const handleConfirmManual = () => {
     const picked = chapters.filter((c) => selectedIds.has(c.id));
     if (picked.length === 0) return;
@@ -338,11 +366,16 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
     );
     const totalQs = selectedChapters.reduce((sum, ch) => sum + ch.count, 0);
     if (totalQs <= 0) return;
+    const figN = Math.max(
+      0,
+      Math.min(manualFigureQuestionCount, totalQs)
+    );
     onConfirm({
       chapters: selectedChapters,
       knowledgeBaseId: selectedKb,
       initialTotalTarget: totalQs,
       initialDistributionMode: 'count',
+      initialGlobalFigureCount: figN,
     });
     setSelectedIds(new Set());
     setChapterCounts({});
@@ -380,7 +413,7 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[min(92vh,800px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl"
+        className="flex max-h-[min(92vh,800px)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="shrink-0 border-b border-zinc-100 bg-zinc-50/90 px-5 py-4">
@@ -546,166 +579,198 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
             </div>
           </div>
           ) : (
-          <>
-          <div className="space-y-3 border-b border-zinc-100 px-5 py-4">
-            <div className="flex flex-wrap items-end gap-4">
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  Default questions / chapter
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={500}
-                  value={defaultQuestionsPerChapter}
-                  onChange={(e) => {
-                    const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
-                    setDefaultQuestionsPerChapter(v);
-                  }}
-                  className="w-24 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-sm tabular-nums outline-none focus:border-indigo-500"
-                />
-                <p className="mt-1 max-w-md text-[11px] text-zinc-400">
-                  Applied when you tick a chapter. Edit each row anytime; creator total follows the sum.
-                </p>
-              </div>
-            </div>
-
-            {(selectedClassIds.size > 1 || selectedSubjectPillOptions.length > 1) && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">Filter list</span>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setActiveClassPill(null)}
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                      activeClassPill === null
-                        ? 'bg-zinc-200 text-zinc-800'
-                        : 'bg-zinc-100/80 text-zinc-500 hover:bg-zinc-100'
-                    }`}
-                  >
-                    All classes
-                  </button>
+          <div className="flex min-h-[min(56vh,520px)] min-w-0 flex-1 flex-col md:flex-row">
+            <aside className="shrink-0 border-b border-zinc-100 bg-zinc-50/95 md:w-44 md:border-b-0 md:border-r md:border-zinc-100">
+              <div className="p-3 md:sticky md:top-0">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Classes</p>
+                <p className="mt-0.5 text-[10px] text-zinc-400">Narrow the chapter list</p>
+                <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto custom-scrollbar md:max-h-[min(52vh,420px)]">
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => setActiveClassPill(null)}
+                      className={`w-full rounded-lg px-2.5 py-2 text-left text-[11px] font-semibold transition-colors ${
+                        activeClassPill === null
+                          ? 'bg-zinc-900 text-white shadow-sm'
+                          : 'text-zinc-600 hover:bg-white/80'
+                      }`}
+                    >
+                      All classes
+                    </button>
+                  </li>
                   {classes
                     .filter((c) => selectedClassIds.has(c.id))
                     .map((c) => (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => setActiveClassPill((prev) => (prev === c.id ? null : c.id))}
+                          className={`w-full rounded-lg px-2.5 py-2 text-left text-[11px] font-semibold transition-colors ${
+                            activeClassPill === c.id
+                              ? 'bg-indigo-600 text-white shadow-sm'
+                              : 'text-zinc-700 hover:bg-white/80'
+                          }`}
+                        >
+                          {c.name}
+                        </button>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            </aside>
+
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="space-y-3 border-b border-zinc-100 px-4 py-4 sm:px-5">
+                <div className="flex flex-wrap items-end gap-4">
+                  <div>
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Default questions / chapter
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      value={defaultQuestionsPerChapter}
+                      onChange={(e) => {
+                        const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
+                        setDefaultQuestionsPerChapter(v);
+                      }}
+                      className="w-24 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-sm tabular-nums outline-none focus:border-indigo-500"
+                    />
+                    <p className="mt-1 max-w-md text-[11px] text-zinc-400">
+                      Applied when you tick a chapter. Edit each row anytime; creator total follows the sum.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Figure questions (total)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      value={manualFigureQuestionCount}
+                      onChange={(e) => {
+                        const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
+                        setManualFigureQuestionCount(v);
+                      }}
+                      className="w-24 rounded-lg border border-violet-200 bg-violet-50/80 px-2 py-1.5 text-sm tabular-nums outline-none focus:border-violet-500"
+                    />
+                    <p className="mt-1 max-w-[220px] text-[11px] text-zinc-400">
+                      How many items should include a diagram. Capped to your selected question total ({manualTotalQuestions}).
+                    </p>
+                  </div>
+                </div>
+
+                {subjectFilterPills.length > 1 && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">Filter by section</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
-                        key={c.id}
                         type="button"
-                        onClick={() => setActiveClassPill((prev) => (prev === c.id ? null : c.id))}
+                        onClick={() => setActiveSubjectPill(null)}
                         className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                          activeClassPill === c.id
+                          activeSubjectPill === null
                             ? 'bg-zinc-200 text-zinc-800'
-                            : 'bg-zinc-50 text-zinc-500 ring-1 ring-zinc-200/80 hover:bg-zinc-100'
+                            : 'bg-zinc-100/80 text-zinc-500 hover:bg-zinc-100'
                         }`}
                       >
-                        {c.name}
+                        All sections
                       </button>
-                    ))}
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setActiveSubjectPill(null)}
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                      activeSubjectPill === null
-                        ? 'bg-zinc-200 text-zinc-800'
-                        : 'bg-zinc-100/80 text-zinc-500 hover:bg-zinc-100'
-                    }`}
-                  >
-                    All subjects
-                  </button>
-                  {selectedSubjectPillOptions.map(([sid, name]) => (
-                    <button
-                      key={sid}
-                      type="button"
-                      onClick={() => setActiveSubjectPill((prev) => (prev === sid ? null : sid))}
-                      className={`max-w-[140px] truncate rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                        activeSubjectPill === sid
-                          ? 'bg-zinc-200 text-zinc-800'
-                          : 'bg-zinc-50 text-zinc-500 ring-1 ring-zinc-200/80 hover:bg-zinc-100'
-                      }`}
-                      title={name}
-                    >
-                      {name}
-                    </button>
-                  ))}
-                </div>
+                      {subjectFilterPills.map(([pillId, label]) => (
+                        <button
+                          key={pillId}
+                          type="button"
+                          onClick={() => setActiveSubjectPill((prev) => (prev === pillId ? null : pillId))}
+                          className={`max-w-[140px] truncate rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                            activeSubjectPill === pillId
+                              ? 'bg-zinc-200 text-zinc-800'
+                              : 'bg-zinc-50 text-zinc-500 ring-1 ring-zinc-200/80 hover:bg-zinc-100'
+                          }`}
+                          title={label}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <div className="space-y-2 px-5 py-3">
-            <input
-              type="search"
-              placeholder="Search chapters…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              disabled={selectedSubjectIds.size === 0}
-              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 disabled:bg-zinc-50"
-            />
-            {selectedSubjectIds.size === 0 ? (
-              <p className="text-[11px] text-zinc-400">Go back and select at least one subject to load chapters.</p>
-            ) : null}
-          </div>
+              <div className="space-y-2 px-4 py-3 sm:px-5">
+                <input
+                  type="search"
+                  placeholder="Search chapters…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  disabled={selectedSubjectIds.size === 0}
+                  className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 disabled:bg-zinc-50"
+                />
+                {selectedSubjectIds.size === 0 ? (
+                  <p className="text-[11px] text-zinc-400">Go back and select at least one subject to load chapters.</p>
+                ) : null}
+              </div>
 
-          <div className="min-h-[200px] px-5 pb-4">
-            {loading ? (
-              <p className="py-8 text-center text-sm text-zinc-400">Loading…</p>
-            ) : selectedSubjectIds.size === 0 ? (
-              <p className="py-8 text-center text-sm text-zinc-400">Select subjects in step 1 to list chapters.</p>
-            ) : filteredChapters.length === 0 ? (
-              <p className="py-8 text-center text-sm text-zinc-400">No chapters for this filter.</p>
-            ) : (
-              <ul className="space-y-1">
-                {filteredChapters.map((ch) => {
-                  const checked = selectedIds.has(ch.id);
-                  const qCount = chapterCounts[ch.id] ?? defaultQuestionsPerChapter;
-                  return (
-                    <li key={ch.id}>
-                      <div className="flex flex-wrap items-start gap-2 rounded-lg border border-zinc-100 bg-white px-3 py-2 transition-colors hover:border-zinc-200 hover:bg-zinc-50 sm:flex-nowrap sm:items-center">
-                        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 sm:items-center">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleChapter(ch.id)}
-                            className="mt-1 h-4 w-4 shrink-0 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 sm:mt-0"
-                          />
-                          <span className="min-w-0 flex-1 text-sm font-medium text-zinc-800">
-                            <span className="text-zinc-400">{ch.chapter_number != null ? `${ch.chapter_number}. ` : ''}</span>
-                            {ch.name}
-                            {ch.class_name ? (
-                              <span className="mt-0.5 block text-[11px] font-normal text-zinc-500">
-                                {ch.class_name}
-                                {ch.subject_name ? ` · ${ch.subject_name}` : ''}
+              <div className="min-h-[160px] flex-1 overflow-y-auto px-4 pb-4 sm:px-5 custom-scrollbar">
+                {loading ? (
+                  <p className="py-8 text-center text-sm text-zinc-400">Loading…</p>
+                ) : selectedSubjectIds.size === 0 ? (
+                  <p className="py-8 text-center text-sm text-zinc-400">Select subjects in step 1 to list chapters.</p>
+                ) : filteredChapters.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-zinc-400">No chapters for this filter.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {filteredChapters.map((ch) => {
+                      const checked = selectedIds.has(ch.id);
+                      const qCount = chapterCounts[ch.id] ?? defaultQuestionsPerChapter;
+                      return (
+                        <li key={ch.id}>
+                          <div className="flex flex-wrap items-start gap-2 rounded-lg border border-zinc-100 bg-white px-3 py-2 transition-colors hover:border-zinc-200 hover:bg-zinc-50 sm:flex-nowrap sm:items-center">
+                            <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 sm:items-center">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleChapter(ch.id)}
+                                className="mt-1 h-4 w-4 shrink-0 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 sm:mt-0"
+                              />
+                              <span className="min-w-0 flex-1 text-sm font-medium text-zinc-800">
+                                <span className="text-zinc-400">{ch.chapter_number != null ? `${ch.chapter_number}. ` : ''}</span>
+                                {ch.name}
+                                {ch.class_name || ch.subject_name ? (
+                                  <span className="mt-0.5 block text-[11px] font-normal text-zinc-500">
+                                    {[ch.class_name, ch.subject_name ? paperChapterSubjectLine(ch.subject_name, ch.biology_branch) : '']
+                                      .filter(Boolean)
+                                      .join(' · ')}
+                                  </span>
+                                ) : null}
                               </span>
-                            ) : null}
-                          </span>
-                        </label>
-                        <div className="flex shrink-0 items-center gap-1 pl-7 sm:pl-0">
-                          <label className="flex items-center gap-1 text-[11px] text-zinc-500">
-                            <span className="hidden sm:inline">Qs</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={500}
-                              disabled={!checked}
-                              value={checked ? qCount : defaultQuestionsPerChapter}
-                              onChange={(e) => {
-                                const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
-                                setChapterCounts((prev) => ({ ...prev, [ch.id]: v }));
-                              }}
-                              className="w-14 rounded border border-zinc-200 bg-white px-1.5 py-1 text-center text-xs tabular-nums outline-none focus:border-indigo-500 disabled:opacity-40"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                            </label>
+                            <div className="flex shrink-0 items-center gap-1 pl-7 sm:pl-0">
+                              <label className="flex items-center gap-1 text-[11px] text-zinc-500">
+                                <span className="hidden sm:inline">Qs</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={500}
+                                  disabled={!checked}
+                                  value={checked ? qCount : defaultQuestionsPerChapter}
+                                  onChange={(e) => {
+                                    const v = Math.max(0, Math.min(500, Math.round(Number(e.target.value) || 0)));
+                                    setChapterCounts((prev) => ({ ...prev, [ch.id]: v }));
+                                  }}
+                                  className="w-14 rounded border border-zinc-200 bg-white px-1.5 py-1 text-center text-xs tabular-nums outline-none focus:border-indigo-500 disabled:opacity-40"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
           </div>
-          </>
           )}
         </div>
 
@@ -721,7 +786,17 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
               <>
                 {selectedIds.size} chapter(s) selected
                 {selectedIds.size > 0 ? (
-                  <span className="text-zinc-400"> · {manualTotalQuestions} questions total</span>
+                  <span className="text-zinc-400">
+                    {' '}
+                    · {manualTotalQuestions} questions total
+                    {manualFigureQuestionCount > 0 && manualTotalQuestions > 0 ? (
+                      <span>
+                        {' '}
+                        ·{' '}
+                        {Math.min(manualFigureQuestionCount, manualTotalQuestions)} with figures
+                      </span>
+                    ) : null}
+                  </span>
                 ) : null}
                 {selectedIds.size > 0 && manualTotalQuestions <= 0 ? (
                   <span className="block text-amber-600">Raise default or per-chapter counts above 0.</span>

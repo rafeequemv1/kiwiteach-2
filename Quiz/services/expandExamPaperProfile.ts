@@ -4,6 +4,7 @@ import {
   GLOBAL_BIO_PREFIX,
   GLOBAL_SUB_PREFIX,
   STYLE_KEYS,
+  globalSubjectMixBioKey,
   subjectNameToGlobalMixSlug,
 } from '../../Admin/ExamPaper/types';
 
@@ -24,6 +25,9 @@ function isBiology(name: string | null | undefined): boolean {
 }
 
 export function chapterGlobalSubjectMixKey(ch: ChapterRowForProfileExpand): string {
+  const sub = (ch.subject_name || '').trim().toLowerCase();
+  if (sub === 'botany') return globalSubjectMixBioKey('botany');
+  if (sub === 'zoology') return globalSubjectMixBioKey('zoology');
   if (isBiology(ch.subject_name)) {
     const br =
       ch.biology_branch === 'botany' || ch.biology_branch === 'zoology' ? ch.biology_branch : 'unset';
@@ -120,6 +124,8 @@ export function expandExamPaperProfileToSelectedChapters(
         id: ch.id,
         name: ch.name,
         subjectName: ch.subject_name || '',
+        biology_branch:
+          ch.biology_branch === 'botany' || ch.biology_branch === 'zoology' ? ch.biology_branch : null,
         className: ch.class_name || '',
         count: chCount,
         figureCount: 0,

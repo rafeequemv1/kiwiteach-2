@@ -14,6 +14,7 @@ import {
   parseSubjectMixKey,
   subjectNameToGlobalMixSlug,
 } from './types';
+import { paperChapterSubjectLine } from '../../Quiz/utils/paperSubjectLabel';
 
 function sumValues(r: Record<string, number>): number {
   return Object.values(r).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
@@ -73,6 +74,9 @@ function isBiologySubjectName(name: string | null | undefined): boolean {
 
 /** KB-wide key: same subject name across all classes shares one row; biology splits only by botany/zoology/unset. */
 function globalSubjectMixKeyForChapter(c: ChapterRow): string {
+  const sub = (c.subject_name || '').trim().toLowerCase();
+  if (sub === 'botany') return globalSubjectMixBioKey('botany');
+  if (sub === 'zoology') return globalSubjectMixBioKey('zoology');
   if (isBiologySubjectName(c.subject_name)) {
     const br =
       c.biology_branch === 'botany' || c.biology_branch === 'zoology' ? c.biology_branch : 'unset';
@@ -85,6 +89,8 @@ function globalSubjectMixKeyForChapter(c: ChapterRow): string {
 function legacySubjectMixKeyForChapter(c: ChapterRow): string {
   const sid = c.subject_id?.trim();
   if (!sid) return `__non_uuid:${(c.subject_name || 'subject').slice(0, 40)}`;
+  const sub = (c.subject_name || '').trim().toLowerCase();
+  if (sub === 'botany' || sub === 'zoology') return sid;
   if (isBiologySubjectName(c.subject_name)) {
     const br =
       c.biology_branch === 'botany' || c.biology_branch === 'zoology' ? c.biology_branch : 'unset';
@@ -401,13 +407,8 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
     const c = chapters.find((x) => x.id === id);
     if (!c) return id.slice(0, 8);
     const num = c.chapter_number != null ? `Ch ${c.chapter_number}` : '';
-    const bio =
-      isBiologySubjectName(c.subject_name) && (c.biology_branch === 'botany' || c.biology_branch === 'zoology')
-        ? c.biology_branch === 'botany'
-          ? 'Botany'
-          : 'Zoology'
-        : null;
-    return [c.class_name, c.subject_name, bio, num, c.name].filter(Boolean).join(' · ');
+    const section = paperChapterSubjectLine(c.subject_name, c.biology_branch);
+    return [c.class_name, section, num, c.name].filter(Boolean).join(' · ');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -843,16 +844,10 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
               >
                 <option value="">Select chapter to add…</option>
                 {chapters.map((c) => {
-                  const bio =
-                    isBiologySubjectName(c.subject_name) &&
-                    (c.biology_branch === 'botany' || c.biology_branch === 'zoology')
-                      ? c.biology_branch === 'botany'
-                        ? 'Botany'
-                        : 'Zoology'
-                      : null;
+                  const section = paperChapterSubjectLine(c.subject_name, c.biology_branch);
                   return (
                     <option key={c.id} value={c.id}>
-                      {[c.class_name, c.subject_name, bio, c.chapter_number != null ? `Ch ${c.chapter_number}` : null, c.name]
+                      {[c.class_name, section, c.chapter_number != null ? `Ch ${c.chapter_number}` : null, c.name]
                         .filter(Boolean)
                         .join(' · ')}
                     </option>

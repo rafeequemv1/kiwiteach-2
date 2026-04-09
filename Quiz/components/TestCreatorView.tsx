@@ -3,6 +3,7 @@ import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
 import { SelectedChapter, TypeDistribution, CreateTestOptions, QuestionType, Question } from '../types';
+import { paperChapterSubjectLine, paperSubjectSectionLabel } from '../utils/paperSubjectLabel';
 import { renderWithSmiles } from '../../utils/smilesRenderer';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { ChapterStatChips } from './ChapterStatChips';
@@ -52,6 +53,7 @@ interface ChapterItem {
     subject_name?: string;
     class_name?: string;
     raw_text?: string;
+    biology_branch?: 'botany' | 'zoology' | null;
 }
 
 interface ChapterStats {
@@ -95,7 +97,7 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
     void _initialManualQuestions;
     const [distributionMode, setDistributionMode] = useState<'count' | 'percent'>(initialDistributionMode ?? 'count');
     const [totalTarget, setTotalTarget] = useState(initialTotalTarget ?? 50);
-    const [globalFigureCount, setGlobalFigureCount] = useState(initialGlobalFigureCount ?? 0);
+    const [globalFigureCount, setGlobalFigureCount] = useState(() => initialGlobalFigureCount ?? 0);
     const [chapterSearch, setChapterSearch] = useState('');
     const [chapterStats, setChapterStats] = useState<Record<string, ChapterStats>>({});
 
@@ -208,6 +210,20 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
         });
     }, []);
 
+    const effectiveQuestionTotal = useMemo(() => {
+        return distributionMode === 'percent' ? totalTarget : blueprint.reduce((s, b) => s + b.count, 0);
+    }, [distributionMode, totalTarget, blueprint]);
+
+    useEffect(() => {
+        setGlobalFigureCount((f) => Math.min(f, Math.max(0, effectiveQuestionTotal)));
+    }, [effectiveQuestionTotal]);
+
+    useEffect(() => {
+        if (typeof initialGlobalFigureCount === 'number') {
+            setGlobalFigureCount(initialGlobalFigureCount);
+        }
+    }, [initialGlobalFigureCount]);
+
     const fetchBulkStats = async (chapterIds: string[]) => {
         if (chapterIds.length === 0) return;
         try {
@@ -240,6 +256,8 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
         }
         setBlueprint([...blueprint, {
             id: ch.id, name: ch.name, subjectName: ch.subject_name || '', className: ch.class_name || '',
+            biology_branch:
+              ch.biology_branch === 'botany' || ch.biology_branch === 'zoology' ? ch.biology_branch : null,
             count: 10, figureCount: 0, difficulty: 'Global', source: 'db', selectionMode: distributionMode,
             visualMode: 'image'
         }]);
@@ -416,6 +434,50 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                     </button>
                 </div>
             </div>
+            <div className="flex flex-col gap-0.5 border-l border-zinc-200 pl-3 sm:pl-4">
+                <label className="text-[7px] font-semibold uppercase tracking-wide text-violet-600">Figure Qs</label>
+                <div className="flex items-center gap-0.5">
+                    <button
+                        type="button"
+                        aria-label="Decrease figure questions"
+                        onClick={() => setGlobalFigureCount((f) => Math.max(0, f - 1))}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50/80 text-violet-700 shadow-sm transition-transform hover:bg-violet-100 active:scale-95"
+                    >
+                        <iconify-icon icon="mdi:minus" width="22" />
+                    </button>
+                    <input
+                        type="number"
+                        min={0}
+                        max={Math.max(0, effectiveQuestionTotal)}
+                        value={globalFigureCount}
+                        onChange={(e) =>
+                            setGlobalFigureCount(
+                                Math.max(
+                                    0,
+                                    Math.min(
+                                        Math.max(0, effectiveQuestionTotal),
+                                        parseInt(e.target.value, 10) || 0
+                                    )
+                                )
+                            )
+                        }
+                        className="h-9 w-12 rounded-md border border-violet-200 bg-violet-50/80 text-center text-xs font-bold text-violet-900 shadow-sm outline-none focus:border-violet-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    />
+                    <button
+                        type="button"
+                        aria-label="Increase figure questions"
+                        onClick={() =>
+                            setGlobalFigureCount((f) => Math.min(Math.max(0, effectiveQuestionTotal), f + 1))
+                        }
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50/80 text-violet-700 shadow-sm transition-transform hover:bg-violet-100 active:scale-95"
+                    >
+                        <iconify-icon icon="mdi:plus" width="22" />
+                    </button>
+                </div>
+                <p className="max-w-[7rem] text-[6px] font-medium uppercase leading-tight text-zinc-400">
+                    Max {Math.max(0, effectiveQuestionTotal)}
+                </p>
+            </div>
         </div>
     );
 
@@ -525,6 +587,9 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                                             }`}
                                                         >
                                                             <span className="block truncate">{ch.name}</span>
+                                                            <span className="block truncate text-[6px] font-semibold normal-case text-zinc-400">
+                                                                {paperChapterSubjectLine(ch.subject_name, ch.biology_branch)}
+                                                            </span>
                                                             {chipStats && (
                                                                 <ChapterStatChips
                                                                     stats={chipStats}
@@ -849,7 +914,9 @@ const TestCreatorView: React.FC<TestCreatorViewProps> = ({
                                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-900 text-[10px] font-bold text-white">{idx + 1}</div>
                                         <div className="min-w-0 flex-1">
                                         <h3 className="truncate text-xs font-semibold leading-tight text-zinc-900">{item.name}</h3>
-                                        <p className="truncate text-[10px] text-zinc-500">{item.subjectName}</p>
+                                        <p className="truncate text-[10px] text-zinc-500">
+                                          {paperSubjectSectionLabel(item.subjectName, item.biology_branch ?? null)}
+                                        </p>
                                         </div>
                                     <div className="flex shrink-0 items-center gap-0.5">
                                         <button

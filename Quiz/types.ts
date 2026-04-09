@@ -32,6 +32,8 @@ export interface Question {
   sourceChapterId?: string;
   sourceChapterName?: string;
   sourceSubjectName?: string;
+  /** From `chapters.biology_branch` — drives Botany vs Zoology section labels (not merged as Biology). */
+  sourceBiologyBranch?: 'botany' | 'zoology' | null;
   pageNumber?: number | string;
   // Metadata for syllabus alignment
   topic_tag?: string;
@@ -75,6 +77,8 @@ export interface SelectedChapter {
   id: string;
   name: string;
   subjectName: string;
+  /** From `chapters.biology_branch` for NEET Biology → Botany / Zoology splits. */
+  biology_branch?: 'botany' | 'zoology' | null;
   className: string;
   count: number;
   figureCount: number;

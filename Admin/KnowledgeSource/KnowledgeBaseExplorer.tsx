@@ -49,6 +49,27 @@ function isBiologySubjectName(name: string | null | undefined): boolean {
   return n === 'biology' || n.includes('biology');
 }
 
+/** Same rules as SQL migration: rows to replace with Botany + Zoology (excludes Biochemistry). */
+function isLegacyBiologySubjectName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.trim().toLowerCase();
+  if (n === 'botany' || n === 'zoology') return false;
+  if (['biology', 'bio', 'neet biology'].includes(n)) return true;
+  if (n.includes('biology') && !n.includes('biochemistry')) return true;
+  return false;
+}
+
+/** Botany/Zoology subject rows carry stream in the name; legacy "Biology" uses `biology_branch` only. */
+function biologyBranchFromSubjectName(name: string | null | undefined): BiologyBranch | null {
+  const n = (name || '').trim().toLowerCase();
+  if (n === 'botany') return 'botany';
+  if (n === 'zoology') return 'zoology';
+  return null;
+}
+
+/** NEET-style ordering for subject pills (Physics, Chemistry, then life sciences). */
+const SUBJECT_PILL_ORDER = ['physics', 'chemistry', 'botany', 'zoology'];
+
 interface KnowledgeBaseExplorerProps {
   kbId: string;
   kbName: string;
@@ -69,8 +90,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
   const [renamingItem, setRenamingItem] = useState<{ type: 'class' | 'subject' | 'chapter'; item: any } | null>(null);
   const [newItemName, setNewItemName] = useState('');
   const [newItemNumber, setNewItemNumber] = useState<string>('');
-  /** Biology-only: botany / zoology; empty string = unset (null in DB). */
-  const [biologyBranchDraft, setBiologyBranchDraft] = useState<'' | BiologyBranch>('');
   /** Edit chapter: reassign class / subject (same KB). */
   const [editChapterClassId, setEditChapterClassId] = useState('');
   const [editChapterSubjectId, setEditChapterSubjectId] = useState('');
@@ -133,21 +152,17 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
         setNewItemName(renamingItem.item.name);
         setNewItemNumber(renamingItem.item.chapter_number?.toString() || '');
         if (renamingItem.type === 'chapter') {
-          const b = renamingItem.item.biology_branch;
-          setBiologyBranchDraft(b === 'botany' || b === 'zoology' ? b : '');
           setEditChapterClassId(renamingItem.item.class_id || '');
           setEditChapterSubjectId(renamingItem.item.subject_id || '');
           setPdfFile(null);
           setDocFile(null);
         } else {
-          setBiologyBranchDraft('');
           setEditChapterClassId('');
           setEditChapterSubjectId('');
         }
     } else if (activeModal === 'chapter') {
         setNewItemName('');
         setNewItemNumber('');
-        setBiologyBranchDraft('');
         setEditChapterClassId('');
         setEditChapterSubjectId('');
         setPdfFile(null);
@@ -162,11 +177,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     () => subjects.filter((s) => s.class_id === editChapterClassId),
     [subjects, editChapterClassId]
   );
-
-  const editChapterResolvedSubjectName =
-    renamingItem?.type === 'chapter'
-      ? subjects.find((s) => s.id === editChapterSubjectId)?.name ?? renamingItem.item.subject_name
-      : '';
 
   const slugify = (text: string | null | undefined) => {
     if (!text) return 'unknown';
@@ -301,9 +311,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
           chapter_number: num,
           status: 'draft',
         };
-        if (isBiologySubjectName(selectedSubject.name)) {
-          chapterRow.biology_branch = biologyBranchDraft || null;
-        }
+        chapterRow.biology_branch = biologyBranchFromSubjectName(selectedSubject.name);
         const { data: chapterData, error: chapterError } = await supabase.from('chapters').insert([chapterRow]).select().single();
 
         if (chapterError) throw chapterError;
@@ -361,7 +369,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       }
       setNewItemName('');
       setNewItemNumber('');
-      setBiologyBranchDraft('');
       setPdfFile(null);
       setDocFile(null);
     } catch (err: any) {
@@ -429,11 +436,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
           subject_name: sub.name,
           kb_name: kbName,
         };
-        if (isBiologySubjectName(sub.name)) {
-          payload.biology_branch = biologyBranchDraft || null;
-        } else {
-          payload.biology_branch = null;
-        }
+        payload.biology_branch = biologyBranchFromSubjectName(sub.name);
         await supabase.from('chapters').update(payload).eq('id', item.id);
 
         const basePath = `${slugify(kbName)}/${slugify(cls.name)}/${slugify(sub.name)}/${slugify(newName)}`;
@@ -491,7 +494,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       setRenamingItem(null);
       setNewItemName('');
       setNewItemNumber('');
-      setBiologyBranchDraft('');
       setPdfFile(null);
       setDocFile(null);
       setIsProcessing(false);
@@ -575,16 +577,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     }
   };
 
-  const updateChapterBiologyBranch = async (chapter: Chapter, branch: BiologyBranch | null) => {
-    try {
-      const { error } = await supabase.from('chapters').update({ biology_branch: branch }).eq('id', chapter.id);
-      if (error) throw error;
-      setChapters((prev) => prev.map((c) => (c.id === chapter.id ? { ...c, biology_branch: branch } : c)));
-    } catch (err: any) {
-      alert(err?.message || 'Could not update biology branch');
-    }
-  };
-
   const deleteItem = async (type: 'class' | 'subject' | 'chapter', id: string, name: string) => {
     if (!confirm(`Delete ${type} "${name}"? This action cannot be undone.`)) return;
     try {
@@ -658,6 +650,128 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     ? subjects.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()))
     : subjects.filter(s => s.class_id === selectedClass?.id);
 
+  const sortedFilteredSubjects = [...filteredSubjects].sort((a, b) => {
+    const ia = SUBJECT_PILL_ORDER.indexOf(a.name.trim().toLowerCase());
+    const ib = SUBJECT_PILL_ORDER.indexOf(b.name.trim().toLowerCase());
+    const ra = ia === -1 ? 100 : ia;
+    const rb = ib === -1 ? 100 : ib;
+    if (ra !== rb) return ra - rb;
+    return a.name.localeCompare(b.name);
+  });
+
+  const hasLegacyBiologySubjects = subjects.some((s) => isLegacyBiologySubjectName(s.name));
+
+  const splitBiologyIntoBotanyAndZoology = async () => {
+    if (
+      !confirm(
+        'Replace Biology with Botany and Zoology for this knowledge base? Zoology-tagged chapters go to Zoology; all other Biology chapters go to Botany. The Biology subject row will be removed.'
+      )
+    ) {
+      return;
+    }
+    setIsProcessing(true);
+    setProcessingStep('Splitting Biology subjects…');
+    try {
+      const legacy = subjects.filter((s) => isLegacyBiologySubjectName(s.name));
+      if (legacy.length === 0) {
+        alert('No Biology subjects to split.');
+        return;
+      }
+
+      const getOrCreateSubject = async (
+        classId: string,
+        className: string,
+        canonical: 'Botany' | 'Zoology'
+      ): Promise<string> => {
+        const { data: list, error } = await supabase
+          .from('subjects')
+          .select('id, name')
+          .eq('class_id', classId)
+          .eq('kb_id', kbId);
+        if (error) throw error;
+        const found = list?.find((row) => row.name.trim().toLowerCase() === canonical.toLowerCase());
+        if (found) return found.id;
+        const { data: ins, error: insErr } = await supabase
+          .from('subjects')
+          .insert([{ class_id: classId, class_name: className, kb_id: kbId, kb_name: kbName, name: canonical }])
+          .select('id')
+          .single();
+        if (insErr) throw insErr;
+        return ins.id;
+      };
+
+      for (const bio of legacy) {
+        setProcessingStep(`Splitting "${bio.name}"…`);
+        const boId = await getOrCreateSubject(bio.class_id, bio.class_name, 'Botany');
+        const zoId = await getOrCreateSubject(bio.class_id, bio.class_name, 'Zoology');
+
+        const { data: chs, error: chErr } = await supabase
+          .from('chapters')
+          .select('id, biology_branch')
+          .eq('subject_id', bio.id);
+        if (chErr) throw chErr;
+
+        const chapterResults = await Promise.all(
+          (chs || []).map((ch) => {
+            const zool = ch.biology_branch === 'zoology';
+            return supabase
+              .from('chapters')
+              .update({
+                subject_id: zool ? zoId : boId,
+                subject_name: zool ? 'Zoology' : 'Botany',
+                biology_branch: zool ? 'zoology' : 'botany',
+              })
+              .eq('id', ch.id);
+          })
+        );
+        for (const r of chapterResults) {
+          if (r.error) throw r.error;
+        }
+
+        const { data: exRows, error: exErr } = await supabase
+          .from('question_topic_exclusions')
+          .select('id, chapter_id')
+          .eq('subject_id', bio.id);
+        if (exErr) throw exErr;
+
+        await Promise.all(
+          (exRows || []).map(async (ex) => {
+            let sid = boId;
+            if (ex.chapter_id) {
+              const { data: crow } = await supabase.from('chapters').select('subject_id').eq('id', ex.chapter_id).single();
+              if (crow?.subject_id) sid = crow.subject_id;
+            }
+            const { error: exU } = await supabase.from('question_topic_exclusions').update({ subject_id: sid }).eq('id', ex.id);
+            if (exU) throw exU;
+          })
+        );
+
+        const qbResults = await Promise.all(
+          (chs || []).map((ch) => {
+            const zool = ch.biology_branch === 'zoology';
+            const subject_name = zool ? 'Zoology' : 'Botany';
+            return supabase.from('question_bank_neet').update({ subject_name }).eq('chapter_id', ch.id);
+          })
+        );
+        for (const r of qbResults) {
+          if (r.error) throw r.error;
+        }
+
+        const { error: delErr } = await supabase.from('subjects').delete().eq('id', bio.id);
+        if (delErr) throw delErr;
+      }
+
+      setSelectedSubject(null);
+      await fetchData();
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || 'Could not split Biology subjects.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
   const filteredChapters = isSearching
     ? chapters.filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
     : chapters.filter(c => c.subject_id === selectedSubject?.id);
@@ -710,6 +824,18 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
           </div>
 
           <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:gap-3">
+            {hasLegacyBiologySubjects ? (
+              <button
+                type="button"
+                onClick={() => void splitBiologyIntoBotanyAndZoology()}
+                title="Create Botany and Zoology subjects and move chapters off Biology"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-900 shadow-sm transition-all hover:border-emerald-400 hover:bg-emerald-100"
+              >
+                <iconify-icon icon="mdi:leaf" width="16" />
+                <span className="hidden sm:inline">Botany + Zoology</span>
+                <span className="sm:hidden">Split bio</span>
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={handleExportCatalogCsv}
@@ -749,7 +875,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
               <iconify-icon icon="mdi:plus" width="16" />
             </button>
 
-            {selectedClass && filteredSubjects.map(s => (
+            {selectedClass && sortedFilteredSubjects.map(s => (
               <div key={s.id} className="relative group shrink-0">
                 <button 
                   onClick={() => setSelectedSubject(s)} 
@@ -802,11 +928,17 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                     >
                       {c.status === 'ready' ? 'Ready' : 'Draft'}
                     </span>
-                    {isBiologySubjectName(c.subject_name) && c.biology_branch && (
-                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-900 ring-1 ring-emerald-200/80">
-                        {c.biology_branch}
-                      </span>
-                    )}
+                    {(() => {
+                      const br =
+                        c.biology_branch === 'botany' || c.biology_branch === 'zoology'
+                          ? c.biology_branch
+                          : biologyBranchFromSubjectName(c.subject_name);
+                      return br ? (
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-900 ring-1 ring-emerald-200/80">
+                          {br}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
 
                   <h3 className="text-[15px] font-bold leading-snug text-slate-900 break-words">
@@ -875,23 +1007,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                         </>
                     )}
 
-                    {isBiologySubjectName(c.subject_name) && (
-                      <select
-                        aria-label="Biology stream: botany or zoology"
-                        value={c.biology_branch ?? ''}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          void updateChapterBiologyBranch(c, v === '' ? null : (v as BiologyBranch));
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full rounded-lg border border-white/25 bg-white px-2 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-900 outline-none"
-                      >
-                        <option value="">Bio stream: not set</option>
-                        <option value="botany">Botany</option>
-                        <option value="zoology">Zoology</option>
-                      </select>
-                    )}
-                    
                     <div className="flex justify-center gap-4 pt-1">
                       <button type="button" onClick={() => setRenamingItem({ type: 'chapter', item: c })} className="text-white/70 hover:text-white transition-colors" title="Edit"><iconify-icon icon="mdi:pencil" width="18" /></button>
                       <button type="button" onClick={() => deleteItem('chapter', c.id, c.name)} className="text-white/70 hover:text-rose-400 transition-colors" title="Delete"><iconify-icon icon="mdi:trash-can-outline" width="18" /></button>
@@ -987,22 +1102,6 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                     </select>
                   </div>
                 </>
-              )}
-              {((activeModal === 'chapter' && selectedSubject && isBiologySubjectName(selectedSubject.name)) ||
-                (renamingItem?.type === 'chapter' && isBiologySubjectName(editChapterResolvedSubjectName))) && (
-                <div>
-                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Biology stream</label>
-                  <select
-                    value={biologyBranchDraft}
-                    onChange={(e) => setBiologyBranchDraft(e.target.value as '' | BiologyBranch)}
-                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2.5 outline-none focus:border-accent font-bold text-sm text-slate-800"
-                  >
-                    <option value="">Not set</option>
-                    <option value="botany">Botany</option>
-                    <option value="zoology">Zoology</option>
-                  </select>
-                  <p className="mt-1 text-[8px] font-bold text-slate-400 uppercase tracking-tight">Tag NEET Biology chapters as plant vs animal focus.</p>
-                </div>
               )}
               <div>
                 <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Display Name</label>

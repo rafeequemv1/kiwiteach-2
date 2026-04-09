@@ -1,8 +1,13 @@
 
 import '../../types';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../../supabase/client';
-import { Question, BrandingConfig, LayoutConfig } from '../types';
+import { Question, BrandingConfig, LayoutConfig, SelectedChapter } from '../types';
+import {
+  comparePaperSubjectSections,
+  paperSubjectSectionLabel,
+} from '../utils/paperSubjectLabel';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { PaperRich } from '../../utils/paperRich';
 import {
@@ -18,7 +23,29 @@ import { eligibleOversampleLimit, selectQuestionsMaxTopicSpread } from '../servi
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 import { flagReasonTooltip, QuestionFlagReason } from './QuestionPaperItem';
 import { prepare, layout } from '@chenglou/pretext';
-import { Dialog } from 'radix-ui';
+
+function resolveQuestionPaperSection(
+  q: Question,
+  chapters: SelectedChapter[] | undefined
+): string {
+  const branchById = new Map<string, 'botany' | 'zoology' | null>();
+  for (const ch of chapters ?? []) {
+    branchById.set(
+      ch.id,
+      ch.biology_branch === 'botany' || ch.biology_branch === 'zoology' ? ch.biology_branch : null
+    );
+  }
+  const br =
+    q.sourceBiologyBranch === 'botany' || q.sourceBiologyBranch === 'zoology'
+      ? q.sourceBiologyBranch
+      : q.sourceChapterId
+        ? branchById.get(q.sourceChapterId) ?? null
+        : null;
+  return paperSubjectSectionLabel(q.sourceSubjectName, br);
+}
+
+/** Topic modal subject filters — labels match `paperSubjectSectionLabel` for NEET subjects. */
+const TOPIC_MODAL_SUBJECT_PILLS = ['Zoology', 'Botany', 'Chemistry', 'Physics'] as const;
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -129,6 +156,132 @@ function choicesInnerHtmlForMeasure(options: string[], compact: boolean): string
     .join('')}</div>`;
 }
 
+/** Max image height in column — must match BlockRenderer `max-h-*` map. */
+const FIGURE_MAX_IMG_HEIGHT_PX: Record<FigureSize, number> = { small: 80, medium: 120, large: 180 };
+
+function resolveFigurePixelDims(
+  q: Question,
+  naturalById: Record<string, { w: number; h: number }>
+): { w: number; h: number } | null {
+  const d = q.figureDimensions;
+  if (d && d.width > 0 && d.height > 0) return { w: d.width, h: d.height };
+  const n = naturalById[q.id];
+  if (n && n.w > 0 && n.h > 0) return { w: n.w, h: n.h };
+  return null;
+}
+
+/**
+ * Printed figure block height: object-contain image inside column width, capped by size tier,
+ * plus wrapper chrome (mt-2, mb-1, p-1, border) to match DOM.
+ */
+function estimateMainFigureBlockHeightPx(args: {
+  maxImgHeightPx: number;
+  columnContentWidthPx: number;
+  dims: { w: number; h: number } | null;
+}): number {
+  const { maxImgHeightPx, columnContentWidthPx, dims } = args;
+  let imgDisplayH = maxImgHeightPx;
+  if (dims && columnContentWidthPx > 0 && dims.w > 0 && dims.h > 0) {
+    imgDisplayH = Math.min(maxImgHeightPx, (dims.h / dims.w) * columnContentWidthPx);
+  }
+  const WRAPPER_CHROME_PX = 22;
+  return Math.max(28, Math.ceil(imgDisplayH + WRAPPER_CHROME_PX));
+}
+
+function mainFigureSrc(q: Question): string | null {
+  const u = q.figureDataUrl || q.figure_url;
+  return u && String(u).trim() ? String(u) : null;
+}
+
+type PaperTopicModalRow = {
+  label: string;
+  count: number;
+  /** Most common chapter name among questions in this topic bucket (reading order). */
+  chapterHint: string;
+  /** Shown when viewing all classes; null when filtered to one class or no class metadata. */
+  classTag: string | null;
+};
+
+function buildChapterIdToClassName(chapters: SelectedChapter[] | undefined): Map<string, string> {
+  const byId = new Map<string, string>();
+  if (!Array.isArray(chapters)) return byId;
+  for (const c of chapters) {
+    if (c?.id) {
+      const cn = (c.className && String(c.className).trim()) || '';
+      if (cn) byId.set(c.id, cn);
+    }
+  }
+  return byId;
+}
+
+function classLabelForPaperQuestion(
+  q: Question,
+  chapterIdToClass: Map<string, string>,
+  chapters: SelectedChapter[] | undefined
+): string {
+  if (q.sourceChapterId && chapterIdToClass.has(q.sourceChapterId)) {
+    return chapterIdToClass.get(q.sourceChapterId)!;
+  }
+  if (chapters?.length && q.sourceChapterName) {
+    const name = String(q.sourceChapterName).trim();
+    const m = chapters.find((c) => c.name === name);
+    const cn = m?.className && String(m.className).trim();
+    if (cn) return cn;
+  }
+  return '';
+}
+
+function mapModeKey(counts: Map<string, number>): string {
+  let best = '';
+  let bestN = -1;
+  for (const [k, n] of counts) {
+    if (n > bestN || (n === bestN && k.localeCompare(best) < 0)) {
+      best = k;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+/** Paper reading order: topic_tag counts with chapter fallback; enriches rows with chapter + class hints. */
+function aggregatePaperTopicModalRows(
+  ordered: Question[],
+  classForQ: (q: Question) => string,
+  showClassTag: boolean
+): PaperTopicModalRow[] {
+  type Acc = { count: number; chapters: Map<string, number>; classes: Map<string, number> };
+  const buckets = new Map<string, Acc>();
+  for (const q of ordered) {
+    const tag = (q.topic_tag && String(q.topic_tag).trim()) || '';
+    const key =
+      tag ||
+      (q.sourceChapterName && String(q.sourceChapterName).trim()) ||
+      'No topic tag';
+    let acc = buckets.get(key);
+    if (!acc) {
+      acc = { count: 0, chapters: new Map(), classes: new Map() };
+      buckets.set(key, acc);
+    }
+    acc.count += 1;
+    const chName = (q.sourceChapterName && String(q.sourceChapterName).trim()) || 'Unknown chapter';
+    acc.chapters.set(chName, (acc.chapters.get(chName) || 0) + 1);
+    const cl = classForQ(q);
+    if (cl) acc.classes.set(cl, (acc.classes.get(cl) || 0) + 1);
+  }
+
+  const rows: PaperTopicModalRow[] = [];
+  for (const [label, acc] of buckets) {
+    const chapterHint = mapModeKey(acc.chapters);
+    let classTag: string | null = null;
+    if (showClassTag) {
+      if (acc.classes.size === 1) classTag = [...acc.classes.keys()][0];
+      else if (acc.classes.size > 1) classTag = 'Mixed';
+    }
+    rows.push({ label, count: acc.count, chapterHint, classTag });
+  }
+  return rows.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
 /**
  * Consolidated ResultScreenProps interface to avoid redundancy and resolve potential type shadowing issues.
  */
@@ -143,6 +296,7 @@ interface ResultScreenProps {
   sourceOptions?: {
     targetClassId?: string | null;
     allowPastQuestions?: boolean;
+    chapters?: SelectedChapter[];
   };
 }
 
@@ -259,6 +413,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   type ResultMobileSheet = null | 'insights' | 'layout';
   const [resultMobileSheet, setResultMobileSheet] = useState<ResultMobileSheet>(null);
   const [topicSummaryOpen, setTopicSummaryOpen] = useState(false);
+  /** null = all classes; otherwise filter topic list to questions from that class (from test `chapters` metadata). */
+  const [topicModalClassFilter, setTopicModalClassFilter] = useState<string | null>(null);
+  /** null = all paper sections; otherwise Botany / Zoology / Chemistry / Physics (matches `resolveQuestionPaperSection`). */
+  const [topicModalSubjectFilter, setTopicModalSubjectFilter] = useState<string | null>(null);
   const [isLgLayout, setIsLgLayout] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(min-width: 1024px)').matches : true
   );
@@ -283,6 +441,44 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const needLoad: Array<{ id: string; src: string }> = [];
+    for (const q of currentQuestions) {
+      const src = mainFigureSrc(q);
+      if (!src) continue;
+      const d = q.figureDimensions;
+      if (d && d.width > 0 && d.height > 0) continue;
+      needLoad.push({ id: q.id, src });
+    }
+    if (needLoad.length === 0) {
+      setFigureNaturalById({});
+      return;
+    }
+    const results: Record<string, { w: number; h: number }> = {};
+    void Promise.all(
+      needLoad.map(
+        ({ id, src }) =>
+          new Promise<void>((resolve) => {
+            const im = new Image();
+            im.onload = () => {
+              if (!cancelled && im.naturalWidth > 0 && im.naturalHeight > 0) {
+                results[id] = { w: im.naturalWidth, h: im.naturalHeight };
+              }
+              resolve();
+            };
+            im.onerror = () => resolve();
+            im.src = src;
+          })
+      )
+    ).then(() => {
+      if (!cancelled) setFigureNaturalById(results);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentQuestions]);
+
+  useEffect(() => {
     if (!resultMobileSheet || isLgLayout) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setResultMobileSheet(null);
@@ -290,6 +486,32 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [resultMobileSheet, isLgLayout]);
+
+  useEffect(() => {
+    if (!topicSummaryOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTopicSummaryOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [topicSummaryOpen]);
+
+  useEffect(() => {
+    if (topicSummaryOpen) {
+      setTopicModalClassFilter(null);
+      setTopicModalSubjectFilter(null);
+    }
+  }, [topicSummaryOpen]);
+
+  const toggleInsightsPanel = useCallback(() => {
+    if (isLgLayout) setIsInsightsOpen((o) => !o);
+    else setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'));
+  }, [isLgLayout]);
+
+  const toggleLayoutPanel = useCallback(() => {
+    if (isLgLayout) setIsControlsOpen((o) => !o);
+    else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
+  }, [isLgLayout]);
   
   const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(initialLayoutConfig?.viewMode || 'scroll');
   const [showChoices, setShowChoices] = useState(true);
@@ -310,10 +532,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
   const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? false);
   const [showChapterListOnCover, setShowChapterListOnCover] = useState(initialLayoutConfig?.showChapterListOnCover ?? true);
-  // Keep saved/imported question order by default; grouping can still be toggled manually.
-  const [groupBySubject, setGroupBySubject] = useState(initialLayoutConfig?.groupBySubject ?? false);
+  // Section headers (Botany / Zoology / Chem / Phy) on by default; saved layout restores user choice.
+  const [groupBySubject, setGroupBySubject] = useState(initialLayoutConfig?.groupBySubject ?? true);
   const [forcedBreaks, setForcedBreaks] = useState<Set<string>>(new Set(initialLayoutConfig?.forcedBreaks || []));
   const [figureSizes, setFigureSizes] = useState<Record<string, FigureSize>>(initialLayoutConfig?.figureSizes || {});
+  /** Browser-measured natural size for figures missing `figureDimensions` — tightens pagination vs object-contain. */
+  const [figureNaturalById, setFigureNaturalById] = useState<Record<string, { w: number; h: number }>>({});
 
   const [pages, setPages] = useState<PageLayout[]>([]);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -367,8 +591,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         mcq: 0, reasoning: 0, matching: 0, statements: 0
     };
     
-    currentQuestions.forEach(q => {
-      const s = q.sourceSubjectName || 'General';
+    currentQuestions.forEach((q) => {
+      const s = resolveQuestionPaperSection(q, sourceOptions?.chapters);
       const c = q.sourceChapterName || 'Unknown Chapter';
       subjects[s] = (subjects[s] || 0) + 1;
       if (!chapMap[s]) chapMap[s] = {};
@@ -381,9 +605,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     pages.forEach((p, pIdx) => {
         if (p.isCover) return;
         const subsOnThisPage = new Set<string>();
-        [...p.leftCol, ...p.rightCol].forEach(b => {
+        [...p.leftCol, ...p.rightCol].forEach((b) => {
             if (b.type === 'subject-header' && b.content) subsOnThisPage.add(b.content);
-            if (b.question?.sourceSubjectName) subsOnThisPage.add(b.question.sourceSubjectName);
+            if (b.question) subsOnThisPage.add(resolveQuestionPaperSection(b.question, sourceOptions?.chapters));
         });
         subsOnThisPage.forEach(s => {
             if (!subPages[s]) subPages[s] = new Set();
@@ -395,25 +619,25 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     Object.keys(subPages).forEach(k => finalSubPages[k] = Array.from(subPages[k]).sort((a,b) => a-b));
 
     return { 
-        subjectBreakdown: Object.entries(subjects).sort((a, b) => b[1] - a[1]) as [string, number][],
+        subjectBreakdown: Object.entries(subjects).sort(
+          (a, b) => b[1] - a[1] || comparePaperSubjectSections(a[0], b[0])
+        ) as [string, number][],
         chapterSummary: chapMap as Record<string, Record<string, number>>,
         subjectToPages: finalSubPages as Record<string, number[]>,
         globalStats: stats
     };
-  }, [currentQuestions, pages]);
+  }, [currentQuestions, pages, sourceOptions?.chapters]);
 
   /**
    * Destructured stats with explicit types to prevent "unknown" inference in the JSX blocks.
    */
-  const { 
-    subjectBreakdown, 
-    chapterSummary, 
-    subjectToPages, 
-    globalStats 
+  const {
+    subjectBreakdown,
+    chapterSummary,
+    globalStats,
   }: {
     subjectBreakdown: [string, number][];
     chapterSummary: Record<string, Record<string, number>>;
-    subjectToPages: Record<string, number[]>;
     globalStats: any;
   } = statsResult;
 
@@ -423,19 +647,71 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     [pages, currentQuestions]
   );
 
-  /** Paper reading order: topic_tag counts with chapter fallback for untagged items. */
-  const paperTopicBreakdown = useMemo(() => {
+  const paperTopicModalClassCounts = useMemo(() => {
+    const chapters = sourceOptions?.chapters;
+    const byId = buildChapterIdToClassName(chapters);
     const map = new Map<string, number>();
     for (const q of questionsOrderedForAnswerKey) {
-      const tag = (q.topic_tag && String(q.topic_tag).trim()) || '';
-      const key =
-        tag ||
-        (q.sourceChapterName && String(q.sourceChapterName).trim()) ||
-        'No topic tag';
-      map.set(key, (map.get(key) || 0) + 1);
+      const c = classLabelForPaperQuestion(q, byId, chapters);
+      if (!c) continue;
+      map.set(c, (map.get(c) || 0) + 1);
     }
     return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  }, [questionsOrderedForAnswerKey]);
+  }, [questionsOrderedForAnswerKey, sourceOptions?.chapters]);
+
+  const paperTopicModalSubjectCounts = useMemo(() => {
+    const chapters = sourceOptions?.chapters;
+    const byId = buildChapterIdToClassName(chapters);
+    const classForQ = (q: Question) => classLabelForPaperQuestion(q, byId, chapters);
+    let pool = questionsOrderedForAnswerKey;
+    if (topicModalClassFilter) {
+      pool = pool.filter((q) => classForQ(q) === topicModalClassFilter);
+    }
+    const tallies: Record<(typeof TOPIC_MODAL_SUBJECT_PILLS)[number], number> = {
+      Zoology: 0,
+      Botany: 0,
+      Chemistry: 0,
+      Physics: 0,
+    };
+    for (const q of pool) {
+      const sec = resolveQuestionPaperSection(q, chapters);
+      if (sec === 'Zoology' || sec === 'Botany' || sec === 'Chemistry' || sec === 'Physics') {
+        tallies[sec] += 1;
+      }
+    }
+    return tallies;
+  }, [questionsOrderedForAnswerKey, sourceOptions?.chapters, topicModalClassFilter]);
+
+  /** Questions in scope for the topic modal (class filter only — used for “All subjects” count). */
+  const topicModalScopeQuestionCount = useMemo(() => {
+    const chapters = sourceOptions?.chapters;
+    const byId = buildChapterIdToClassName(chapters);
+    const classForQ = (q: Question) => classLabelForPaperQuestion(q, byId, chapters);
+    if (topicModalClassFilter) {
+      return questionsOrderedForAnswerKey.filter((q) => classForQ(q) === topicModalClassFilter).length;
+    }
+    return questionsOrderedForAnswerKey.length;
+  }, [questionsOrderedForAnswerKey, sourceOptions?.chapters, topicModalClassFilter]);
+
+  const paperTopicModalRows = useMemo(() => {
+    const chapters = sourceOptions?.chapters;
+    const byId = buildChapterIdToClassName(chapters);
+    const classForQ = (q: Question) => classLabelForPaperQuestion(q, byId, chapters);
+    let ordered = topicModalClassFilter
+      ? questionsOrderedForAnswerKey.filter((q) => classForQ(q) === topicModalClassFilter)
+      : questionsOrderedForAnswerKey;
+    if (topicModalSubjectFilter) {
+      ordered = ordered.filter(
+        (q) => resolveQuestionPaperSection(q, chapters) === topicModalSubjectFilter
+      );
+    }
+    return aggregatePaperTopicModalRows(ordered, classForQ, !topicModalClassFilter);
+  }, [
+    questionsOrderedForAnswerKey,
+    sourceOptions?.chapters,
+    topicModalClassFilter,
+    topicModalSubjectFilter,
+  ]);
 
   const handleDownloadOmrSheet = useCallback(async () => {
     setIsDownloadingOmrPdf(true);
@@ -547,14 +823,54 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
             }
             #printable-paper-area {
               width: 100% !important;
+              max-width: none !important;
               margin: 0 !important;
               padding: 0 !important;
               display: block !important;
+              /* Undo flex/grid from screen layout so each page is its own block (fixes mobile PDF overlap). */
+              flex-direction: unset !important;
+              align-items: unset !important;
+              gap: 0 !important;
+            }
+            /* Mobile scroll preview uses pixel-sized wrappers + absolute scaled pages; reset for print/PDF. */
+            .print-preview-scale-wrap,
+            .print-preview-scale-inner {
+              display: block !important;
+              width: 210mm !important;
+              height: auto !important;
+              min-height: 0 !important;
+              max-width: none !important;
+              margin: 0 auto !important;
+              padding: 0 !important;
+              position: static !important;
+              overflow: visible !important;
+              transform: none !important;
+            }
+            .print-preview-scale-inner {
+              /* One physical page tall per wrapper; avoids stacking absolute pages on top of each other. */
+              min-height: 297mm !important;
+            }
+            /* Direct wrappers (flex centering / spacing) must not stay flex in print. */
+            #printable-paper-area > div {
+              display: block !important;
+              width: 100% !important;
+              margin-left: auto !important;
+              margin-right: auto !important;
+              padding: 0 !important;
+              float: none !important;
             }
             .printable-quiz-page {
+              position: relative !important;
+              left: auto !important;
+              top: auto !important;
+              right: auto !important;
+              bottom: auto !important;
+              transform: none !important;
+              transform-origin: top left !important;
               width: 210mm !important;
               height: 297mm !important;
-              margin: 0 !important;
+              max-width: none !important;
+              margin: 0 auto !important;
               page-break-after: always !important;
               break-after: page !important;
               page-break-inside: avoid !important;
@@ -597,6 +913,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     };
 
     frameWindow.addEventListener('afterprint', cleanup, { once: true });
+    const printDelayMs =
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches ? 450 : 200;
     setTimeout(() => {
       try {
         frameWindow.focus();
@@ -604,7 +922,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       } catch {
         cleanup();
       }
-    }, 150);
+    }, printDelayMs);
     setTimeout(cleanup, 3000);
   }, [clearPendingPrint]);
 
@@ -802,6 +1120,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
           correctMatches: bq.correct_matches,
           sourceChapterId: bq.chapter_id,
           sourceSubjectName: bq.subject_name,
+          sourceBiologyBranch:
+            bq.biology_branch === 'botany' || bq.biology_branch === 'zoology' ? bq.biology_branch : undefined,
           sourceChapterName: bq.chapter_name,
           pageNumber: bq.page_number,
           topic_tag: bq.topic_tag,
@@ -831,7 +1151,22 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       }
 
       if (replacement) {
-        setCurrentQuestions((prev) => prev.map((item) => (item.id === q.id ? replacement : item)));
+        setCurrentQuestions((prev) =>
+          prev.map((item) =>
+            item.id === q.id
+              ? {
+                  ...replacement,
+                  sourceChapterId: q.sourceChapterId ?? replacement.sourceChapterId,
+                  sourceChapterName: q.sourceChapterName ?? replacement.sourceChapterName,
+                  sourceSubjectName: q.sourceSubjectName ?? replacement.sourceSubjectName,
+                  sourceBiologyBranch:
+                    q.sourceBiologyBranch === 'botany' || q.sourceBiologyBranch === 'zoology'
+                      ? q.sourceBiologyBranch
+                      : replacement.sourceBiologyBranch,
+                }
+              : item
+          )
+        );
       } else {
         setCurrentQuestions((prev) => prev.filter((item) => item.id !== q.id));
         alert('Flag saved. No close replacement found, so this question was removed.');
@@ -956,7 +1291,6 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         measureContainer.style.color = 'black';
         document.body.appendChild(measureContainer);
 
-        const heightMap: Record<FigureSize, number> = { small: 80, medium: 120, large: 180 };
         const unitPackList: Array<{
           blocks: QuizBlock[];
           baseSum: number;
@@ -995,20 +1329,25 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
           }
         };
 
-        const sortedQuestions = groupBySubject ? [...currentQuestions].sort((a,b) => (a.sourceSubjectName||'').localeCompare(b.sourceSubjectName||'')) : currentQuestions;
-        let lastSubject = "";
+        const sectionOf = (qq: Question) => resolveQuestionPaperSection(qq, sourceOptions?.chapters);
+        const sortedQuestions = groupBySubject
+          ? [...currentQuestions].sort((a, b) => comparePaperSubjectSections(sectionOf(a), sectionOf(b)))
+          : currentQuestions;
+        let lastSubject = '';
 
         sortedQuestions.forEach((q: any, qIndex) => {
              const unitBlocks: QuizBlock[] = [];
-             const subjectChanged = groupBySubject && q.sourceSubjectName !== lastSubject;
+             const sec = sectionOf(q);
+             const subjectChanged = groupBySubject && sec !== lastSubject;
              if (subjectChanged) {
-                 const text = (q.sourceSubjectName || 'GENERAL').toUpperCase();
+                 const canonical = sec || 'General';
+                 const text = canonical.toUpperCase();
                  const div = document.createElement('div'); 
                  div.style.width = '100%'; div.style.padding = '2px 0'; div.style.fontSize = '0.9em'; div.style.fontWeight = '900'; div.style.borderTop = '0.5pt solid black'; div.style.borderBottom = '0.5pt solid black'; div.style.textAlign = 'center'; div.style.margin = '4px 0'; div.style.color = 'black';
                  div.innerHTML = `PART: ${text}`;
                  measureContainer.appendChild(div); const h = div.getBoundingClientRect().height; measureContainer.removeChild(div);
-                 unitBlocks.push({ type: 'subject-header', content: text, height: h });
-                 lastSubject = q.sourceSubjectName || '';
+                 unitBlocks.push({ type: 'subject-header', content: canonical, height: h });
+                 lastSubject = sec;
              }
 
              const coreDiv = document.createElement('div'); 
@@ -1023,14 +1362,23 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
              const qText = document.createElement('div'); 
              qText.innerHTML = `<b style="color: black;">${qIndex + 1}.</b> ${renderedQText}${showDifficulty ? ` <span style="font-size: 0.7em; font-weight: 900; border: 0.5pt solid black; padding: 1px 2px; text-transform: uppercase; margin-left: 4px; color: black;">${q.difficulty}</span>` : ''}`; 
              coreDiv.appendChild(qText);
-             
-             if (q.figureDataUrl) { 
-                 const currentSize: FigureSize = figureSizes[q.id] || 'medium';
-                 const imgHeight = heightMap[currentSize];
-                 const img = document.createElement('div'); 
-                 img.style.height = `${imgHeight}px`;
-                 img.style.width = '100%';
-                 coreDiv.appendChild(img); 
+
+             const figSrc = mainFigureSrc(q);
+             const tierSize: FigureSize = figureSizes[q.id] || 'medium';
+             const mainFigureBlockH =
+               figSrc != null
+                 ? estimateMainFigureBlockHeightPx({
+                     maxImgHeightPx: FIGURE_MAX_IMG_HEIGHT_PX[tierSize],
+                     columnContentWidthPx: contentWidthPx,
+                     dims: resolveFigurePixelDims(q, figureNaturalById),
+                   })
+                 : 0;
+             if (figSrc) {
+               const figSpacer = document.createElement('div');
+               figSpacer.style.height = `${mainFigureBlockH}px`;
+               figSpacer.style.width = '100%';
+               figSpacer.style.flexShrink = '0';
+               coreDiv.appendChild(figSpacer);
              }
              
              if (showSourceFigure && q.sourceFigureDataUrl) {
@@ -1096,9 +1444,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               }
             }
 
-            if (q.figureDataUrl) {
-                const currentSize: FigureSize = figureSizes[q.id] || 'medium';
-                pretextCoreHeight += heightMap[currentSize] + 8;
+            if (figSrc) {
+              pretextCoreHeight += mainFigureBlockH;
             }
 
             if (showSourceFigure && q.sourceFigureDataUrl) {
@@ -1399,7 +1746,23 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       measureAndPaginate();
     });
     return () => cancelAnimationFrame(raf1);
-  }, [currentQuestions, includeExplanations, showDifficulty, groupBySubject, forcedBreaks, showChoices, showSourceFigure, showIntroPage, showTopics, showChapters, showAnswerKey, paperConfig, figureSizes]);
+  }, [
+    currentQuestions,
+    includeExplanations,
+    showDifficulty,
+    groupBySubject,
+    forcedBreaks,
+    showChoices,
+    showSourceFigure,
+    showIntroPage,
+    showTopics,
+    showChapters,
+    showAnswerKey,
+    paperConfig,
+    figureSizes,
+    figureNaturalById,
+    sourceOptions?.chapters,
+  ]);
 
   const scrollToPage = (idx: number) => {
     setViewMode('scroll');
@@ -1407,29 +1770,6 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         pageRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
   };
-
-  const PageThumbnail: React.FC<{ idx: number, label: string }> = ({ idx, label }) => (
-    <button 
-        onClick={() => scrollToPage(idx)}
-        className="group relative flex aspect-[1/1.41] w-full flex-col items-center justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-1 transition-all hover:border-zinc-400 hover:ring-2 hover:ring-zinc-200/80"
-    >
-        {pages[idx]?.isCover ? (
-            <iconify-icon icon="mdi:file-certificate" width="18" className="text-zinc-400 group-hover:text-zinc-700" />
-        ) : (pages[idx]?.leftCol[0]?.type === 'answer-key' ? (
-            <iconify-icon icon="mdi:key-variant" width="18" className="text-cyan-400 group-hover:text-cyan-600" />
-        ) : (
-            <div className="w-full h-full flex flex-col gap-0.5 p-1 opacity-20">
-                <div className="flex-1 flex gap-0.5">
-                    <div className="w-1/2 rounded-sm bg-zinc-400"></div>
-                    <div className="w-1/2 rounded-sm bg-zinc-400"></div>
-                </div>
-            </div>
-        ))}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-[14px] font-semibold text-zinc-800 opacity-80 drop-shadow-sm transition-all group-hover:scale-125 group-hover:opacity-100">{label.replace('P', '')}</span>
-        </div>
-    </button>
-  );
 
   const questionBlockTailMarginPx = (block: QuizBlock, next: QuizBlock | undefined, gapPx: number): number | undefined => {
     if (gapPx <= 0) return undefined;
@@ -1506,11 +1846,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       const isFlagged = flaggedQuestionIds.has(stableQid);
       const flagReasonStored = flagReasonsByQuestionId[stableQid];
       const flagTip = isFlagged ? flagReasonTooltip(flagReasonStored) : undefined;
-      const hasFigure = !!(q.figureDataUrl || q.figure_url);
-      
+      const figureDisplayUrl = mainFigureSrc(q);
+      const hasFigure = !!figureDisplayUrl;
+
       const sizeMap: Record<FigureSize, string> = { small: 'S', medium: 'M', large: 'L' };
-      const heightMap: Record<FigureSize, string> = { small: '80px', medium: '120px', large: '180px' };
       const currentSize = figureSizes[q.id] || 'medium';
+      const figureMaxHeightPx = FIGURE_MAX_IMG_HEIGHT_PX[currentSize];
       const stemNumber =
         typeof displayQuestionNumber === 'number' ? displayQuestionNumber : (block.globalIndex ?? 0) + 1;
 
@@ -1604,12 +1945,17 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                       {showDifficulty && <span className="ml-1 px-1 py-0.25 rounded text-[0.6em] font-black uppercase border border-black align-middle inline-block leading-none text-black">{q.difficulty}</span>}
                   </div>
               </div>
-              {q.figureDataUrl && (
+              {figureDisplayUrl && (
                   <div
                     className="ml-5 mt-2 mb-1 p-1 border border-black/20 rounded inline-block bg-white shadow-sm relative group/figure"
                     title={isFlagged ? flagTip : undefined}
                   >
-                      <img src={q.figureDataUrl} className="object-contain mix-blend-multiply" style={{ maxHeight: heightMap[currentSize] }} alt="Figure Asset" />
+                      <img
+                        src={figureDisplayUrl}
+                        className="object-contain mix-blend-multiply"
+                        style={{ maxHeight: `${figureMaxHeightPx}px` }}
+                        alt="Figure Asset"
+                      />
                       <div className="no-print absolute -top-3 right-0 bg-black/60 text-white rounded-full px-1 py-0.5 opacity-0 group-hover/figure:opacity-100 transition-opacity flex items-center gap-0.5 shadow-lg">
                           <button onClick={() => adjustFigureSize(q.id, 'decrease')} className="w-5 h-5 flex items-center justify-center hover:bg-white/20 rounded-full font-bold text-lg leading-none pb-1 disabled:opacity-30" disabled={currentSize === 'small'}>-</button>
                           <span className="text-[9px] font-mono w-5 text-center">{sizeMap[currentSize]}</span>
@@ -1674,80 +2020,331 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
       );
   };
 
+  /** Shared A4 page body for main canvas and insights slide previews (must stay in sync with pagination DOM). */
+  const buildPrintablePageInner = (p: PageLayout, idx: number) => {
+    const isAnswerKeyPage = p.leftCol.length > 0 && p.leftCol[0].type === 'answer-key';
+    return (
+      <div className="relative flex h-full min-h-0 flex-col">
+        {!isAnswerKeyPage && !p.isCover && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute z-10 h-[0.5pt] bg-black"
+            style={{
+              left: `${paperConfig.marginX}mm`,
+              right: `${paperConfig.marginX}mm`,
+              bottom: '6.4mm',
+            }}
+          />
+        )}
+        <div
+          className="flex flex-1 flex-col"
+          style={
+            p.isCover
+              ? {
+                  padding: '1.5mm',
+                  fontSize: `${paperConfig.fontSize}pt`,
+                  lineHeight: `${paperConfig.lineHeight}`,
+                  transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
+                }
+              : {
+                  paddingTop: `${paperConfig.marginY * QUESTION_PAGE_TOP_MARGIN_FRAC}mm`,
+                  paddingRight: `${paperConfig.marginX}mm`,
+                  paddingBottom: `${paperConfig.marginY}mm`,
+                  paddingLeft: `${paperConfig.marginX}mm`,
+                  fontSize: `${paperConfig.fontSize}pt`,
+                  lineHeight: `${paperConfig.lineHeight}`,
+                  transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
+                }
+          }
+        >
+          {isAnswerKeyPage ? (
+            <AnswerKeyPage questions={questionsOrderedForAnswerKey} brandConfig={brandConfig} topic={editableTopic} />
+          ) : p.isCover ? (
+            <div className="relative flex flex-1 flex-col border-[1.2pt] border-black p-[2.5mm]">
+              <div className="mb-1 mt-0.5 flex shrink-0 flex-col items-center text-center">
+                {brandConfig.logo && <img src={brandConfig.logo} className="mb-0.5 h-8 w-8 object-contain" />}
+                <h1 className="mb-0 text-xl font-black uppercase leading-none tracking-tight text-black">{brandConfig.name}</h1>
+                <div className="mb-0.5 h-0.5 w-8 bg-black" />
+
+                <h2 className="mb-0 text-sm font-black uppercase leading-tight text-black">{editableTopic}</h2>
+                <div className="mb-1 rounded-full bg-black px-3 py-0.5 text-[6pt] font-black uppercase tracking-[0.2em] text-white">
+                  Authorized Assessment
+                </div>
+              </div>
+
+              {showChapterListOnCover && (
+                <div className="mb-1.5 flex h-auto flex-shrink-0 flex-col overflow-hidden">
+                  <div className="mb-1 border-b-[0.8pt] border-black pb-0.5">
+                    <h3 className="text-center text-[7pt] font-black uppercase tracking-[0.15em]">SYLLABUS COVERAGE & WEIGHTAGE</h3>
+                  </div>
+
+                  <div className="grid h-auto grid-cols-3 gap-1.5">
+                    {(Object.entries(chapterSummary) as Array<[string, Record<string, number>]>).map(([subject, chaps]) => (
+                      <div key={subject} className="flex h-fit flex-col overflow-hidden border border-black bg-white">
+                        <div className="border-b border-black bg-black/5 px-1 py-0.25 text-center">
+                          <h4 className="truncate text-[6pt] font-black uppercase tracking-widest text-black">{subject}</h4>
+                        </div>
+                        <div className="space-y-0.25 p-0.5">
+                          {(Object.entries(chaps) as Array<[string, number]>).map(([name, count]) => (
+                            <div
+                              key={name}
+                              className="flex items-start justify-between gap-1 border-b border-black/5 pb-0.25 last:border-0"
+                              style={{ fontSize: chapterFontSize }}
+                            >
+                              <span className="truncate font-bold uppercase leading-none">{name}</span>
+                              <span className="shrink-0 font-black text-black/50">[{count}]</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-auto shrink-0 space-y-1">
+                <div className="grid grid-cols-3 gap-3 border-y border-black py-1 text-black">
+                  <div className="text-center">
+                    <span className="block text-[6pt] font-black uppercase leading-none text-black/40">Total Items</span>
+                    <span className="text-[8pt] font-bold">{currentQuestions.length}</span>
+                  </div>
+                  <div className="border-x border-black/10 text-center">
+                    <span className="block text-[6pt] font-black uppercase leading-none text-black/40">Duration</span>
+                    <span className="text-[8pt] font-bold">180 MINS</span>
+                  </div>
+                  <div className="text-center">
+                    <span className="block text-[6pt] font-black uppercase leading-none text-black/40">Max Marks</span>
+                    <span className="text-[8pt] font-bold">{currentQuestions.length * 4}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-end justify-between border-t border-black/5 pt-0.5">
+                  <div className="flex items-center gap-3">
+                    <div className="text-left">
+                      <p className="text-[5pt] font-black uppercase leading-none tracking-widest text-black/30">Verification</p>
+                      <p className="text-[6pt] font-black uppercase leading-tight">Academic Lead</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="mb-0.5 font-mono text-[4pt] font-bold uppercase leading-none tracking-tighter text-black/20">
+                      REF-ID: {Math.random().toString(36).substring(7).toUpperCase()}
+                    </p>
+                    <p className="font-serif text-[6pt] italic leading-none">Integrated Assessment System</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="relative flex h-full flex-1 flex-col bg-white text-black">
+              <div className="mb-0.5 flex min-h-[6mm] shrink-0 items-center justify-between gap-2 px-0.5">
+                <span className="max-w-[65%] truncate text-[8pt] font-black uppercase leading-none tracking-wide text-black">
+                  {brandConfig.name}
+                </span>
+                {brandConfig.logo ? (
+                  <img
+                    src={brandConfig.logo}
+                    alt=""
+                    className="h-6 max-h-[7mm] w-auto max-w-[30mm] object-contain object-right"
+                  />
+                ) : (
+                  <span className="shrink-0" aria-hidden />
+                )}
+              </div>
+              <div className="mb-2 h-[0.5pt] w-full shrink-0 bg-black" />
+
+              <div className="relative flex min-h-0 flex-1" style={{ gap: `${paperConfig.gap}mm` }}>
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute bottom-0 left-1/2 top-0 z-0 w-[0.5pt] -translate-x-1/2 bg-black"
+                />
+                <div className="relative z-10 flex-1 overflow-hidden pr-1">
+                  {p.leftCol.map((b, bi) => (
+                    <BlockRenderer
+                      key={bi}
+                      block={b}
+                      nextBlock={p.leftCol[bi + 1]}
+                      questionGapPx={appliedQuestionGapPx}
+                      examDensity={!includeExplanations}
+                      showChoices={showChoices}
+                      showSourceFigure={showSourceFigure}
+                      showDifficulty={showDifficulty}
+                      displayQuestionNumber={
+                        b.type === 'question-core' && b.question
+                          ? paperQuestionNumberById.get(String(b.question.originalId || b.question.id))
+                          : undefined
+                      }
+                      onDelete={handleDeleteQuestion}
+                      onReplace={handleReplaceQuestion}
+                      onFlag={handleFlagQuestion}
+                    />
+                  ))}
+                </div>
+                <div className="relative z-10 flex-1 overflow-hidden pl-1">
+                  {p.rightCol.map((b, bi) => (
+                    <BlockRenderer
+                      key={bi}
+                      block={b}
+                      nextBlock={p.rightCol[bi + 1]}
+                      questionGapPx={appliedQuestionGapPx}
+                      examDensity={!includeExplanations}
+                      showChoices={showChoices}
+                      showSourceFigure={showSourceFigure}
+                      showDifficulty={showDifficulty}
+                      displayQuestionNumber={
+                        b.type === 'question-core' && b.question
+                          ? paperQuestionNumberById.get(String(b.question.originalId || b.question.id))
+                          : undefined
+                      }
+                      onDelete={handleDeleteQuestion}
+                      onReplace={handleReplaceQuestion}
+                      onFlag={handleFlagQuestion}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div
+                aria-hidden="true"
+                className="hidden overflow-hidden select-none print:block"
+                style={{
+                  color: 'transparent',
+                  fontSize: `${paperConfig.fontSize}pt`,
+                  lineHeight: `${paperConfig.lineHeight}`,
+                  maxHeight: `${FOOTER_RESERVE_PX}px`,
+                }}
+              >
+                {Array.from({ length: INVISIBLE_FOOTER_FILL_LINES }).map((_, fillIdx) => (
+                  <div key={`footer-fill-${idx}-${fillIdx}`}>x</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <div
+          className="mt-auto flex shrink-0 justify-end pb-0.5 pt-0.5 leading-none"
+          style={{ paddingRight: `${paperConfig.marginX}mm` }}
+        >
+          <span className="text-[6pt] font-semibold tabular-nums text-black">
+            Page {idx + 1} / {pages.length}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   const insightsPanelActive = isLgLayout ? isInsightsOpen : resultMobileSheet === 'insights';
   const layoutControlsActive = isLgLayout ? isControlsOpen : resultMobileSheet === 'layout';
   const scrollPageScaled = viewMode === 'scroll' && scrollPreviewScale < 0.998;
   const previewScale = scrollPageScaled ? scrollPreviewScale : 1;
 
+  /** Slide strip: scaled live page (A4) inside fixed-width preview, PowerPoint-style. */
+  const INSIGHTS_THUMB_WIDTH_PX = 208;
+  const insightsThumbScale = INSIGHTS_THUMB_WIDTH_PX / PAGE_WIDTH_PX;
+
+  const slideCardSubtitle = (p: PageLayout): string => {
+    if (p.isCover) return 'Cover';
+    if (p.leftCol[0]?.type === 'answer-key') return 'Answer key';
+    const header = [...p.leftCol, ...p.rightCol].find((b) => b.type === 'subject-header');
+    if (header?.content) return String(header.content);
+    return 'Questions';
+  };
+
   const insightsPanelScroll = (
-    <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
-      <div className="mb-6 rounded-md border border-zinc-800 bg-zinc-900 p-4 shadow-sm">
-        <h3 className="mb-3 text-[8px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Paper Matrix</h3>
-        <div className="grid grid-cols-3 gap-2 mb-3">
-          <div className="flex flex-col items-center rounded-md bg-white/5 p-1.5">
-            <span className="text-[7px] font-black text-emerald-400 uppercase">Easy</span>
-            <span className="text-sm font-black text-white">{globalStats.Easy}</span>
+    <div className="flex h-full min-h-0 flex-1 flex-col bg-zinc-100/90">
+      <div className="shrink-0 border-b border-zinc-200 bg-zinc-900 px-3 py-2.5 text-white shadow-sm">
+        <h3 className="mb-2 text-[8px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Paper matrix</h3>
+        <div className="grid grid-cols-3 gap-1.5">
+          <div className="rounded-md bg-white/10 px-1 py-1 text-center">
+            <span className="block text-[6px] font-black uppercase text-emerald-300">Easy</span>
+            <span className="text-xs font-black tabular-nums">{globalStats.Easy}</span>
           </div>
-          <div className="flex flex-col items-center rounded-md bg-white/5 p-1.5">
-            <span className="text-[7px] font-black text-amber-400 uppercase">Med</span>
-            <span className="text-sm font-black text-white">{globalStats.Medium}</span>
+          <div className="rounded-md bg-white/10 px-1 py-1 text-center">
+            <span className="block text-[6px] font-black uppercase text-amber-300">Med</span>
+            <span className="text-xs font-black tabular-nums">{globalStats.Medium}</span>
           </div>
-          <div className="flex flex-col items-center rounded-md bg-white/5 p-1.5">
-            <span className="text-[7px] font-black text-rose-400 uppercase">Hard</span>
-            <span className="text-sm font-black text-white">{globalStats.Hard}</span>
+          <div className="rounded-md bg-white/10 px-1 py-1 text-center">
+            <span className="block text-[6px] font-black uppercase text-rose-300">Hard</span>
+            <span className="text-xs font-black tabular-nums">{globalStats.Hard}</span>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2 pt-2 border-t border-white/10">
-          <span className="text-[7px] font-medium uppercase text-zinc-400">MCQ: {globalStats.mcq}</span>
-          <span className="text-[7px] font-medium uppercase text-zinc-400">ASR: {globalStats.reasoning}</span>
-          <span className="text-[7px] font-medium uppercase text-zinc-400">MT: {globalStats.matching}</span>
-          <span className="text-[7px] font-medium uppercase text-zinc-400">ST: {globalStats.statements}</span>
-        </div>
+        <p className="mt-2 text-[6px] font-medium uppercase leading-relaxed tracking-wide text-zinc-500">
+          MCQ {globalStats.mcq} · ASR {globalStats.reasoning} · MT {globalStats.matching} · ST {globalStats.statements}
+        </p>
       </div>
 
-      <div className="mb-8">
-        <h3 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-800"><iconify-icon icon="mdi:chart-box-outline" /> Breakdown</h3>
-        <div className="space-y-1.5">
-          {subjectBreakdown.map(([sub, count]) => (
-            <div key={sub} className="group flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 transition-all hover:border-zinc-300">
-              <div className="flex items-center gap-2 overflow-hidden">
-                <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600"></div>
-                <span className="truncate text-[8px] font-medium uppercase text-zinc-600">{sub}</span>
+      <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar px-2 py-3">
+        <h3 className="mb-2 flex items-center gap-1.5 px-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+          <iconify-icon icon="mdi:view-carousel-outline" width="14" />
+          Slides
+        </h3>
+        <div className="flex flex-col gap-2.5">
+          {pages.map((p, idx) => (
+            <button
+              key={`insight-slide-${idx}`}
+              type="button"
+              onClick={() => scrollToPage(idx)}
+              className="group w-full rounded-lg border border-zinc-200/90 bg-white p-2 text-left shadow-sm ring-zinc-300/40 transition-all hover:border-indigo-300 hover:shadow-md hover:ring-2"
+            >
+              <div className="mb-1.5 flex items-start justify-between gap-2 px-0.5">
+                <span className="text-[10px] font-bold tabular-nums text-zinc-900">Slide {idx + 1}</span>
+                <span className="max-w-[58%] truncate text-right text-[7px] font-semibold uppercase tracking-wide text-zinc-500">
+                  {slideCardSubtitle(p)}
+                </span>
               </div>
-              <span className="text-xl font-semibold text-zinc-900">{count}</span>
-            </div>
+              <div
+                className="relative mx-auto overflow-hidden rounded-md border border-zinc-300/80 bg-zinc-200 shadow-inner"
+                style={{
+                  width: INSIGHTS_THUMB_WIDTH_PX,
+                  height: PAGE_HEIGHT_PX * insightsThumbScale,
+                }}
+              >
+                <div
+                  className="pointer-events-none absolute left-0 top-0 overflow-hidden rounded-[inherit]"
+                  style={{
+                    width: PAGE_WIDTH_PX * insightsThumbScale,
+                    height: PAGE_HEIGHT_PX * insightsThumbScale,
+                  }}
+                >
+                  <div
+                    className="flex flex-col bg-white"
+                    style={{
+                      width: '210mm',
+                      height: '297mm',
+                      transform: `scale(${insightsThumbScale})`,
+                      transformOrigin: 'top left',
+                      fontFamily: paperConfig.fontFamily,
+                      colorScheme: 'light',
+                      backgroundColor: '#ffffff',
+                      color: '#000000',
+                    }}
+                  >
+                    {buildPrintablePageInner(p, idx)}
+                  </div>
+                </div>
+              </div>
+            </button>
           ))}
         </div>
-      </div>
 
-      <h3 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-800"><iconify-icon icon="mdi:layers-triple-outline" /> Navigator</h3>
-
-      <div className="space-y-6">
-        {showIntroPage && pages.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[7px] font-semibold uppercase tracking-widest text-zinc-400">PREFACE</span>
-              <div className="h-px flex-1 bg-zinc-200"></div>
-            </div>
-            <div className="w-1/3">
-              <PageThumbnail idx={0} label="P1" />
-            </div>
-          </div>
-        )}
-
-        {Object.entries(subjectToPages).map(([sub, pageIndices]) => (
-          <div key={sub}>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="truncate text-[7px] font-semibold uppercase tracking-widest text-zinc-600">{sub}</span>
-              <div className="h-px flex-1 bg-zinc-200"></div>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {pageIndices.map((pIdx) => (
-                <PageThumbnail key={pIdx} idx={pIdx} label={`P${pIdx + 1}`} />
+        {subjectBreakdown.length > 0 ? (
+          <div className="mt-4 border-t border-zinc-200 pt-3">
+            <h3 className="mb-2 flex items-center gap-1.5 px-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+              <iconify-icon icon="mdi:chart-box-outline" width="14" />
+              By section
+            </h3>
+            <div className="space-y-1">
+              {subjectBreakdown.map(([sub, count]) => (
+                <div
+                  key={sub}
+                  className="flex items-center justify-between rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 shadow-sm"
+                >
+                  <span className="truncate text-[8px] font-semibold uppercase text-zinc-600">{sub}</span>
+                  <span className="text-sm font-bold tabular-nums text-zinc-900">{count}</span>
+                </div>
               ))}
             </div>
           </div>
-        ))}
+        ) : null}
       </div>
     </div>
   );
@@ -1841,83 +2438,64 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
          .math-content .katex .base { margin-top: 2px; margin-bottom: 2px; }
          .math-content .katex-display { margin: 0.2em 0 !important; }
          @media print {
+           #printable-paper-area {
+             display: block !important;
+             max-width: none !important;
+           }
            .print-preview-scale-wrap,
-           .print-preview-scale-inner { display: contents !important; width: auto !important; height: auto !important; }
-           .printable-quiz-page { position: relative !important; transform: none !important; left: auto !important; top: auto !important; }
+           .print-preview-scale-inner {
+             display: block !important;
+             width: 210mm !important;
+             height: auto !important;
+             min-height: 297mm !important;
+             position: static !important;
+             overflow: visible !important;
+             transform: none !important;
+           }
+           #printable-paper-area > div {
+             display: block !important;
+             width: 100% !important;
+           }
+           .printable-quiz-page {
+             position: relative !important;
+             transform: none !important;
+             left: auto !important;
+             top: auto !important;
+             width: 210mm !important;
+             height: 297mm !important;
+           }
          }
        `}</style>
 
        <header className="no-print z-30 shrink-0 border-b border-zinc-200 bg-white pt-[env(safe-area-inset-top)] shadow-sm">
-          <div className="flex flex-col gap-2 px-3 py-2 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:gap-3 lg:px-6 lg:py-3">
-            <div className="flex min-w-0 items-center gap-2 sm:gap-3 lg:gap-4">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-3 py-2 sm:px-4 lg:gap-3 lg:px-6 lg:py-3">
+            <div className="grid w-full grid-cols-[2.25rem_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[2.5rem_minmax(0,1fr)_2.5rem] sm:gap-3">
+              <div className="flex justify-center sm:justify-start">
                 <div
-                    className="group flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-md bg-zinc-900 text-white shadow-sm transition-colors hover:bg-zinc-800 lg:h-10 lg:w-10"
-                    onClick={onRestart}
-                    onKeyDown={(e) => e.key === 'Enter' && onRestart()}
-                    role="button"
-                    tabIndex={0}
+                  className="group flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-md bg-zinc-900 text-white shadow-sm transition-colors hover:bg-zinc-800 lg:h-10 lg:w-10"
+                  onClick={onRestart}
+                  onKeyDown={(e) => e.key === 'Enter' && onRestart()}
+                  role="button"
+                  tabIndex={0}
                 >
-                    <iconify-icon icon="mdi:flask" width="22" className="transition-transform group-hover:rotate-12 lg:w-[24px]" />
+                  <iconify-icon icon="mdi:flask" width="22" className="transition-transform group-hover:rotate-12 lg:w-[24px]" />
                 </div>
-                <div className="min-w-0 flex-1">
-                    <input
-                        type="text"
-                        value={editableTopic}
-                        onChange={(e) => setEditableTopic(e.target.value)}
-                        className="w-full min-w-0 max-w-full border-b-2 border-transparent bg-transparent px-1 text-base font-semibold leading-tight tracking-tight text-zinc-900 outline-none transition-all hover:border-zinc-200 focus:border-zinc-400 sm:text-lg lg:text-lg"
-                    />
-                    <p className="mt-0.5 text-[9px] font-medium uppercase tracking-widest text-zinc-500 sm:text-[10px]">{currentQuestions.length} items validated</p>
-                </div>
-                <div className="ml-auto flex shrink-0 items-center gap-1 lg:hidden">
-                    <button
-                        type="button"
-                        onClick={() => setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'))}
-                        className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${insightsPanelActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-600'}`}
-                        title="Paper insights & navigator"
-                    >
-                        <iconify-icon icon="mdi:chart-box-outline" width="18" />
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'))}
-                        className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${layoutControlsActive ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-200 bg-zinc-50 text-zinc-500 hover:text-zinc-600'}`}
-                        title="Layout controls"
-                    >
-                        <iconify-icon icon="mdi:tune-variant" width="18" />
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setTopicSummaryOpen(true)}
-                        className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-violet-200 hover:bg-violet-50 hover:text-violet-800"
-                        title="Topic breakdown"
-                    >
-                        <iconify-icon icon="mdi:tag-multiple-outline" width="18" />
-                    </button>
-                    <button
-                        type="button"
-                        onClick={handleDownloadOmrSheet}
-                        disabled={isDownloadingOmrPdf}
-                        className="flex h-9 w-9 items-center justify-center rounded-md border border-rose-100 bg-rose-50 text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
-                        title="Download OMR sheet"
-                    >
-                        {isDownloadingOmrPdf ? (
-                            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200 border-t-rose-700" />
-                        ) : (
-                            <iconify-icon icon="mdi:file-download-outline" width="18" />
-                        )}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onRestart}
-                        className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:text-rose-600"
-                        title="Close"
-                    >
-                        <iconify-icon icon="mdi:close" width="18" />
-                    </button>
-                </div>
+              </div>
+              <div className="min-w-0 text-center">
+                <input
+                  type="text"
+                  value={editableTopic}
+                  onChange={(e) => setEditableTopic(e.target.value)}
+                  className="w-full min-w-0 max-w-full border-b-2 border-transparent bg-transparent px-1 text-center text-base font-semibold leading-tight tracking-tight text-zinc-900 outline-none transition-all hover:border-zinc-200 focus:border-zinc-400 sm:text-lg lg:text-lg"
+                />
+                <p className="mt-0.5 text-center text-[9px] font-medium uppercase tracking-widest text-zinc-500 sm:text-[10px]">
+                  {currentQuestions.length} items validated
+                </p>
+              </div>
+              <div className="hidden sm:block sm:min-w-0" aria-hidden />
             </div>
 
-            <div className="-mx-1 flex min-w-0 items-center gap-1.5 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] lg:mx-0 lg:gap-3 lg:overflow-visible lg:px-0 lg:pb-0 [&::-webkit-scrollbar]:hidden">
+            <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2">
               <button
                 type="button"
                 onClick={() => onEditBlueprint && onEditBlueprint(currentQuestions)}
@@ -1972,54 +2550,52 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 Print
               </button>
 
-              <div className="mx-1 hidden h-6 w-px shrink-0 bg-zinc-200 lg:block" />
+              <div className="mx-0.5 hidden h-6 w-px shrink-0 bg-zinc-200 sm:block" />
 
-              <div className="hidden items-center gap-2 lg:flex">
-                <button
-                  type="button"
-                  onClick={() => setTopicSummaryOpen(true)}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 shadow-sm transition-colors hover:border-violet-200 hover:bg-violet-50 hover:text-violet-800"
-                  title="Topic breakdown"
-                  aria-label="Topic breakdown"
-                >
-                  <iconify-icon icon="mdi:tag-multiple-outline" width="20" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsInsightsOpen((o) => !o)}
-                  className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${insightsPanelActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'}`}
-                  title="Paper matrix, breakdown & page navigator"
-                  aria-pressed={isInsightsOpen}
-                >
-                    <iconify-icon icon="mdi:chart-box-outline" width="18" />
-                    Insights
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsControlsOpen((o) => !o)}
-                  className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'}`}
-                  title="View mode, content toggles & paper formatting"
-                  aria-pressed={isControlsOpen}
-                >
-                    <iconify-icon icon="mdi:tune-variant" width="18" />
-                    Layout
-                </button>
-                <button
-                    type="button"
-                    onClick={onRestart}
-                    className="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:text-rose-600"
-                    title="Close"
-                >
-                    <iconify-icon icon="mdi:close" width="20" />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setTopicSummaryOpen(true)}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-violet-800 shadow-sm transition-colors hover:bg-violet-100 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
+                title="Question count by topic (print order)"
+              >
+                <iconify-icon icon="mdi:tag-multiple-outline" width="16" />
+                <span className="max-[380px]:sr-only">Topics</span>
+              </button>
+              <button
+                type="button"
+                onClick={toggleInsightsPanel}
+                className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${insightsPanelActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'} sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5`}
+                title="Paper matrix, breakdown & page navigator"
+                aria-pressed={insightsPanelActive}
+              >
+                <iconify-icon icon="mdi:chart-box-outline" width="18" />
+                Insights
+              </button>
+              <button
+                type="button"
+                onClick={toggleLayoutPanel}
+                className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'} sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5`}
+                title="View mode, content toggles & paper formatting"
+                aria-pressed={layoutControlsActive}
+              >
+                <iconify-icon icon="mdi:tune-variant" width="18" />
+                Layout
+              </button>
+              <button
+                type="button"
+                onClick={onRestart}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 shadow-sm transition-colors hover:text-rose-600 sm:h-10 sm:w-10"
+                title="Close"
+              >
+                <iconify-icon icon="mdi:close" width="20" />
+              </button>
             </div>
           </div>
        </header>
 
        <div className="print-content-shell flex-1 flex min-h-0 overflow-hidden">
             {isInsightsOpen && (
-            <aside className="no-print hidden w-64 shrink-0 flex-col overflow-y-auto border-r border-zinc-200 bg-white animate-fade-in lg:flex">
+            <aside className="no-print hidden h-full min-h-0 w-[min(100vw-2rem,288px)] shrink-0 flex-col overflow-hidden border-r border-zinc-200 bg-white shadow-[4px_0_24px_rgba(0,0,0,0.04)] animate-fade-in lg:flex">
                 {insightsPanelScroll}
             </aside>
             )}
@@ -2034,223 +2610,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     } pb-32 sm:pb-40 print:block print:space-y-0 print:pb-0`}
                 >
                     {pages.map((p, idx) => {
-                        const isAnswerKeyPage = p.leftCol.length > 0 && p.leftCol[0].type === 'answer-key';
                         const pageShellStyle: React.CSSProperties = {
                             fontFamily: paperConfig.fontFamily,
                             colorScheme: 'light',
                             backgroundColor: '#ffffff',
                             color: '#000000',
                         };
-                        const innerCol = (
-                                <div className="relative flex h-full min-h-0 flex-col">
-                                {!isAnswerKeyPage && !p.isCover && (
-                                    <div
-                                        aria-hidden="true"
-                                        className="absolute h-[0.5pt] bg-black z-10 pointer-events-none"
-                                        style={{
-                                            left: `${paperConfig.marginX}mm`,
-                                            right: `${paperConfig.marginX}mm`,
-                                            bottom: '6.4mm',
-                                        }}
-                                    />
-                                )}
-                                <div 
-                                  className="flex-1 flex flex-col"
-                                  style={
-                                    p.isCover
-                                      ? {
-                                          padding: '1.5mm',
-                                          fontSize: `${paperConfig.fontSize}pt`,
-                                          lineHeight: `${paperConfig.lineHeight}`,
-                                          transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
-                                        }
-                                      : {
-                                          paddingTop: `${paperConfig.marginY * QUESTION_PAGE_TOP_MARGIN_FRAC}mm`,
-                                          paddingRight: `${paperConfig.marginX}mm`,
-                                          paddingBottom: `${paperConfig.marginY}mm`,
-                                          paddingLeft: `${paperConfig.marginX}mm`,
-                                          fontSize: `${paperConfig.fontSize}pt`,
-                                          lineHeight: `${paperConfig.lineHeight}`,
-                                          transition: 'font-size 0.12s ease-out, line-height 0.12s ease-out',
-                                        }
-                                  }
-                                >
-                                {isAnswerKeyPage ? (
-                                    <AnswerKeyPage
-                                      questions={questionsOrderedForAnswerKey}
-                                      brandConfig={brandConfig}
-                                      topic={editableTopic}
-                                    />
-                                ) : p.isCover ? (
-                                    <div className="flex-1 flex flex-col border-[1.2pt] border-black p-[2.5mm] relative">
-                                        <div className="flex flex-col items-center text-center mt-0.5 mb-1 shrink-0">
-                                            {brandConfig.logo && <img src={brandConfig.logo} className="h-8 w-8 object-contain mb-0.5" />}
-                                            <h1 className="text-xl font-black uppercase tracking-tight text-black mb-0 leading-none">{brandConfig.name}</h1>
-                                            <div className="w-8 h-0.5 bg-black mb-0.5"></div>
-                                            
-                                            <h2 className="text-sm font-black uppercase mb-0 text-black leading-tight">{editableTopic}</h2>
-                                            <div className="px-3 py-0.5 bg-black text-white rounded-full text-[6pt] font-black uppercase tracking-[0.2em] mb-1">Authorized Assessment</div>
-                                        </div>
-
-                                        {showChapterListOnCover && (
-                                            <div className="flex-shrink-0 h-auto flex flex-col mb-1.5 overflow-hidden">
-                                                <div className="border-b-[0.8pt] border-black pb-0.5 mb-1">
-                                                    <h3 className="text-[7pt] font-black uppercase tracking-[0.15em] text-center">SYLLABUS COVERAGE & WEIGHTAGE</h3>
-                                                </div>
-                                                
-                                                <div className="grid grid-cols-3 gap-1.5 h-auto">
-                                                    {(Object.entries(chapterSummary) as Array<[string, Record<string, number>]>).map(([subject, chaps]) => (
-                                                        <div key={subject} className="flex flex-col border border-black bg-white h-fit overflow-hidden">
-                                                            <div className="bg-black/5 border-b border-black py-0.25 px-1 text-center">
-                                                                <h4 className="text-[6pt] font-black uppercase tracking-widest text-black truncate">{subject}</h4>
-                                                            </div>
-                                                            <div className="p-0.5 space-y-0.25">
-                                                                {(Object.entries(chaps) as Array<[string, number]>).map(([name, count]) => (
-                                                                    <div key={name} className="flex justify-between items-start gap-1 border-b border-black/5 pb-0.25 last:border-0" style={{ fontSize: chapterFontSize }}>
-                                                                        <span className="font-bold leading-none uppercase truncate">{name}</span>
-                                                                        <span className="font-black text-black/50 shrink-0">[{count}]</span>
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        <div className="shrink-0 mt-auto space-y-1">
-                                            <div className="grid grid-cols-3 gap-3 text-black border-y border-black py-1">
-                                                <div className="text-center">
-                                                    <span className="text-[6pt] font-black uppercase text-black/40 block leading-none">Total Items</span>
-                                                    <span className="text-[8pt] font-bold">{currentQuestions.length}</span>
-                                                </div>
-                                                <div className="text-center border-x border-black/10">
-                                                    <span className="text-[6pt] font-black uppercase text-black/40 block leading-none">Duration</span>
-                                                    <span className="text-[8pt] font-bold">180 MINS</span>
-                                                </div>
-                                                <div className="text-center">
-                                                    <span className="text-[6pt] font-black uppercase text-black/40 block leading-none">Max Marks</span>
-                                                    <span className="text-[8pt] font-bold">{currentQuestions.length * 4}</span>
-                                                </div>
-                                            </div>
-                                            
-                                            <div className="flex justify-between items-end pt-0.5 border-t border-black/5">
-                                                <div className="flex items-center gap-3">
-                                                    <div className="text-left">
-                                                      <p className="text-[5pt] font-black uppercase tracking-widest text-black/30 leading-none">Verification</p>
-                                                      <p className="text-[6pt] font-black uppercase leading-tight">Academic Lead</p>
-                                                    </div>
-                                                </div>
-                                                <div className="text-right">
-                                                    <p className="text-[4pt] font-mono font-bold text-black/20 uppercase tracking-tighter leading-none mb-0.5">REF-ID: {Math.random().toString(36).substring(7).toUpperCase()}</p>
-                                                    <p className="text-[6pt] font-serif italic leading-none">Integrated Assessment System</p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div className="flex-1 flex flex-col text-black bg-white relative h-full">
-                                        <div className="mb-0.5 flex min-h-[6mm] shrink-0 items-center justify-between gap-2 px-0.5">
-                                          <span className="max-w-[65%] truncate text-[8pt] font-black uppercase tracking-wide text-black leading-none">
-                                            {brandConfig.name}
-                                          </span>
-                                          {brandConfig.logo ? (
-                                            <img
-                                              src={brandConfig.logo}
-                                              alt=""
-                                              className="h-6 max-h-[7mm] w-auto max-w-[30mm] object-contain object-right"
-                                            />
-                                          ) : (
-                                            <span className="shrink-0" aria-hidden />
-                                          )}
-                                        </div>
-                                        <div className="mb-2 h-[0.5pt] w-full shrink-0 bg-black" />
-
-                                        <div
-                                            className="relative flex min-h-0 flex-1"
-                                            style={{ gap: `${paperConfig.gap}mm` }}
-                                        >
-                                            <div
-                                                aria-hidden="true"
-                                                className="pointer-events-none absolute bottom-0 left-1/2 top-0 z-0 w-[0.5pt] -translate-x-1/2 bg-black"
-                                            />
-                                            <div className="relative z-10 flex-1 overflow-hidden pr-1">
-                                                {p.leftCol.map((b, bi) => (
-                                                  <BlockRenderer
-                                                    key={bi}
-                                                    block={b}
-                                                    nextBlock={p.leftCol[bi + 1]}
-                                                    questionGapPx={appliedQuestionGapPx}
-                                                    examDensity={!includeExplanations}
-                                                    showChoices={showChoices}
-                                                    showSourceFigure={showSourceFigure}
-                                                    showDifficulty={showDifficulty}
-                                                    displayQuestionNumber={
-                                                      b.type === 'question-core' && b.question
-                                                        ? paperQuestionNumberById.get(
-                                                            String(b.question.originalId || b.question.id)
-                                                          )
-                                                        : undefined
-                                                    }
-                                                    onDelete={handleDeleteQuestion}
-                                                    onReplace={handleReplaceQuestion}
-                                                    onFlag={handleFlagQuestion}
-                                                  />
-                                                ))}
-                                            </div>
-                                            <div className="relative z-10 flex-1 overflow-hidden pl-1">
-                                                {p.rightCol.map((b, bi) => (
-                                                  <BlockRenderer
-                                                    key={bi}
-                                                    block={b}
-                                                    nextBlock={p.rightCol[bi + 1]}
-                                                    questionGapPx={appliedQuestionGapPx}
-                                                    examDensity={!includeExplanations}
-                                                    showChoices={showChoices}
-                                                    showSourceFigure={showSourceFigure}
-                                                    showDifficulty={showDifficulty}
-                                                    displayQuestionNumber={
-                                                      b.type === 'question-core' && b.question
-                                                        ? paperQuestionNumberById.get(
-                                                            String(b.question.originalId || b.question.id)
-                                                          )
-                                                        : undefined
-                                                    }
-                                                    onDelete={handleDeleteQuestion}
-                                                    onReplace={handleReplaceQuestion}
-                                                    onFlag={handleFlagQuestion}
-                                                  />
-                                                ))}
-                                            </div>
-                                        </div>
-
-                                        <div
-                                            aria-hidden="true"
-                                            className="hidden print:block select-none pointer-events-none overflow-hidden"
-                                            style={{
-                                                color: 'transparent',
-                                                fontSize: `${paperConfig.fontSize}pt`,
-                                                lineHeight: `${paperConfig.lineHeight}`,
-                                                maxHeight: `${FOOTER_RESERVE_PX}px`
-                                            }}
-                                        >
-                                            {Array.from({ length: INVISIBLE_FOOTER_FILL_LINES }).map((_, fillIdx) => (
-                                                <div key={`footer-fill-${idx}-${fillIdx}`}>x</div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                </div>
-                                <div
-                                    className="mt-auto flex shrink-0 justify-end pb-0.5 pt-0.5 leading-none"
-                                    style={{ paddingRight: `${paperConfig.marginX}mm` }}
-                                >
-                                    <span className="text-[6pt] font-semibold tabular-nums text-black">
-                                        Page {idx + 1} / {pages.length}
-                                    </span>
-                                </div>
-                                </div>
-                        );
+                        const innerCol = buildPrintablePageInner(p, idx);
 
                         const pageClassGrid =
                             'printable-quiz-page relative mx-auto flex aspect-[210/297] h-auto w-full cursor-zoom-in flex-col overflow-hidden border border-zinc-200 bg-white text-black shadow-lg transition-all hover:scale-[1.03] hover:ring-4 hover:ring-zinc-200/60 box-border';
@@ -2403,49 +2769,187 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                 </>
             )}
 
-       <Dialog.Root open={topicSummaryOpen} onOpenChange={setTopicSummaryOpen}>
-         <Dialog.Portal>
-           <Dialog.Overlay className="fixed inset-0 z-[185] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-           <Dialog.Content className="fixed left-1/2 top-1/2 z-[195] flex max-h-[min(85vh,560px)] w-[calc(100vw-1.25rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
-             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3">
-               <div>
-                 <Dialog.Title className="text-sm font-black tracking-tight text-zinc-900">Topics in this paper</Dialog.Title>
-                 <Dialog.Description className="mt-0.5 text-[10px] font-medium text-zinc-500">
-                   Counts follow print reading order. Labels use topic tags, or chapter when a tag is missing.
-                 </Dialog.Description>
-               </div>
-               <Dialog.Close asChild>
+       {typeof document !== 'undefined' &&
+         topicSummaryOpen &&
+         createPortal(
+           <>
+             <button
+               type="button"
+               className="fixed inset-0 z-[300] animate-in fade-in-0 bg-black/45 backdrop-blur-[1px] duration-150"
+               aria-label="Close topic breakdown"
+               onClick={() => setTopicSummaryOpen(false)}
+             />
+             <div
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="paper-topic-breakdown-title"
+               className={`fixed left-1/2 top-1/2 z-[310] flex max-h-[min(85vh,640px)] w-[calc(100vw-1.25rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white text-zinc-900 shadow-xl animate-in fade-in-0 zoom-in-95 duration-150 [color-scheme:light]`}
+             >
+               <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3">
+                 <div>
+                   <h2 id="paper-topic-breakdown-title" className="text-sm font-black tracking-tight text-zinc-900">
+                     Topics in this paper
+                   </h2>
+                   <p className="mt-0.5 text-[10px] font-medium text-zinc-500">
+                     Counts follow print reading order. Each row shows the chapter line first, then the topic tag (or chapter if untagged).
+                     Filter by subject (Zoology, Botany, Chemistry, Physics) and optionally by class.
+                   </p>
+                 </div>
                  <button
                    type="button"
                    className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
                    aria-label="Close"
+                   onClick={() => setTopicSummaryOpen(false)}
                  >
                    <iconify-icon icon="mdi:close" width="20" />
                  </button>
-               </Dialog.Close>
-             </div>
-             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 custom-scrollbar">
-               {paperTopicBreakdown.length === 0 ? (
-                 <p className="py-6 text-center text-sm text-zinc-500">No questions in the paper yet.</p>
-               ) : (
-                 <ul className="space-y-1.5">
-                   {paperTopicBreakdown.map(([label, count]) => (
-                     <li
-                       key={label}
-                       className="flex items-center justify-between gap-3 rounded-lg border border-zinc-100 bg-zinc-50/80 px-3 py-2 text-sm"
+               </div>
+               <div
+                 className="shrink-0 border-b border-zinc-100 bg-teal-50/40 px-4 py-2.5"
+                 role="navigation"
+                 aria-label="Filter by subject"
+               >
+                 <p className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-teal-900/80">Subject</p>
+                 <div className="flex flex-wrap gap-1.5">
+                   <button
+                     type="button"
+                     onClick={() => setTopicModalSubjectFilter(null)}
+                     className={`rounded-full px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                       topicModalSubjectFilter === null
+                         ? 'bg-teal-700 text-white shadow-sm'
+                         : 'bg-white text-teal-900 ring-1 ring-teal-200/80 hover:bg-teal-50'
+                     }`}
+                   >
+                     All
+                     <span
+                       className={`ml-1 tabular-nums ${
+                         topicModalSubjectFilter === null ? 'text-teal-100' : 'text-teal-600'
+                       }`}
                      >
-                       <span className="min-w-0 flex-1 font-medium text-zinc-800">{label}</span>
-                       <span className="shrink-0 tabular-nums rounded-md bg-white px-2 py-0.5 text-xs font-bold text-zinc-700 shadow-sm">
-                         {count}
+                       {topicModalScopeQuestionCount}
+                     </span>
+                   </button>
+                   {TOPIC_MODAL_SUBJECT_PILLS.map((label) => {
+                     const n = paperTopicModalSubjectCounts[label];
+                     return (
+                       <button
+                         key={label}
+                         type="button"
+                         disabled={n === 0}
+                         onClick={() =>
+                           setTopicModalSubjectFilter((prev) => (prev === label ? null : label))
+                         }
+                         className={`rounded-full px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                           topicModalSubjectFilter === label
+                             ? 'bg-teal-700 text-white shadow-sm'
+                             : 'bg-white text-teal-900 ring-1 ring-teal-200/80 hover:bg-teal-50'
+                         }`}
+                       >
+                         {label}
+                         <span
+                           className={`ml-1 tabular-nums ${
+                             topicModalSubjectFilter === label ? 'text-teal-100' : 'text-teal-600'
+                           }`}
+                         >
+                           {n}
+                         </span>
+                       </button>
+                     );
+                   })}
+                 </div>
+               </div>
+               <div
+                 className={`flex min-h-0 flex-1 flex-col overflow-hidden ${
+                   paperTopicModalClassCounts.length > 0 ? 'sm:flex-row' : ''
+                 }`}
+               >
+                 {paperTopicModalClassCounts.length > 0 && (
+                   <div
+                     className="flex shrink-0 gap-1.5 overflow-x-auto border-b border-zinc-200 bg-zinc-50/50 px-3 py-2 sm:w-44 sm:flex-col sm:gap-1 sm:overflow-y-auto sm:border-b-0 sm:border-r sm:py-3 custom-scrollbar"
+                     role="navigation"
+                     aria-label="Filter by class"
+                   >
+                     <button
+                       type="button"
+                       onClick={() => setTopicModalClassFilter(null)}
+                       className={`flex w-max min-w-[7.5rem] shrink-0 items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left sm:w-full sm:min-w-0 ${
+                         topicModalClassFilter === null
+                           ? 'bg-indigo-600 text-white shadow-sm'
+                           : 'bg-white text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-50'
+                       }`}
+                     >
+                       <span className="truncate text-[10px] font-black uppercase tracking-wide">All</span>
+                       <span
+                         className={`shrink-0 tabular-nums text-[10px] font-bold ${
+                           topicModalClassFilter === null ? 'text-indigo-100' : 'text-zinc-500'
+                         }`}
+                       >
+                         {questionsOrderedForAnswerKey.length}
                        </span>
-                     </li>
-                   ))}
-                 </ul>
-               )}
+                     </button>
+                     {paperTopicModalClassCounts.map(([className, count]) => (
+                       <button
+                         key={className}
+                         type="button"
+                         onClick={() => setTopicModalClassFilter(className)}
+                         className={`flex w-max min-w-[7.5rem] shrink-0 items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left sm:w-full sm:min-w-0 ${
+                           topicModalClassFilter === className
+                             ? 'bg-indigo-600 text-white shadow-sm'
+                             : 'bg-white text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-50'
+                         }`}
+                       >
+                         <span className="min-w-0 truncate text-[10px] font-semibold leading-tight">{className}</span>
+                         <span
+                           className={`shrink-0 tabular-nums text-[10px] font-bold ${
+                             topicModalClassFilter === className ? 'text-indigo-100' : 'text-zinc-500'
+                           }`}
+                         >
+                           {count}
+                         </span>
+                       </button>
+                     ))}
+                   </div>
+                 )}
+                 <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 custom-scrollbar">
+                   {paperTopicModalRows.length === 0 ? (
+                     <p className="py-6 text-center text-sm text-zinc-500">
+                       {questionsOrderedForAnswerKey.length === 0
+                         ? 'No questions in the paper yet.'
+                         : 'No topics match the current class or subject filters.'}
+                     </p>
+                   ) : (
+                     <ul className="space-y-2">
+                       {paperTopicModalRows.map((row) => (
+                         <li
+                           key={`${topicModalClassFilter ?? 'all'}:${topicModalSubjectFilter ?? 'all'}:${row.label}`}
+                           className="rounded-lg border border-zinc-100 bg-zinc-50/80 px-3 py-2"
+                         >
+                           <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+                             {row.chapterHint}
+                           </p>
+                           <div className="mt-1 flex items-center justify-between gap-3">
+                             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                               <span className="text-sm font-medium text-zinc-800">{row.label}</span>
+                               {row.classTag ? (
+                                 <span className="shrink-0 rounded-md border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[9px] font-bold leading-none text-violet-800">
+                                   {row.classTag}
+                                 </span>
+                               ) : null}
+                             </div>
+                             <span className="shrink-0 tabular-nums rounded-md bg-white px-2 py-0.5 text-xs font-bold text-zinc-700 shadow-sm">
+                               {row.count}
+                             </span>
+                           </div>
+                         </li>
+                       ))}
+                     </ul>
+                   )}
+                 </div>
+               </div>
              </div>
-           </Dialog.Content>
-         </Dialog.Portal>
-       </Dialog.Root>
+           </>,
+           document.body
+         )}
 
        {isOmrOpen && (
            <OMRScannerModal

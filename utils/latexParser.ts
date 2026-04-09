@@ -265,6 +265,12 @@ export const parsePseudoLatexAndMath = (text: string): string => {
   processedText = processedText.replace(/\t(?=herefore\b)/g, '\\therefore');
   processedText = processedText.replace(/\t(?=ext\{)/g, '\\text');
 
+  // JSON.parse: `\r` is carriage return — `\rightarrow`, `\right`, `\rightharpoonup`, etc. lose the backslash-r.
+  processedText = processedText.replace(/\r(?=ight)/gi, '\\r');
+
+  // JSON.parse: `\t` is tab — bare `\to` (short arrow) becomes TAB + "o".
+  processedText = processedText.replace(/\t(?=o\b)/g, '\\to');
+
   // Model often emits literal backslash-n as two characters for line breaks; real `\n` is rare in LaTeX prose.
   processedText = processedText.replace(/\\n\\n/g, '\n\n');
   processedText = processedText.replace(
@@ -360,8 +366,9 @@ export const parsePseudoLatexAndMath = (text: string): string => {
 
   processedText = restoreMhchemSegments(processedText, mhchemParts);
 
-  // Gemini often leaves an empty \\text{} where α (degree of dissociation, etc.) should be — KaTeX then looks broken in plain text.
-  processedText = processedText.replace(/\\text\{\s*\}/g, '\\alpha');
+  // Empty \text{} breaks KaTeX; do NOT substitute \alpha globally (reaction schemes use empty \text{} as spacers → spurious α).
+  // Thin space in text mode keeps layout stable; real α must be written as \alpha in source.
+  processedText = processedText.replace(/\\text\{\s*\}/g, '\\text{\\,}');
   
   // 2. COMPREHENSIVE REGEX for KaTeX detection.
   // Separated into:

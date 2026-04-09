@@ -24,6 +24,8 @@ const mapBankRowToQuestion = (bq: any): Question => ({
   correctMatches: bq.correct_matches,
   sourceChapterId: bq.chapter_id,
   sourceSubjectName: bq.subject_name,
+  sourceBiologyBranch:
+    bq.biology_branch === 'botany' || bq.biology_branch === 'zoology' ? bq.biology_branch : undefined,
   sourceChapterName: bq.chapter_name,
   pageNumber: bq.page_number,
   topic_tag: bq.topic_tag,

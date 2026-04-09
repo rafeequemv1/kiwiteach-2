@@ -820,7 +820,25 @@ const Quiz: React.FC = () => {
         questions.forEach(q => {
             if (!q.sourceChapterId) return;
             if (chaptersMap.has(q.sourceChapterId)) { chaptersMap.get(q.sourceChapterId)!.count += 1; } 
-            else { chaptersMap.set(q.sourceChapterId, { id: q.sourceChapterId, name: q.sourceChapterName || 'Unknown', subjectName: q.sourceSubjectName || 'Unknown', className: 'Unknown', count: 1, figureCount: 0, difficulty: 'Global', source: 'db', styleCounts: { mcq: 1 }, selectionMode: 'count', visualMode: 'image' }); }
+            else {
+              chaptersMap.set(q.sourceChapterId, {
+                id: q.sourceChapterId,
+                name: q.sourceChapterName || 'Unknown',
+                subjectName: q.sourceSubjectName || 'Unknown',
+                biology_branch:
+                  q.sourceBiologyBranch === 'botany' || q.sourceBiologyBranch === 'zoology'
+                    ? q.sourceBiologyBranch
+                    : null,
+                className: 'Unknown',
+                count: 1,
+                figureCount: 0,
+                difficulty: 'Global',
+                source: 'db',
+                styleCounts: { mcq: 1 },
+                selectionMode: 'count',
+                visualMode: 'image',
+              });
+            }
         });
         setEditInitialChapters(Array.from(chaptersMap.values()));
         setEditInitialTopic(forgedResult?.topic || 'Untitled');
@@ -1045,7 +1063,18 @@ const Quiz: React.FC = () => {
               );
           }
 
-          const enriched = newBatch.map(q => ({ ...q, sourceChapterId: q.sourceChapterId || chap.id, sourceChapterName: q.sourceChapterName || chap.name, sourceSubjectName: q.sourceSubjectName || chap.subjectName }));
+          const enriched = newBatch.map((q) => ({
+            ...q,
+            sourceChapterId: q.sourceChapterId || chap.id,
+            sourceChapterName: q.sourceChapterName || chap.name,
+            sourceSubjectName: q.sourceSubjectName || chap.subjectName,
+            sourceBiologyBranch:
+              q.sourceBiologyBranch === 'botany' || q.sourceBiologyBranch === 'zoology'
+                ? q.sourceBiologyBranch
+                : chap.biology_branch === 'botany' || chap.biology_branch === 'zoology'
+                  ? chap.biology_branch
+                  : q.sourceBiologyBranch ?? null,
+          }));
           finalQuestions = [...finalQuestions, ...enriched];
       }
       return finalQuestions;
@@ -1143,7 +1172,10 @@ const Quiz: React.FC = () => {
       setIsForging(true);
       setForgeStep('Generating Mock Exam...');
       try {
-          const { data: chaptersData } = await supabase.from('chapters').select('id, name, subject_name, class_name, kb_id').in('id', chapterIds);
+          const { data: chaptersData } = await supabase
+              .from('chapters')
+              .select('id, name, subject_name, class_name, kb_id, biology_branch')
+              .in('id', chapterIds);
           if (!chaptersData) throw new Error("Chapters not found");
           const mockKbId = chaptersData[0]?.kb_id ?? null;
           const perChapter = 10;
@@ -1190,10 +1222,12 @@ const Quiz: React.FC = () => {
               number
           >;
 
-          options.chapters = chaptersData.map((c) => ({
+          options.chapters = chaptersData.map((c: any) => ({
               id: c.id,
               name: c.name,
               subjectName: c.subject_name || 'General',
+              biology_branch:
+                c.biology_branch === 'botany' || c.biology_branch === 'zoology' ? c.biology_branch : null,
               className: c.class_name || 'General',
               count: perChapter,
               figureCount: 0,
