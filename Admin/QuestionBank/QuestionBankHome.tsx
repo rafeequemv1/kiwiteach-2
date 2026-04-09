@@ -1097,61 +1097,95 @@ const QuestionBankHome: React.FC = () => {
                           plannedStatements: 0,
                           plannedTotalQs: totalSyllabusQ,
                           recipeNote:
-                            'Syllabus mode: each topic runs its own Gemini call — Medium difficulty, MCQ-only, count from the topic card.',
+                            'Syllabus mode: round-robin topic batches (≤8 Q/call) so generation interleaves subtopics instead of exhausting one topic at a time.',
                         },
                         `Syllabus mode · ${enabledTopics.length} topic(s)`
                       );
-                      let topicOrd = 0;
-                      for (const [topicName, topicConfig] of enabledTopics) {
-                          if (stopForgingRef.current) break;
-                          topicOrd += 1;
-                          const line = `${progressPrefix}: topic ${topicOrd}/${enabledTopics.length} · ${topicName}`;
-                          patchForgeDetail({
-                            syllabusTopic: String(topicName),
-                            syllabusIndex: topicOrd,
-                            line,
-                            geminiLine: 'Preparing Gemini request…',
-                          });
-                          setForgeProgress(line);
-                          const gen = await generateQuizQuestions(
-                              String(chapter.name),
-                              { easy: 0, medium: topicConfig.count, hard: 0 },
-                              topicConfig.count,
-                              { text: rawText },
-                              { mcq: topicConfig.count, reasoning: 0, matching: 0, statements: 0 },
-                              (st) => {
-                                setForgeProgress(`${progressPrefix}: ${topicName} · ${st}`);
-                                setForgeDetail((p) => (p ? { ...p, geminiLine: st } : p));
-                              },
-                              0,
-                              false,
-                              undefined,
-                              selectedModel,
-                              'text',
-                              [String(topicName)],
-                              undefined,
-                              undefined,
-                              undefined,
-                              excludedTopicLabelsNormalized,
-                              selectedKbId,
-                              forgePromptSetOverrideId,
-                              forgeSplitLongSource
-                          );
-                          chapterGeneratedQs.push(...gen);
-                          producedBeforeInsert += gen.length;
-                          setForgeDetail((p) =>
-                            p
-                              ? {
-                                  ...p,
-                                  chapterQuestions: p.chapterQuestions + gen.length,
-                                  geminiLine: `Received ${gen.length} question(s)`,
-                                }
-                              : p
-                          );
-                          patchForgeDetail(
-                            { line: `${progressPrefix}: topic ${topicOrd} done (+${gen.length} Q)` },
-                            `✓ ${topicName.slice(0, 48)}${topicName.length > 48 ? '…' : ''} · +${gen.length} Q`
-                          );
+                      const SYLLABUS_FORGE_BATCH_MAX = 8;
+                      type TopicEntry = { name: string; remaining: number };
+                      const topicEntries: TopicEntry[] = enabledTopics
+                        .map(([topicName, topicConfig]) => ({
+                          name: String(topicName),
+                          remaining: topicConfig.count,
+                        }))
+                        .sort((a, b) => a.name.localeCompare(b.name));
+                      const totalRemaining = () => topicEntries.reduce((s, e) => s + e.remaining, 0);
+                      let syllabusBatchIdx = 0;
+                      while (totalRemaining() > 0 && !stopForgingRef.current) {
+                        const batchQuotas: { label: string; count: number }[] = [];
+                        let size = 0;
+                        while (size < SYLLABUS_FORGE_BATCH_MAX && totalRemaining() > 0) {
+                          let progressed = false;
+                          for (const e of topicEntries) {
+                            if (size >= SYLLABUS_FORGE_BATCH_MAX) break;
+                            if (e.remaining <= 0) continue;
+                            e.remaining -= 1;
+                            const last = batchQuotas[batchQuotas.length - 1];
+                            if (last && last.label === e.name) last.count += 1;
+                            else batchQuotas.push({ label: e.name, count: 1 });
+                            size += 1;
+                            progressed = true;
+                          }
+                          if (!progressed) break;
+                        }
+                        const batchTotal = batchQuotas.reduce((s, q) => s + q.count, 0);
+                        if (batchTotal <= 0) break;
+                        syllabusBatchIdx += 1;
+                        const batchLabel =
+                          batchQuotas.length > 1
+                            ? `${batchQuotas.length} topics interleaved`
+                            : batchQuotas[0]?.label ?? 'topic';
+                        const line = `${progressPrefix}: syllabus batch ${syllabusBatchIdx} · ${batchLabel} · ${batchTotal} Q`;
+                        patchForgeDetail({
+                          syllabusTopic: batchLabel,
+                          syllabusIndex: syllabusBatchIdx,
+                          line,
+                          geminiLine: 'Preparing Gemini request…',
+                        });
+                        setForgeProgress(line);
+                        const gen = await generateQuizQuestions(
+                          String(chapter.name),
+                          { easy: 0, medium: batchTotal, hard: 0 },
+                          batchTotal,
+                          { text: rawText },
+                          { mcq: batchTotal, reasoning: 0, matching: 0, statements: 0 },
+                          (st) => {
+                            setForgeProgress(`${progressPrefix}: batch ${syllabusBatchIdx} · ${st}`);
+                            setForgeDetail((p) => (p ? { ...p, geminiLine: st } : p));
+                          },
+                          0,
+                          false,
+                          undefined,
+                          selectedModel,
+                          'text',
+                          batchQuotas.map((q) => q.label),
+                          undefined,
+                          undefined,
+                          undefined,
+                          excludedTopicLabelsNormalized,
+                          selectedKbId,
+                          forgePromptSetOverrideId,
+                          forgeSplitLongSource,
+                          batchQuotas.length > 1 ? batchQuotas : undefined
+                        );
+                        chapterGeneratedQs.push(...gen);
+                        producedBeforeInsert += gen.length;
+                        setForgeDetail((p) =>
+                          p
+                            ? {
+                                ...p,
+                                chapterQuestions: p.chapterQuestions + gen.length,
+                                geminiLine: `Received ${gen.length} question(s)`,
+                              }
+                            : p
+                        );
+                        patchForgeDetail(
+                          { line: `${progressPrefix}: batch ${syllabusBatchIdx} done (+${gen.length} Q)` },
+                          `✓ Batch ${syllabusBatchIdx} · +${gen.length} Q`
+                        );
+                        if (totalRemaining() > 0) {
+                          await sleepForgeMs(650);
+                        }
                       }
                   } else {
                       config.total = Object.values(config.types).reduce((a: number, b: number) => a + b, 0);
@@ -1489,7 +1523,8 @@ const QuestionBankHome: React.FC = () => {
                                   excludedTopicLabelsNormalized,
                                   selectedKbId,
                                   forgePromptSetOverrideId,
-                                  forgeSplitLongSource
+                                  forgeSplitLongSource,
+                                  undefined
                               );
                               genParts.push(...part);
                               producedBeforeInsert += part.length;
@@ -1547,7 +1582,8 @@ const QuestionBankHome: React.FC = () => {
                               excludedTopicLabelsNormalized,
                               selectedKbId,
                               forgePromptSetOverrideId,
-                              forgeSplitLongSource
+                              forgeSplitLongSource,
+                              undefined
                           );
                           producedBeforeInsert += gen.length;
                           setForgeDetail((p) =>

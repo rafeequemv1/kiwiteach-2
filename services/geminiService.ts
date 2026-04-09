@@ -540,7 +540,9 @@ export const generateQuizQuestions = async (
    * When true, long SOURCE MATERIAL is split into multiple API calls (counts scaled per segment).
    * One call if the text already fits — no extra cost. Reference images attach only to the first segment.
    */
-  splitLongSource: boolean = false
+  splitLongSource: boolean = false,
+  /** When multiple entries, model must hit exact per-label counts and interleave topic_tags (admin syllabus forge). */
+  syllabusTopicQuotaBatch?: { label: string; count: number }[] | null
 ): Promise<Question[]> => {
   const srcTextFull = sourceContext?.text ?? "";
   if (splitLongSource && srcTextFull.length > 0 && count > 0) {
@@ -595,7 +597,8 @@ export const generateQuizQuestions = async (
           excludedTopicLabels,
           knowledgeBaseId,
           promptSetIdOverride,
-          false
+          false,
+          undefined
         );
         part.forEach((q, idx) => {
           merged.push({ ...q, id: `forge-${batchId}-${i}-${idx}` });
@@ -690,13 +693,38 @@ export const generateQuizQuestions = async (
        - **QUESTION SYNERGY**: The question text MUST reference these new labels.`
     : `[VISUAL_CONSTRAINT]: Do NOT include any figurePrompts. Generate text-only questions.`;
 
-  const syllabusInstruction = syllabusTopics && syllabusTopics.length > 0 
-    ? `[CRITICAL_SYLLABUS_PROTOCOL]:
+  const effectiveSyllabusList: string[] =
+    syllabusTopicQuotaBatch && syllabusTopicQuotaBatch.length > 0
+      ? syllabusTopicQuotaBatch.map((q) => String(q.label).trim()).filter(Boolean)
+      : syllabusTopics && syllabusTopics.length > 0
+        ? syllabusTopics.map((t) => String(t).trim()).filter(Boolean)
+        : [];
+
+  const syllabusInstruction =
+    effectiveSyllabusList.length > 0
+      ? `[CRITICAL_SYLLABUS_PROTOCOL]:
        - You are provided with a definitive list of authorized 'topic_tag' values.
        - For EACH question you generate, the 'topic_tag' field in the JSON object MUST be an EXACT, case-sensitive match to one of the strings in this list.
-       - AUTHORIZED TOPICS: [${syllabusTopics.map(t => `"${t.trim()}"`).join(', ')}]
+       - AUTHORIZED TOPICS: [${effectiveSyllabusList.map((t) => `"${t}"`).join(', ')}]
        - **FAILURE CONDITION**: It is strictly forbidden to generate a 'topic_tag' that is not on this list. Do not paraphrase, summarize, or invent new topics. For example, if the list contains "Cell Cycle", the tag must be "Cell Cycle", not "Phases of the Cell Cycle".`
-    : '';
+      : '';
+
+  const multiTopicQuotaInstruction =
+    syllabusTopicQuotaBatch && syllabusTopicQuotaBatch.length > 1
+      ? `[MULTI_TOPIC_QUOTA — HARD REQUIREMENT]:
+The ${count} questions MUST satisfy this exact quota (topic_tag on each object):
+${syllabusTopicQuotaBatch.map((x) => `• ${x.count} × topic_tag exactly "${String(x.label).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join('\n')}
+- **JSON ARRAY ORDER**: Interleave topics as you build the array — do not place all items for one topic_tag before moving to the next.
+- **INTRA_TOPIC_DEPTH**: Within each topic_tag, probe different ideas; no two questions on the same narrow fact or wording pattern.
+${figureCount > 0 ? '- **FIGURE_SPREAD**: Each figure-backed question should emphasize a different sub-idea where possible (structure vs process vs graph vs apparatus).' : ''}`
+      : '';
+
+  const topicBreadthInstruction =
+    syllabusTopicQuotaBatch && syllabusTopicQuotaBatch.length > 1
+      ? ''
+      : `[TOPIC_BREADTH — EXAM_COVERAGE]:
+- Span as many distinct subtopics as ${count} questions reasonably allow; avoid clustering on one narrow theme.
+${figureCount > 0 ? '- For diagram items: vary what is being tested (different structures, graphs, cycles, setups) — avoid repeating the same visual concept.' : ''}`;
 
   const exclusionInstruction =
     excludedTopicLabels && excludedTopicLabels.length > 0
@@ -722,6 +750,8 @@ export const generateQuizQuestions = async (
     ${difficultyOrderHint}
     ${visualInstruction}
     ${syllabusInstruction}
+    ${multiTopicQuotaInstruction}
+    ${topicBreadthInstruction}
     ${exclusionInstruction}
     ${FORGE_FORMAT_PROTOCOLS}
 

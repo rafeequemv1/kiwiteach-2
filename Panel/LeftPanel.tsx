@@ -61,8 +61,9 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
     try {
       await generateOMR({
         topic: 'Blank Assessment',
-        questions: [], 
-        filename: 'Blank_NEET_OMR_Sheet.pdf'
+        questions: [],
+        filename: 'Blank_NEET_OMR_Sheet.pdf',
+        brandConfig,
       });
     } finally {
       setIsDownloading(false);

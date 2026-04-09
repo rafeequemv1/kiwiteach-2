@@ -11,11 +11,14 @@ import {
   resolveMatchingPaperColumns,
 } from '../../utils/matchingPaperColumns';
 import OMRScannerModal from './OCR/OMRScannerModal';
+import { generateOMR } from './OMR/OMRGenerator';
 import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
 import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
+import { eligibleOversampleLimit, selectQuestionsMaxTopicSpread } from '../services/topicSpreadPick';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 import { flagReasonTooltip, QuestionFlagReason } from './QuestionPaperItem';
 import { prepare, layout } from '@chenglou/pretext';
+import { Dialog } from 'radix-ui';
 
 type BlockType = 'cover-page' | 'question-core' | 'explanation-box' | 'subject-header' | 'answer-key';
 type FigureSize = 'small' | 'medium' | 'large';
@@ -246,6 +249,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [isReplacing, setIsReplacing] = useState<string | null>(null);
   const [saveComplete, setSaveComplete] = useState(false);
   const [isOmrOpen, setIsOmrOpen] = useState(false);
+  const [isDownloadingOmrPdf, setIsDownloadingOmrPdf] = useState(false);
   /** Left rail: paper matrix, breakdown, page navigator (lg+). */
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
   /** Right rail: layout & formatting controls (lg+). */
@@ -254,6 +258,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
 
   type ResultMobileSheet = null | 'insights' | 'layout';
   const [resultMobileSheet, setResultMobileSheet] = useState<ResultMobileSheet>(null);
+  const [topicSummaryOpen, setTopicSummaryOpen] = useState(false);
   const [isLgLayout, setIsLgLayout] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(min-width: 1024px)').matches : true
   );
@@ -417,6 +422,37 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     () => questionsInPaperReadingOrder(pages, currentQuestions),
     [pages, currentQuestions]
   );
+
+  /** Paper reading order: topic_tag counts with chapter fallback for untagged items. */
+  const paperTopicBreakdown = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const q of questionsOrderedForAnswerKey) {
+      const tag = (q.topic_tag && String(q.topic_tag).trim()) || '';
+      const key =
+        tag ||
+        (q.sourceChapterName && String(q.sourceChapterName).trim()) ||
+        'No topic tag';
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [questionsOrderedForAnswerKey]);
+
+  const handleDownloadOmrSheet = useCallback(async () => {
+    setIsDownloadingOmrPdf(true);
+    try {
+      const safeName = editableTopic.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, '_') || 'Test';
+      await generateOMR({
+        topic: editableTopic,
+        questions: questionsOrderedForAnswerKey,
+        filename: `${safeName}_Blank_OMR.pdf`,
+        brandConfig,
+      });
+    } catch (e: any) {
+      alert('OMR sheet download failed: ' + (e?.message || String(e)));
+    } finally {
+      setIsDownloadingOmrPdf(false);
+    }
+  }, [editableTopic, questionsOrderedForAnswerKey, brandConfig]);
 
   const totalChaptersCount = useMemo(() => {
     return Object.values(chapterSummary).reduce((acc: number, sub: Record<string, number>) => acc + Object.keys(sub).length, 0);
@@ -651,14 +687,18 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
           chapterId: q.sourceChapterId,
           difficulty: q.difficulty,
           excludeIds: currentIds,
-          limit: 16,
+          limit: eligibleOversampleLimit(1),
           allowRepeats: allowPastReplacements,
         });
         if (!eligible.length) {
             alert("No more similar questions found in the database for this chapter and difficulty.");
             return;
         }
-        const newQ = eligible[Math.floor(Math.random() * eligible.length)];
+        const newQ = selectQuestionsMaxTopicSpread(eligible, 1)[0];
+        if (!newQ) {
+          alert("No more similar questions found in the database for this chapter and difficulty.");
+          return;
+        }
         
         setCurrentQuestions(prev => prev.map(item => item.id === q.id ? newQ : item));
     } catch (e: any) {
@@ -736,7 +776,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
           chapterId: q.sourceChapterId,
           difficulty: q.difficulty,
           excludeIds: currentIds,
-          limit: 40,
+          limit: eligibleOversampleLimit(5),
           allowRepeats: allowPastReplacements,
         });
       } else {
@@ -745,7 +785,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         if (q.type) query = query.eq('question_type', q.type);
         if (q.topic_tag) query = query.eq('topic_tag', q.topic_tag);
         if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
-        const { data } = await query.limit(40);
+        const { data } = await query.limit(eligibleOversampleLimit(5));
         candidates = ((data || []) as any[]).map((bq) => ({
           id: bq.id,
           originalId: bq.id,
@@ -780,7 +820,15 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
         candidates.filter((c) => sameType(c)),
         candidates,
       ];
-      const replacement = priorityBuckets.find((b) => b.length > 0)?.[0] || null;
+      let replacement: Question | null = null;
+      for (const b of priorityBuckets) {
+        if (b.length === 0) continue;
+        const pick = selectQuestionsMaxTopicSpread(b, 1)[0];
+        if (pick) {
+          replacement = pick;
+          break;
+        }
+      }
 
       if (replacement) {
         setCurrentQuestions((prev) => prev.map((item) => (item.id === q.id ? replacement : item)));
@@ -1839,6 +1887,27 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     </button>
                     <button
                         type="button"
+                        onClick={() => setTopicSummaryOpen(true)}
+                        className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-violet-200 hover:bg-violet-50 hover:text-violet-800"
+                        title="Topic breakdown"
+                    >
+                        <iconify-icon icon="mdi:tag-multiple-outline" width="18" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleDownloadOmrSheet}
+                        disabled={isDownloadingOmrPdf}
+                        className="flex h-9 w-9 items-center justify-center rounded-md border border-rose-100 bg-rose-50 text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
+                        title="Download OMR sheet"
+                    >
+                        {isDownloadingOmrPdf ? (
+                            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200 border-t-rose-700" />
+                        ) : (
+                            <iconify-icon icon="mdi:file-download-outline" width="18" />
+                        )}
+                    </button>
+                    <button
+                        type="button"
                         onClick={onRestart}
                         className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:text-rose-600"
                         title="Close"
@@ -1870,6 +1939,20 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               </button>
               <button
                 type="button"
+                onClick={handleDownloadOmrSheet}
+                disabled={isDownloadingOmrPdf}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-rose-100 bg-rose-50 text-rose-700 shadow-sm transition-all hover:bg-rose-100 disabled:opacity-50 sm:h-10 sm:w-10"
+                title="Download OMR sheet"
+                aria-label="Download OMR sheet"
+              >
+                {isDownloadingOmrPdf ? (
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200 border-t-rose-700" />
+                ) : (
+                  <iconify-icon icon="mdi:file-download-outline" width="18" />
+                )}
+              </button>
+              <button
+                type="button"
                 onClick={handleSaveToCloud}
                 disabled={isSaving || saveComplete}
                 className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-all sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5 ${saveComplete ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'bg-zinc-900 text-white hover:bg-zinc-800'}`}
@@ -1892,6 +1975,15 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               <div className="mx-1 hidden h-6 w-px shrink-0 bg-zinc-200 lg:block" />
 
               <div className="hidden items-center gap-2 lg:flex">
+                <button
+                  type="button"
+                  onClick={() => setTopicSummaryOpen(true)}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 shadow-sm transition-colors hover:border-violet-200 hover:bg-violet-50 hover:text-violet-800"
+                  title="Topic breakdown"
+                  aria-label="Topic breakdown"
+                >
+                  <iconify-icon icon="mdi:tag-multiple-outline" width="20" />
+                </button>
                 <button
                   type="button"
                   onClick={() => setIsInsightsOpen((o) => !o)}
@@ -2310,6 +2402,50 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     </div>
                 </>
             )}
+
+       <Dialog.Root open={topicSummaryOpen} onOpenChange={setTopicSummaryOpen}>
+         <Dialog.Portal>
+           <Dialog.Overlay className="fixed inset-0 z-[185] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+           <Dialog.Content className="fixed left-1/2 top-1/2 z-[195] flex max-h-[min(85vh,560px)] w-[calc(100vw-1.25rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3">
+               <div>
+                 <Dialog.Title className="text-sm font-black tracking-tight text-zinc-900">Topics in this paper</Dialog.Title>
+                 <Dialog.Description className="mt-0.5 text-[10px] font-medium text-zinc-500">
+                   Counts follow print reading order. Labels use topic tags, or chapter when a tag is missing.
+                 </Dialog.Description>
+               </div>
+               <Dialog.Close asChild>
+                 <button
+                   type="button"
+                   className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
+                   aria-label="Close"
+                 >
+                   <iconify-icon icon="mdi:close" width="20" />
+                 </button>
+               </Dialog.Close>
+             </div>
+             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 custom-scrollbar">
+               {paperTopicBreakdown.length === 0 ? (
+                 <p className="py-6 text-center text-sm text-zinc-500">No questions in the paper yet.</p>
+               ) : (
+                 <ul className="space-y-1.5">
+                   {paperTopicBreakdown.map(([label, count]) => (
+                     <li
+                       key={label}
+                       className="flex items-center justify-between gap-3 rounded-lg border border-zinc-100 bg-zinc-50/80 px-3 py-2 text-sm"
+                     >
+                       <span className="min-w-0 flex-1 font-medium text-zinc-800">{label}</span>
+                       <span className="shrink-0 tabular-nums rounded-md bg-white px-2 py-0.5 text-xs font-bold text-zinc-700 shadow-sm">
+                         {count}
+                       </span>
+                     </li>
+                   ))}
+                 </ul>
+               )}
+             </div>
+           </Dialog.Content>
+         </Dialog.Portal>
+       </Dialog.Root>
 
        {isOmrOpen && (
            <OMRScannerModal

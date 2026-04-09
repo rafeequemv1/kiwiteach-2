@@ -43,6 +43,12 @@ import {
   isUuid,
   recordQuestionUsageForTest,
 } from './services/questionUsageService';
+import {
+  allocateFigureSlotsByChapter,
+  eligibleOversampleLimit,
+  questionHasFigure,
+  selectQuestionsMaxTopicSpread,
+} from './services/topicSpreadPick';
 import { fetchUserExcludedTopicLabels } from '../services/syllabusService';
 import { isOnlineExamAssignment, sanitizeQuestionsForStudentExam } from './services/studentTestService';
 import { resolvePlatformBranding } from '../branding/defaults';
@@ -885,6 +891,10 @@ const Quiz: React.FC = () => {
       let finalQuestions: Question[] = [...manualQs]; 
       
       const chaptersForBank = options.chapters.map((c) => ({ ...c, source: 'db' as const }));
+      const figureSlotsByChapter = allocateFigureSlotsByChapter(
+        chaptersForBank.map((c) => ({ id: c.id, count: c.count || 0 })),
+        options.globalFigureCount ?? 0
+      );
 
       for (const chap of chaptersForBank) {
           const manualForThisChap = manualQs.filter(q => q.sourceChapterId === chap.id);
@@ -929,6 +939,15 @@ const Quiz: React.FC = () => {
               };
 
               const usePerStyle = !!(chap.useStyleMix && chap.styleCounts);
+              const baseEligibleArgs = {
+                classId: options.targetClassId || null,
+                chapterId: chap.id,
+                difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                allowRepeats: !!options.allowPastQuestions,
+                includeUsedQuestionIds: options.includeUsedQuestionIds || [],
+                excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+              } as const;
+
               if (usePerStyle) {
                 const plan = normalizeStylePlan(chap.styleCounts, neededFromBank);
                 const collected: Question[] = [];
@@ -936,19 +955,15 @@ const Quiz: React.FC = () => {
                   const want = plan[qt];
                   if (want <= 0) continue;
                   const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
-                  const part = await fetchEligibleQuestions({
-                    classId: options.targetClassId || null,
-                    chapterId: chap.id,
-                    difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                  const pool = await fetchEligibleQuestions({
+                    ...baseEligibleArgs,
                     questionType: qt,
                     excludeIds: exclude,
-                    limit: want,
-                    allowRepeats: !!options.allowPastQuestions,
-                    includeUsedQuestionIds: options.includeUsedQuestionIds || [],
-                    excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+                    limit: eligibleOversampleLimit(want),
                   });
+                  const picked = selectQuestionsMaxTopicSpread(pool, want);
                   collected.push(
-                    ...part.map((bq) => ({
+                    ...picked.map((bq) => ({
                       ...bq,
                       sourceChapterName: bq.sourceChapterName || chap.name,
                     }))
@@ -957,18 +972,14 @@ const Quiz: React.FC = () => {
                 let still = neededFromBank - collected.length;
                 if (still > 0) {
                   const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
-                  const filler = await fetchEligibleQuestions({
-                    classId: options.targetClassId || null,
-                    chapterId: chap.id,
-                    difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                  const fillerPool = await fetchEligibleQuestions({
+                    ...baseEligibleArgs,
                     excludeIds: exclude,
-                    limit: still,
-                    allowRepeats: !!options.allowPastQuestions,
-                    includeUsedQuestionIds: options.includeUsedQuestionIds || [],
-                    excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+                    limit: eligibleOversampleLimit(still),
                   });
+                  const fillerPick = selectQuestionsMaxTopicSpread(fillerPool, still);
                   collected.push(
-                    ...filler.map((bq) => ({
+                    ...fillerPick.map((bq) => ({
                       ...bq,
                       sourceChapterName: bq.sourceChapterName || chap.name,
                     }))
@@ -976,20 +987,47 @@ const Quiz: React.FC = () => {
                 }
                 newBatch = collected.slice(0, neededFromBank);
               } else {
-                const eligible = await fetchEligibleQuestions({
-                  classId: options.targetClassId || null,
-                  chapterId: chap.id,
-                  difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+                const pool = await fetchEligibleQuestions({
+                  ...baseEligibleArgs,
                   excludeIds: currentIds,
-                  limit: neededFromBank,
-                  allowRepeats: !!options.allowPastQuestions,
-                  includeUsedQuestionIds: options.includeUsedQuestionIds || [],
-                  excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
+                  limit: eligibleOversampleLimit(neededFromBank),
                 });
-                newBatch = eligible.map((bq) => ({
+                newBatch = selectQuestionsMaxTopicSpread(pool, neededFromBank).map((bq) => ({
                   ...bq,
                   sourceChapterName: bq.sourceChapterName || chap.name,
                 }));
+              }
+
+              const figWanted = figureSlotsByChapter.get(chap.id) ?? 0;
+              if (figWanted > 0 && newBatch.length > 0) {
+                let guard = 0;
+                while (
+                  guard++ < 48 &&
+                  newBatch.filter(questionHasFigure).length < figWanted &&
+                  newBatch.some((q) => !questionHasFigure(q))
+                ) {
+                  const excludeIds = [
+                    ...currentIds,
+                    ...newBatch.map((q) => q.originalId || q.id).filter(isUuid),
+                  ];
+                  const morePool = await fetchEligibleQuestions({
+                    ...baseEligibleArgs,
+                    excludeIds,
+                    limit: eligibleOversampleLimit(neededFromBank),
+                  });
+                  const figOnly = morePool.filter(questionHasFigure);
+                  const one = selectQuestionsMaxTopicSpread(figOnly, 1)[0];
+                  if (!one) break;
+                  const dropIdx = newBatch.findIndex((q) => !questionHasFigure(q));
+                  if (dropIdx < 0) break;
+                  const next = newBatch.slice();
+                  next.splice(dropIdx, 1);
+                  next.push({
+                    ...one,
+                    sourceChapterName: one.sourceChapterName || chap.name,
+                  });
+                  newBatch = next;
+                }
               }
 
           }

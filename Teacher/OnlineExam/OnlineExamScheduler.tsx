@@ -6,6 +6,7 @@ import { renderWithSmiles } from '../../utils/smilesRenderer';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import InteractiveQuizSession from '../../Quiz/components/InteractiveQuizSession';
 import { fetchEligibleQuestions, isUuid } from '../../Quiz/services/questionUsageService';
+import { eligibleOversampleLimit, selectQuestionsMaxTopicSpread } from '../../Quiz/services/topicSpreadPick';
 
 interface OnlineExamSchedulerProps {
   topic: string;
@@ -85,11 +86,12 @@ const OnlineExamScheduler: React.FC<OnlineExamSchedulerProps> = ({ topic, questi
             chapterId: q.sourceChapterId,
             difficulty: q.difficulty,
             excludeIds: currentIds,
-            limit: 20,
+            limit: eligibleOversampleLimit(1),
             allowRepeats: allowPastReplacements,
           });
           if (!candidates.length) return alert("No alternative questions found in this chapter.");
-          const newQ: Question = candidates[Math.floor(Math.random() * candidates.length)];
+          const newQ = selectQuestionsMaxTopicSpread(candidates, 1)[0];
+          if (!newQ) return alert("No alternative questions found in this chapter.");
           setLocalQuestions(prev => prev.map(item => item.id === q.id ? newQ : item));
       } catch (err: any) { 
           console.error("Replace Error", err);
