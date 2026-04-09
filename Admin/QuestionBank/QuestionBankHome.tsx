@@ -3786,6 +3786,7 @@ const QuestionBankHome: React.FC = () => {
                                     showSource={
                                       (mode === 'browse' || mode === 'review') && questionCardDisplay.showSourceFigure
                                     }
+                                    sourceFigureIconToggle={mode === 'browse' || mode === 'review'}
                                     showPromptSet={
                                       (mode === 'browse' || mode === 'review') && questionCardDisplay.showPromptSource
                                     }

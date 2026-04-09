@@ -112,3 +112,89 @@ order by s.class_name, s.subject_name, s.chapter_number nulls last, s.chapter_na
 -- select (select count(*) from syllabus_rows) as syllabus_rows,
 --        (select count(*) from matched) as matched_to_kb_chapter,
 --        (select count(*) from syllabus_rows) - (select count(*) from matched) as missing;
+
+-- ---------------------------------------------------------------------------
+-- REVERSE AUDIT: KB chapters with no matching syllabus row (extra / non-syllabus)
+-- Same kb + syllabus_set + class_bucket rules as the main query above.
+-- Run as a separate statement after reviewing the first result set.
+-- ---------------------------------------------------------------------------
+
+with
+kb as (
+  select id, name
+  from public.knowledge_bases
+  where lower(coalesce(name, '')) like '%neet%'
+  order by name
+  limit 1
+),
+syllabus_set as (
+  select s.id, s.slug, s.name
+  from public.syllabus_sets s
+  cross join kb
+  where s.knowledge_base_id = kb.id
+    and s.user_id is null
+  order by
+    case coalesce(s.slug, '')
+      when 'neet-migrated' then 0
+      when 'neet-default' then 1
+      else 2
+    end,
+    s.name
+  limit 1
+),
+syllabus_rows as (
+  select
+    regexp_replace(lower(trim(e.chapter_name)), '\s+', ' ', 'g') as n_chapter,
+    regexp_replace(lower(trim(coalesce(e.subject_name, ''))), '\s+', ' ', 'g') as n_subject,
+    case
+      when regexp_replace(lower(trim(e.class_name)), '\s+', ' ', 'g') ~ '11.*12|12.*11|11 and 12|11 & 12' then 'both'
+      when regexp_replace(lower(trim(e.class_name)), '\s+', ' ', 'g') like '%12%' then 'plus2'
+      when regexp_replace(lower(trim(e.class_name)), '\s+', ' ', 'g') like '%11%' then 'plus1'
+      else regexp_replace(lower(trim(coalesce(e.class_name, ''))), '\s+', ' ', 'g')
+    end as class_bucket
+  from public.syllabus_entries e
+  inner join syllabus_set ss on ss.id = e.syllabus_set_id
+),
+chapter_rows as (
+  select
+    c.id as chapter_id,
+    c.name as chapter_name,
+    c.subject_name,
+    c.class_name,
+    regexp_replace(lower(trim(c.name)), '\s+', ' ', 'g') as n_chapter,
+    regexp_replace(lower(trim(coalesce(c.subject_name, ''))), '\s+', ' ', 'g') as n_subject,
+    case
+      when regexp_replace(lower(trim(coalesce(c.class_name, ''))), '\s+', ' ', 'g') like '%plus 1%'
+        or c.class_name = 'Plus 1' then 'plus1'
+      when regexp_replace(lower(trim(coalesce(c.class_name, ''))), '\s+', ' ', 'g') like '%plus 2%'
+        or c.class_name = 'Plus 2' then 'plus2'
+      else regexp_replace(lower(trim(coalesce(c.class_name, ''))), '\s+', ' ', 'g')
+    end as class_bucket
+  from public.chapters c
+  cross join kb
+  where c.kb_id = kb.id
+)
+select
+  kb.name as knowledge_base_name,
+  cr.class_name,
+  cr.subject_name,
+  cr.chapter_name,
+  'no syllabus row (same normalized subject + chapter + class rule)' as reason
+from chapter_rows cr
+cross join kb
+where not exists (
+  select 1
+  from syllabus_rows s
+  where s.n_chapter = cr.n_chapter
+    and s.n_subject = cr.n_subject
+    and (
+      (s.class_bucket = 'plus1' and cr.class_bucket = 'plus1')
+      or (s.class_bucket = 'plus2' and cr.class_bucket = 'plus2')
+      or (s.class_bucket = 'both' and cr.class_bucket in ('plus1', 'plus2'))
+      or (
+        s.class_bucket not in ('plus1', 'plus2', 'both')
+        and s.class_bucket = cr.class_bucket
+      )
+    )
+)
+order by cr.class_name, cr.subject_name, cr.chapter_name;

@@ -50,6 +50,11 @@ interface QuestionPaperItemProps {
   isFlaggedOutOfSyllabus?: boolean;
   /** Stored `reason` from `out_of_syllabus_question_flags` (drives tooltip when flagged). */
   flagReason?: string | null;
+  /**
+   * Question DB: figure cards get a small icon to toggle the reference/source image
+   * (independent of the global “Source fig” toolbar toggle).
+   */
+  sourceFigureIconToggle?: boolean;
 }
 
 const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({ 
@@ -72,11 +77,17 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   onFlagOutOfSyllabus,
   isFlaggedOutOfSyllabus = false,
   flagReason = null,
+  sourceFigureIconToggle = false,
 }) => {
+  const [sourcePeekOpen, setSourcePeekOpen] = useState(false);
   const isMatching = (question.type as any) === 'matching';
   const columnA = question.columnA || question.column_a;
   const columnB = question.columnB || question.column_b;
   const hasFigure = !!(question.figureDataUrl || question.figure_url);
+  const sourceFigureUrl = question.sourceFigureDataUrl || question.source_figure_url;
+  const showSourcePeekButton = sourceFigureIconToggle && hasFigure && !!sourceFigureUrl;
+  const showSourcePanel =
+    !!sourceFigureUrl && (showSource || (sourceFigureIconToggle && sourcePeekOpen));
   const flagTooltip = isFlaggedOutOfSyllabus ? flagReasonTooltip(flagReason) : undefined;
   const questionTextRef = useRef<HTMLDivElement | null>(null);
   const [questionTextMinHeight, setQuestionTextMinHeight] = useState<number | undefined>(undefined);
@@ -229,9 +240,28 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
       {/* Figures */}
       {(question.figureDataUrl || question.figure_url) && (
           <div
-            className="my-3 flex justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2"
+            className="relative my-3 flex justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2"
             title={isFlaggedOutOfSyllabus && onFlagOutOfSyllabus ? flagTooltip : undefined}
           >
+              {showSourcePeekButton && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSourcePeekOpen((v) => !v);
+                  }}
+                  className={`absolute right-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-lg border shadow-sm transition-all ${
+                    sourcePeekOpen
+                      ? 'border-cyan-500 bg-cyan-600 text-white shadow-cyan-600/25'
+                      : 'border-zinc-200/90 bg-white/95 text-cyan-700 backdrop-blur-sm hover:border-cyan-300 hover:bg-cyan-50'
+                  }`}
+                  title={sourcePeekOpen ? 'Hide source figure' : 'View source figure'}
+                  aria-expanded={sourcePeekOpen}
+                  aria-label={sourcePeekOpen ? 'Hide source figure' : 'Show source figure'}
+                >
+                  <iconify-icon icon={sourcePeekOpen ? 'mdi:image-off-outline' : 'mdi:image-search-outline'} width="18" />
+                </button>
+              )}
               <img src={question.figureDataUrl || question.figure_url} className="max-h-40 object-contain mix-blend-multiply" alt="Diagram" />
           </div>
       )}
@@ -309,11 +339,17 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
           </div>
       )}
 
-      {/* Source Reference */}
-      {showSource && (question.sourceFigureDataUrl || question.source_figure_url) && (
-          <div className="group/source relative mt-2 rounded-md border border-zinc-200 bg-zinc-50 p-2">
-              <div className="absolute left-1 top-1 z-10 rounded px-1.5 py-0.5 text-[6px] font-semibold uppercase tracking-widest text-white bg-zinc-900">Reference Source</div>
-              <img src={question.sourceFigureDataUrl || question.source_figure_url} className="max-h-24 w-full object-contain opacity-60 mix-blend-multiply group-hover/source:opacity-100 transition-opacity" alt="Source" />
+      {/* Source Reference (toolbar toggle and/or per-card peek in Question DB) */}
+      {showSourcePanel && (
+          <div className="group/source relative mt-2 rounded-md border border-cyan-200/80 bg-cyan-50/40 p-2">
+              <div className="absolute left-1 top-1 z-10 rounded px-1.5 py-0.5 text-[6px] font-semibold uppercase tracking-widest text-white bg-cyan-800">
+                Reference source
+              </div>
+              <img
+                src={sourceFigureUrl || undefined}
+                className="max-h-48 w-full object-contain opacity-80 mix-blend-multiply group-hover/source:opacity-100 transition-opacity"
+                alt="Source figure used for this item"
+              />
           </div>
       )}
     </div>
