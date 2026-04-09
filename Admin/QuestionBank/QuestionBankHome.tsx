@@ -113,6 +113,22 @@ interface ChapterStats {
     figure_count: number;
 }
 
+/** RPC `get_chapters_bulk_stats` returns `total_count` (and aliases); normalize for UI + aggregates. */
+function normalizeChapterStatsRpcRow(s: Record<string, unknown>): ChapterStats {
+  const num = (a: unknown, b?: unknown) => Number(a ?? b) || 0;
+  return {
+    total: num(s.total, s.total_count),
+    easy_count: num(s.easy_count, s.easy),
+    medium_count: num(s.medium_count, s.medium),
+    hard_count: num(s.hard_count, s.hard),
+    mcq_count: num(s.mcq_count, s.mcq),
+    reasoning_count: num(s.reasoning_count, s.reasoning),
+    matching_count: num(s.matching_count, s.matching),
+    statements_count: num(s.statements_count, s.statements),
+    figure_count: num(s.figure_count, s.figures),
+  };
+}
+
 interface ChapterConfig {
     total: number;
     diff: { easy: number, medium: number, hard: number };
@@ -785,13 +801,24 @@ const QuestionBankHome: React.FC = () => {
   };
 
   const fetchBulkStats = async (chapterIds: string[]) => {
-      // ... (same logic) ...
       if (chapterIds.length === 0) return;
       const cacheKey = selectedKbId || 'default';
       const now = Date.now();
-      if (statsCache.current[cacheKey] && (now - statsCache.current[cacheKey].timestamp < 60000)) { setChapterStats(statsCache.current[cacheKey].data); return; }
+      if (statsCache.current[cacheKey] && now - statsCache.current[cacheKey].timestamp < 60000) {
+        setChapterStats(statsCache.current[cacheKey].data);
+        return;
+      }
       const { data } = await supabase.rpc('get_chapters_bulk_stats', { target_chapter_ids: chapterIds });
-      if (data) { const stats: Record<string, ChapterStats> = {}; data.forEach((s: any) => { stats[s.chapter_id] = s; }); setChapterStats(stats); statsCache.current[cacheKey] = { data: stats, timestamp: now }; }
+      if (data) {
+        const stats: Record<string, ChapterStats> = {};
+        (data as Record<string, unknown>[]).forEach((row) => {
+          const id = String((row as { chapter_id?: string }).chapter_id ?? '');
+          if (!id) return;
+          stats[id] = normalizeChapterStatsRpcRow(row);
+        });
+        setChapterStats(stats);
+        statsCache.current[cacheKey] = { data: stats, timestamp: now };
+      }
   };
 
   const fetchQuestions = async () => {
@@ -1963,6 +1990,56 @@ const QuestionBankHome: React.FC = () => {
     }
     return base;
   }, [chapters, chapterSearch, selectedClassFilters, selectedSubjectFilters]);
+
+  /** Chapters whose hub stats are summed in the browse header: explicit selection, else sidebar scope (search + class/subject pills). */
+  const browseStatsScopeChapterIds = useMemo(() => {
+    if (selectedChapterIds.size > 0) return Array.from(selectedChapterIds).map(String);
+    return filteredSidebarChapters.map((c: { id: string }) => String(c.id));
+  }, [selectedChapterIds, filteredSidebarChapters]);
+
+  const browseRepoStatsContextLabel = useMemo(() => {
+    if (selectedChapterIds.size > 0) {
+      return selectedChapterIds.size === 1 ? '1 chapter selected' : `${selectedChapterIds.size} chapters selected`;
+    }
+    const parts: string[] = [];
+    if (chapterSearch.trim()) parts.push('search');
+    if (selectedClassFilters.size > 0) parts.push('class');
+    if (selectedSubjectFilters.size > 0) parts.push('subject');
+    if (parts.length === 0) return 'All chapters in KB';
+    return `Filtered (${parts.join(' · ')})`;
+  }, [
+    selectedChapterIds,
+    chapterSearch,
+    selectedClassFilters,
+    selectedSubjectFilters,
+  ]);
+
+  /** Hub totals for browse header (from bulk stats RPC, keyed by chapter id). */
+  const browseRepoAggregateStats = useMemo(() => {
+    let total = 0;
+    let easy = 0;
+    let medium = 0;
+    let hard = 0;
+    let mcq = 0;
+    let reasoning = 0;
+    let matching = 0;
+    let statements = 0;
+    for (const id of browseStatsScopeChapterIds) {
+      const raw = chapterStats[String(id)];
+      if (!raw) continue;
+      const s = normalizeChapterStatsRpcRow(raw as unknown as Record<string, unknown>);
+      total += s.total;
+      easy += s.easy_count;
+      medium += s.medium_count;
+      hard += s.hard_count;
+      mcq += s.mcq_count;
+      reasoning += s.reasoning_count;
+      matching += s.matching_count;
+      statements += s.statements_count;
+    }
+    return { total, easy, medium, hard, mcq, reasoning, matching, statements };
+  }, [browseStatsScopeChapterIds, chapterStats]);
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const displayQuestions = mode === 'review' ? reviewQueue : questions;
 
@@ -2034,7 +2111,7 @@ const QuestionBankHome: React.FC = () => {
   };
 
   return (
-    <div className={`${workspacePageClass} overflow-hidden relative`}>
+    <div className={`${workspacePageClass} flex-1 overflow-hidden relative`}>
         {/* PROGRESS OVERLAY — forge or save */}
         {(isSaving || isForgingBatch) && (
             isForgingBatch && forgeDetail ? (
@@ -2392,252 +2469,8 @@ const QuestionBankHome: React.FC = () => {
             )
         )}
         
-        {/* Header ... */}
-        <header className="bg-white border-b border-zinc-200 z-30 shadow-sm shrink-0">
-            <div className="min-h-14 px-3 sm:px-6 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex bg-zinc-100 p-1 rounded-xl border border-zinc-200 shadow-inner w-full sm:w-auto">
-                    <button onClick={() => { setMode('browse'); setReviewQueue([]); }} className={`flex-1 sm:flex-none px-4 sm:px-8 py-2 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'browse' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}>Browse Repository</button>
-                    <button onClick={() => { setMode('studio'); setReviewQueue([]); }} className={`flex-1 sm:flex-none px-4 sm:px-8 py-2 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'studio' || mode === 'review' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Neural Studio</button>
-                </div>
-                {mode === 'review' && (
-                    <button onClick={handleCommitReview} disabled={isForgingBatch} className="w-full sm:w-auto shrink-0 bg-emerald-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-[0.2em] shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 sm:gap-3 active:scale-95 disabled:opacity-50">
-                        <iconify-icon icon="mdi:cloud-check" width="20" /> Commit to Hub
-                    </button>
-                )}
-            </div>
-            {(mode === 'browse' || mode === 'review') && (
-                <div className="bg-zinc-50/90 border-t border-zinc-100 px-3 sm:px-6 py-2 flex flex-col gap-2">
-                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                        <button onClick={handleSelectAllOnPage} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'}`}><iconify-icon icon={selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? "mdi:check-circle" : "mdi:circle-outline"} /> Select All</button>
-                        {(mode === 'browse' || mode === 'review') && selectedIds.size > 0 && (
-                            <button
-                                type="button"
-                                onClick={openForgeAnalysisModalFromSelection}
-                                disabled={isForgingBatch}
-                                title="Send selected rows (table fields, images omitted) to Gemini for a quality report"
-                                className="px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 text-[8px] font-black uppercase tracking-widest text-violet-800 shadow-sm transition-all hover:bg-violet-100 flex items-center gap-2 disabled:opacity-50"
-                            >
-                                <iconify-icon icon="mdi:clipboard-text-search" width="16" />
-                                AI report ({selectedIds.size})
-                            </button>
-                        )}
-                        {mode === 'browse' && (
-                            <>
-                                <div className="hidden h-6 w-px bg-zinc-200 sm:block" />
-                                <div className="flex flex-wrap items-center gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest mr-1">Rigor:</span>{(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (<button key={d} onClick={() => { setBrowseFilters({...browseFilters, difficulty: d}); setCurrentPage(1); }} className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all border ${browseFilters.difficulty === d ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}>{d}</button>))}</div>
-                                <div className="flex items-center gap-1.5 border-l border-zinc-200 pl-3"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
-                                <button onClick={() => { setBrowseFilters({...browseFilters, hasFigure: !browseFilters.hasFigure}); setCurrentPage(1); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.hasFigure ? 'bg-rose-500 border-rose-500 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-outline" /> Figure Only</button>
-                            </>
-                        )}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 border-t border-zinc-200/80 pt-2">
-                        <span className="w-full text-[7px] font-bold uppercase tracking-widest text-zinc-400 sm:w-auto sm:mr-1">Cards:</span>
-                        <button
-                          type="button"
-                          title="Reference figure used for image-style questions"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showSourceFigure: !p.showSourceFigure }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showSourceFigure ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi:image-search-outline" width="14" /> Source fig
-                        </button>
-                        <button
-                          type="button"
-                          title="Shows prompt pipeline (matches DB prompt_generation_source). Hover the purple chip on a card for the full tooltip."
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showPromptSource: !p.showPromptSource }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showPromptSource ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi:text-box-multiple-outline" width="14" /> Prompt source
-                        </button>
-                        <button
-                          type="button"
-                          title="Gemini text model saved on the row (generation_model)"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showGenerationModel: !p.showGenerationModel }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showGenerationModel ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi:robot-outline" width="14" /> AI model
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showChapter: !p.showChapter }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showChapter ? 'bg-sky-600 border-sky-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi-book-open-variant" width="14" /> Chapter
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showTopic: !p.showTopic }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showTopic ? 'bg-zinc-700 border-zinc-700 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi-tag-outline" width="14" /> Topic
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showOptions: !p.showOptions }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showOptions ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi:format-list-numbered" width="14" /> Choices
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showCorrectAnswer: !p.showCorrectAnswer }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showCorrectAnswer ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi-check-decagram" width="14" /> Answer
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showExplanation: !p.showExplanation }))}
-                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showExplanation ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
-                        >
-                          <iconify-icon icon="mdi-lightbulb-on-outline" width="14" /> Explanation
-                        </button>
-                    </div>
-                    <div className="flex flex-col gap-1 border-t border-dashed border-zinc-200 pt-2 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-[7px] font-medium leading-snug text-zinc-500 max-w-3xl">
-                          <strong className="text-zinc-600">prompt_generation_source</strong> (DB column):{' '}
-                          <span className="text-zinc-600">built-in</span> = app defaults;{' '}
-                          <span className="text-zinc-600">browser_local</span> = this device’s Prompts;{' '}
-                          <span className="text-zinc-600">cloud_set</span> = saved KB prompt set. Hover a purple <strong>Prompt source</strong> chip on a card for the full note.
-                        </p>
-                    </div>
-                    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-zinc-100 pt-2">
-                        <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">{mode === 'review' ? reviewQueue.length : totalCount} Items</span>
-                        {mode === 'browse' && (
-                          <div className="flex items-center bg-white border border-zinc-200 rounded-xl p-1 shadow-sm">
-                            <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-left" /></button>
-                            <span className="text-[9px] font-black text-indigo-600 px-3 uppercase">P.{currentPage} / {totalPages || 1}</span>
-                            <button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-indigo-600 transition-all disabled:opacity-30"><iconify-icon icon="mdi:chevron-right" /></button>
-                          </div>
-                        )}
-                    </div>
-                </div>
-            )}
-        </header>
-
-        {mode === 'browse' && lastForgeAnalysisBatch && lastForgeAnalysisBatch.rows.length > 0 && (
-            <div className="shrink-0 border-b border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-3 py-2.5 sm:px-6">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-[10px] font-semibold leading-snug text-violet-950 sm:max-w-xl">
-                        <span className="font-black uppercase tracking-widest text-violet-700">Post-forge</span>{' '}
-                        {lastForgeAnalysisBatch.rows.length} question(s) just saved — run an AI quality pass (difficulty tags, NEET style,
-                        topic fit, explanations, distractors, scores).
-                    </p>
-                    <div className="flex flex-wrap items-center gap-2">
-                        <button
-                            type="button"
-                            onClick={openForgeAnalysisModalFromLastBatch}
-                            disabled={isForgingBatch}
-                            className="inline-flex items-center gap-2 rounded-xl border border-violet-300 bg-white px-4 py-2 text-[9px] font-black uppercase tracking-widest text-violet-900 shadow-sm transition-all hover:bg-violet-100 disabled:opacity-50"
-                        >
-                            <iconify-icon icon="mdi:chart-box-outline" width="18" />
-                            AI quality report
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setLastForgeAnalysisBatch(null);
-                                setForgeAnalysisModalOpen(false);
-                            }}
-                            className="rounded-xl px-3 py-2 text-[9px] font-bold uppercase tracking-widest text-violet-600/80 hover:text-violet-900"
-                        >
-                            Dismiss
-                        </button>
-                    </div>
-                </div>
-            </div>
-        )}
-
-        <Dialog.Root
-            open={forgeAnalysisModalOpen}
-            onOpenChange={(open) => {
-                setForgeAnalysisModalOpen(open);
-                if (!open) setForgeAnalysisPayload(null);
-            }}
-        >
-            <Dialog.Portal>
-                <Dialog.Overlay className="fixed inset-0 z-[185] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-                <Dialog.Content className="fixed left-1/2 top-1/2 z-[195] flex max-h-[min(92vh,820px)] w-[calc(100vw-1.25rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
-                    <div className="flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
-                        <div>
-                            <Dialog.Title className="text-sm font-black tracking-tight text-zinc-900">
-                                AI batch quality report
-                            </Dialog.Title>
-                            <Dialog.Description className="mt-0.5 text-[10px] font-medium text-zinc-500">
-                                {forgeAnalysisPayload?.label ?? '—'} · text{' '}
-                                <span className="font-mono">{selectedModel}</span> · image{' '}
-                                <span className="font-mono">{selectedImageModel}</span>
-                            </Dialog.Description>
-                        </div>
-                        <Dialog.Close asChild>
-                            <button
-                                type="button"
-                                className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-zinc-200/60 hover:text-zinc-800"
-                                aria-label="Close"
-                            >
-                                <iconify-icon icon="mdi:close" width="20" />
-                            </button>
-                        </Dialog.Close>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-2.5 sm:px-5">
-                        <button
-                            type="button"
-                            disabled={forgeAnalysisLoading || !forgeAnalysisPayload?.rows.length}
-                            onClick={() => void runForgeAnalysisGenerate()}
-                            className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 disabled:opacity-50"
-                        >
-                            {forgeAnalysisLoading ? (
-                                <>
-                                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                                    Analyzing…
-                                </>
-                            ) : (
-                                <>
-                                    <iconify-icon icon="mdi:play-circle-outline" width="18" />
-                                    Run analysis
-                                </>
-                            )}
-                        </button>
-                        {forgeAnalysisReportMarkdown && (
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    void navigator.clipboard.writeText(forgeAnalysisReportMarkdown);
-                                }}
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-50"
-                            >
-                                Copy markdown
-                            </button>
-                        )}
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5 custom-scrollbar">
-                        {forgeAnalysisTruncation ? (
-                            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-medium text-amber-950">
-                                Large batch: analysis covers the first {forgeAnalysisTruncation.analyzedCount} of{' '}
-                                {forgeAnalysisTruncation.totalCount} rows. Use filters or analyze selected subsets for the rest.
-                            </p>
-                        ) : null}
-                        {forgeAnalysisError ? (
-                            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">{forgeAnalysisError}</p>
-                        ) : null}
-                        {forgeAnalysisReportMarkdown ? (
-                            <div className="whitespace-pre-wrap text-left text-[13px] leading-relaxed text-zinc-800">
-                                {forgeAnalysisReportMarkdown}
-                </div>
-                        ) : (
-                            !forgeAnalysisLoading && (
-                                <p className="text-sm text-zinc-500">
-                                    Sends sanitized table fields (inline images replaced with placeholders) to the server Gemini proxy. Run
-                                    when you are ready.
-                                </p>
-                            )
-                        )}
-                    </div>
-                </Dialog.Content>
-            </Dialog.Portal>
-        </Dialog.Root>
-
-        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
-            <aside className="w-full lg:w-80 lg:max-w-[20rem] lg:shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-zinc-100 flex flex-col shrink-0 z-20 shadow-sm max-h-[min(42vh,420px)] lg:max-h-none min-h-0">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row lg:items-stretch">
+            <aside className="flex min-h-0 w-full flex-1 flex-col border-b border-zinc-100 bg-white shadow-sm shrink-0 z-20 lg:max-w-[20rem] lg:w-80 lg:shrink-0 lg:flex-none lg:self-stretch lg:border-b-0 lg:border-r">
                 {/* ... (Sidebar logic unchanged) ... */}
                 <div className="space-y-3 border-b border-zinc-50 bg-zinc-50/20 p-4">
                     <div className="flex items-center justify-between gap-2">
@@ -2870,6 +2703,287 @@ const QuestionBankHome: React.FC = () => {
                     )}
                 </div>
             </aside>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white lg:border-l lg:border-zinc-200/90">
+                {/* Header + browse tools — right of chapter tray */}
+        <header className="bg-white border-b border-zinc-200 z-30 shadow-sm shrink-0">
+            <div className="min-h-14 px-3 sm:px-6 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex bg-zinc-100 p-1 rounded-xl border border-zinc-200 shadow-inner w-full sm:w-auto">
+                    <button onClick={() => { setMode('browse'); setReviewQueue([]); }} className={`flex-1 sm:flex-none px-4 sm:px-8 py-2 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'browse' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}>Browse Repository</button>
+                    <button onClick={() => { setMode('studio'); setReviewQueue([]); }} className={`flex-1 sm:flex-none px-4 sm:px-8 py-2 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all ${mode === 'studio' || mode === 'review' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Neural Studio</button>
+                </div>
+                {mode === 'review' && (
+                    <button onClick={handleCommitReview} disabled={isForgingBatch} className="w-full sm:w-auto shrink-0 bg-emerald-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-[0.2em] shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 sm:gap-3 active:scale-95 disabled:opacity-50">
+                        <iconify-icon icon="mdi:cloud-check" width="20" /> Commit to Hub
+                    </button>
+                )}
+            </div>
+            {(mode === 'browse' || mode === 'review') && (
+                <div className="bg-zinc-50/90 border-t border-zinc-100 px-3 sm:px-6 py-2 flex flex-col gap-2">
+                    <div className="rounded-xl border border-zinc-200/90 bg-gradient-to-br from-zinc-100/95 via-zinc-50 to-zinc-100/80 px-3 py-2.5 sm:px-4 sm:py-3 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.65)]">
+                        {browseStatsScopeChapterIds.length === 0 ? (
+                            <p className="text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                                No chapters in this knowledge base
+                            </p>
+                        ) : (
+                            <div className="flex flex-col gap-2 sm:gap-2.5">
+                                <div className="flex flex-wrap items-baseline justify-center gap-x-3 gap-y-1 sm:justify-start">
+                                    <span className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-500">
+                                        Question bank
+                                    </span>
+                                    <span className="hidden h-3 w-px bg-zinc-300 sm:inline" aria-hidden />
+                                    <span className="text-lg font-black tabular-nums tracking-tight text-zinc-800 sm:text-xl">
+                                        {browseRepoAggregateStats.total.toLocaleString()}
+                                    </span>
+                                    <span className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">
+                                        total
+                                    </span>
+                                </div>
+                                <p className="text-center text-[9px] font-bold uppercase tracking-[0.14em] text-zinc-400 sm:text-left">
+                                    {browseRepoStatsContextLabel}
+                                </p>
+                                <div className="flex flex-wrap items-center justify-center gap-x-1 gap-y-1.5 text-[11px] text-zinc-600 sm:justify-start sm:gap-x-2">
+                                    <span className="font-semibold text-zinc-500">Difficulty</span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        Easy {browseRepoAggregateStats.easy.toLocaleString()}
+                                    </span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        Med {browseRepoAggregateStats.medium.toLocaleString()}
+                                    </span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        Hard {browseRepoAggregateStats.hard.toLocaleString()}
+                                    </span>
+                                </div>
+                                <div className="flex flex-wrap items-center justify-center gap-x-1 gap-y-1.5 text-[11px] text-zinc-600 sm:justify-start sm:gap-x-2">
+                                    <span className="font-semibold text-zinc-500">Styles</span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        MCQ {browseRepoAggregateStats.mcq.toLocaleString()}
+                                    </span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        Assertion {browseRepoAggregateStats.reasoning.toLocaleString()}
+                                    </span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        Match {browseRepoAggregateStats.matching.toLocaleString()}
+                                    </span>
+                                    <span className="rounded-md bg-white/70 px-2 py-0.5 font-bold tabular-nums text-zinc-700 ring-1 ring-zinc-200/80">
+                                        Stmt {browseRepoAggregateStats.statements.toLocaleString()}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                        <button onClick={handleSelectAllOnPage} className={`px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50'}`}><iconify-icon icon={selectedIds.size === (mode === 'review' ? reviewQueue.length : questions.length) && (mode === 'review' ? reviewQueue.length : questions.length) > 0 ? "mdi:check-circle" : "mdi:circle-outline"} /> Select All</button>
+                        {(mode === 'browse' || mode === 'review') && selectedIds.size > 0 && (
+                            <button
+                                type="button"
+                                onClick={openForgeAnalysisModalFromSelection}
+                                disabled={isForgingBatch}
+                                title="Send selected rows (table fields, images omitted) to Gemini for a quality report"
+                                className="px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 text-[8px] font-black uppercase tracking-widest text-violet-800 shadow-sm transition-all hover:bg-violet-100 flex items-center gap-2 disabled:opacity-50"
+                            >
+                                <iconify-icon icon="mdi:clipboard-text-search" width="16" />
+                                AI report ({selectedIds.size})
+                            </button>
+                        )}
+                        {mode === 'browse' && (
+                            <>
+                                <div className="hidden h-6 w-px bg-zinc-200 sm:block" />
+                                <div className="flex flex-wrap items-center gap-1.5"><span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest mr-1">Rigor:</span>{(['all', 'Easy', 'Medium', 'Hard'] as const).map(d => (<button key={d} onClick={() => { setBrowseFilters({...browseFilters, difficulty: d}); setCurrentPage(1); }} className={`px-3 py-1 rounded-full text-[8px] font-black uppercase transition-all border ${browseFilters.difficulty === d ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}>{d}</button>))}</div>
+                                <div className="flex items-center gap-1.5 border-l border-zinc-200 pl-3"><select value={browseFilters.style} onChange={e => { setBrowseFilters({...browseFilters, style: e.target.value}); setCurrentPage(1); }} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[8px] font-black uppercase text-indigo-600 outline-none"><option value="all">ALL STYLES</option><option value="mcq">MCQ</option><option value="reasoning">ASSERTION</option><option value="matching">MATCHING</option><option value="statements">STATEMENTS</option></select></div>
+                                <button onClick={() => { setBrowseFilters({...browseFilters, hasFigure: !browseFilters.hasFigure}); setCurrentPage(1); }} className={`px-3 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${browseFilters.hasFigure ? 'bg-rose-500 border-rose-500 text-white' : 'bg-white border-zinc-200 text-zinc-400'}`}><iconify-icon icon="mdi:image-outline" /> Figure Only</button>
+                            </>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 border-t border-zinc-200/80 pt-2">
+                        <span className="w-full text-[7px] font-bold uppercase tracking-widest text-zinc-400 sm:w-auto sm:mr-1">Cards:</span>
+                        <button
+                          type="button"
+                          title="Reference figure used for image-style questions"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showSourceFigure: !p.showSourceFigure }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showSourceFigure ? 'bg-cyan-600 border-cyan-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:image-search-outline" width="14" /> Source fig
+                        </button>
+                        <button
+                          type="button"
+                          title="Shows prompt pipeline (matches DB prompt_generation_source). Hover the purple chip on a card for the full tooltip."
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showPromptSource: !p.showPromptSource }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showPromptSource ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:text-box-multiple-outline" width="14" /> Prompt source
+                        </button>
+                        <button
+                          type="button"
+                          title="Gemini text model saved on the row (generation_model)"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showGenerationModel: !p.showGenerationModel }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showGenerationModel ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:robot-outline" width="14" /> AI model
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showChapter: !p.showChapter }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showChapter ? 'bg-sky-600 border-sky-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-book-open-variant" width="14" /> Chapter
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showTopic: !p.showTopic }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showTopic ? 'bg-zinc-700 border-zinc-700 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-tag-outline" width="14" /> Topic
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showOptions: !p.showOptions }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showOptions ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi:format-list-numbered" width="14" /> Choices
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showCorrectAnswer: !p.showCorrectAnswer }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showCorrectAnswer ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-check-decagram" width="14" /> Answer
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuestionCardDisplay((p) => ({ ...p, showExplanation: !p.showExplanation }))}
+                          className={`px-2.5 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${questionCardDisplay.showExplanation ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-zinc-200 text-zinc-500'}`}
+                        >
+                          <iconify-icon icon="mdi-lightbulb-on-outline" width="14" /> Explanation
+                        </button>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-zinc-100 pt-2">
+                        <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">{mode === 'review' ? reviewQueue.length : totalCount} Items</span>
+                    </div>
+                </div>
+            )}
+        </header>
+
+        {mode === 'browse' && lastForgeAnalysisBatch && lastForgeAnalysisBatch.rows.length > 0 && (
+            <div className="shrink-0 border-b border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-3 py-2.5 sm:px-6">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-[10px] font-semibold leading-snug text-violet-950 sm:max-w-xl">
+                        <span className="font-black uppercase tracking-widest text-violet-700">Post-forge</span>{' '}
+                        {lastForgeAnalysisBatch.rows.length} question(s) just saved — run an AI quality pass (difficulty tags, NEET style,
+                        topic fit, explanations, distractors, scores).
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={openForgeAnalysisModalFromLastBatch}
+                            disabled={isForgingBatch}
+                            className="inline-flex items-center gap-2 rounded-xl border border-violet-300 bg-white px-4 py-2 text-[9px] font-black uppercase tracking-widest text-violet-900 shadow-sm transition-all hover:bg-violet-100 disabled:opacity-50"
+                        >
+                            <iconify-icon icon="mdi:chart-box-outline" width="18" />
+                            AI quality report
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setLastForgeAnalysisBatch(null);
+                                setForgeAnalysisModalOpen(false);
+                            }}
+                            className="rounded-xl px-3 py-2 text-[9px] font-bold uppercase tracking-widest text-violet-600/80 hover:text-violet-900"
+                        >
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        <Dialog.Root
+            open={forgeAnalysisModalOpen}
+            onOpenChange={(open) => {
+                setForgeAnalysisModalOpen(open);
+                if (!open) setForgeAnalysisPayload(null);
+            }}
+        >
+            <Dialog.Portal>
+                <Dialog.Overlay className="fixed inset-0 z-[185] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+                <Dialog.Content className="fixed left-1/2 top-1/2 z-[195] flex max-h-[min(92vh,820px)] w-[calc(100vw-1.25rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+                    <div className="flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
+                        <div>
+                            <Dialog.Title className="text-sm font-black tracking-tight text-zinc-900">
+                                AI batch quality report
+                            </Dialog.Title>
+                            <Dialog.Description className="mt-0.5 text-[10px] font-medium text-zinc-500">
+                                {forgeAnalysisPayload?.label ?? '—'} · text{' '}
+                                <span className="font-mono">{selectedModel}</span> · image{' '}
+                                <span className="font-mono">{selectedImageModel}</span>
+                            </Dialog.Description>
+                        </div>
+                        <Dialog.Close asChild>
+                            <button
+                                type="button"
+                                className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-zinc-200/60 hover:text-zinc-800"
+                                aria-label="Close"
+                            >
+                                <iconify-icon icon="mdi:close" width="20" />
+                            </button>
+                        </Dialog.Close>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-2.5 sm:px-5">
+                        <button
+                            type="button"
+                            disabled={forgeAnalysisLoading || !forgeAnalysisPayload?.rows.length}
+                            onClick={() => void runForgeAnalysisGenerate()}
+                            className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 disabled:opacity-50"
+                        >
+                            {forgeAnalysisLoading ? (
+                                <>
+                                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                                    Analyzing…
+                                </>
+                            ) : (
+                                <>
+                                    <iconify-icon icon="mdi:play-circle-outline" width="18" />
+                                    Run analysis
+                                </>
+                            )}
+                        </button>
+                        {forgeAnalysisReportMarkdown && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void navigator.clipboard.writeText(forgeAnalysisReportMarkdown);
+                                }}
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-50"
+                            >
+                                Copy markdown
+                            </button>
+                        )}
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5 custom-scrollbar">
+                        {forgeAnalysisTruncation ? (
+                            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-medium text-amber-950">
+                                Large batch: analysis covers the first {forgeAnalysisTruncation.analyzedCount} of{' '}
+                                {forgeAnalysisTruncation.totalCount} rows. Use filters or analyze selected subsets for the rest.
+                            </p>
+                        ) : null}
+                        {forgeAnalysisError ? (
+                            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">{forgeAnalysisError}</p>
+                        ) : null}
+                        {forgeAnalysisReportMarkdown ? (
+                            <div className="whitespace-pre-wrap text-left text-[13px] leading-relaxed text-zinc-800">
+                                {forgeAnalysisReportMarkdown}
+                </div>
+                        ) : (
+                            !forgeAnalysisLoading && (
+                                <p className="text-sm text-zinc-500">
+                                    Sends sanitized table fields (inline images replaced with placeholders) to the server Gemini proxy. Run
+                                    when you are ready.
+                                </p>
+                            )
+                        )}
+                    </div>
+                </Dialog.Content>
+            </Dialog.Portal>
+        </Dialog.Root>
 
             <main className="flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar bg-zinc-100/40 p-3 sm:p-6 lg:p-10">
                 {mode === 'studio' ? (
@@ -3637,7 +3751,8 @@ const QuestionBankHome: React.FC = () => {
                          )}
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-6 lg:gap-8 pb-24 sm:pb-40 w-full min-w-0">
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-6 lg:gap-8 pb-4 w-full min-w-0">
                          {isFetching ? (
                              <div className="col-span-full h-full flex flex-col items-center justify-center text-zinc-300 animate-pulse py-40">
                                  <iconify-icon icon="mdi:database-search" width="64" className="mb-4" />
@@ -3701,9 +3816,43 @@ const QuestionBankHome: React.FC = () => {
                                 />
                             ))
                          )}
+                        </div>
+                        {mode === 'browse' && selectedChapterIds.size > 0 && (
+                            <div className="sticky bottom-0 z-10 mt-auto flex flex-col items-center gap-2 border-t border-zinc-200/90 bg-zinc-100/95 px-2 py-3 backdrop-blur-sm supports-[backdrop-filter]:bg-zinc-100/80">
+                                <div className="flex flex-wrap items-center justify-center gap-3">
+                                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest tabular-nums">
+                                        {totalCount} items
+                                    </span>
+                                    <div className="flex items-center rounded-xl border border-zinc-200 bg-white p-1 shadow-sm">
+                                        <button
+                                            type="button"
+                                            disabled={currentPage === 1}
+                                            onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                                            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition-all hover:text-indigo-600 disabled:opacity-30"
+                                            aria-label="Previous page"
+                                        >
+                                            <iconify-icon icon="mdi:chevron-left" />
+                                        </button>
+                                        <span className="min-w-[4.5rem] px-2 text-center text-[9px] font-black uppercase text-indigo-600 tabular-nums">
+                                            P.{currentPage} / {totalPages || 1}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            disabled={currentPage >= totalPages}
+                                            onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                                            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition-all hover:text-indigo-600 disabled:opacity-30"
+                                            aria-label="Next page"
+                                        >
+                                            <iconify-icon icon="mdi:chevron-right" />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </main>
+            </div>
         </div>
 
         {pdfViewer && (

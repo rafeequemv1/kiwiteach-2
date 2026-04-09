@@ -175,14 +175,16 @@ const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab', 'question-db-
 /** Section body uses flex column + overflow hidden (roles manager, blog CMS) */
 const ROLES_SECTIONS: AdminSection[] = ['roles', 'blog'];
 
-/** Prompts: fill card height; inner page manages scroll for system prompt editors */
-const PROMPTS_SECTIONS: AdminSection[] = ['prompts'];
+/** Prompts & Question DB: fill panel height; inner UI manages scroll (editors, chapter sidebar + main) */
+const PROMPTS_SECTIONS: AdminSection[] = ['prompts', 'question-db'];
 
 interface AdminSectionFrameProps {
   meta: SectionMeta;
   bleed?: boolean;
   rolesLayout?: boolean;
   promptsLayout?: boolean;
+  /** Omit icon + title row (e.g. Question DB — inner chrome carries context). */
+  hideTitleRow?: boolean;
   children: React.ReactNode;
 }
 
@@ -191,20 +193,23 @@ const AdminSectionFrame: React.FC<AdminSectionFrameProps> = ({
   bleed,
   rolesLayout,
   promptsLayout,
+  hideTitleRow,
   children,
 }) => (
   <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
-    <div className="shrink-0 border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white px-4 py-3 md:px-5 md:py-3.5">
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 shadow-sm">
-          <iconify-icon icon={meta.icon} className="h-5 w-5 opacity-90" />
-        </div>
-        <div className="min-w-0 flex-1 pt-0.5">
-          <h2 className="text-sm font-semibold tracking-tight text-zinc-900 md:text-[15px]">{meta.title}</h2>
-          <p className="mt-0.5 text-[12px] leading-snug text-zinc-500">{meta.subtitle}</p>
+    {!hideTitleRow && (
+      <div className="shrink-0 border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white px-4 py-3 md:px-5 md:py-3.5">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 shadow-sm">
+            <iconify-icon icon={meta.icon} className="h-5 w-5 opacity-90" />
+          </div>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <h2 className="text-sm font-semibold tracking-tight text-zinc-900 md:text-[15px]">{meta.title}</h2>
+            <p className="mt-0.5 text-[12px] leading-snug text-zinc-500">{meta.subtitle}</p>
+          </div>
         </div>
       </div>
-    </div>
+    )}
     <div
       className={
         bleed
@@ -528,15 +533,6 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
 
   return (
     <div className={`${workspacePageClass} min-h-0 flex-1 overflow-hidden font-sans`}>
-      <header className="shrink-0 border-b border-zinc-200 bg-white px-4 py-2.5 shadow-sm md:px-8">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h1 className="text-base font-semibold tracking-tight text-zinc-900">Admin</h1>
-            <p className="text-[12px] text-zinc-500">Tools and data for your workspace</p>
-          </div>
-        </div>
-      </header>
-
       <div className="min-h-0 flex-1 overflow-hidden">
         <div className="kiwi-split-shell-row flex h-full min-h-0 w-full flex-col gap-3 px-4 py-3 md:flex-row md:gap-0 md:px-8 md:py-5">
           <nav
@@ -608,6 +604,7 @@ const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) 
               bleed={isBleed}
               rolesLayout={isRolesLayout}
               promptsLayout={isPromptsLayout}
+              hideTitleRow={activeSection === 'question-db'}
             >
               {renderContent()}
             </AdminSectionFrame>
