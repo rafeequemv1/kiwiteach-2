@@ -137,6 +137,8 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
           setBiologyBranchDraft(b === 'botany' || b === 'zoology' ? b : '');
           setEditChapterClassId(renamingItem.item.class_id || '');
           setEditChapterSubjectId(renamingItem.item.subject_id || '');
+          setPdfFile(null);
+          setDocFile(null);
         } else {
           setBiologyBranchDraft('');
           setEditChapterClassId('');
@@ -433,26 +435,55 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
           payload.biology_branch = null;
         }
         await supabase.from('chapters').update(payload).eq('id', item.id);
-        setChapters((prev) =>
-          prev
-            .map((c) =>
-              c.id === item.id
-                ? {
-                    ...c,
-                    ...payload,
-                    name: newName,
-                    chapter_number: newNum ?? undefined,
-                    class_id: cls.id,
-                    class_name: cls.name,
-                    subject_id: sub.id,
-                    subject_name: sub.name,
-                    kb_name: kbName,
-                    biology_branch: (payload.biology_branch as BiologyBranch | null) ?? null,
-                  }
-                : c
-            )
-            .sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
-        );
+
+        const basePath = `${slugify(kbName)}/${slugify(cls.name)}/${slugify(sub.name)}/${slugify(newName)}`;
+        const fileUpdates: Record<string, unknown> = {};
+
+        if (pdfFile) {
+          setIsProcessing(true);
+          setProcessingStep('Reading PDF…');
+          const rawText = await extractTextFromPdf(pdfFile);
+          setProcessingStep('Uploading PDF…');
+          const pdfClean = slugify(pdfFile.name.split('.')[0]) + '.pdf';
+          const pdfPath = `${basePath}/${pdfClean}`;
+          await supabase.storage.from('chapters').upload(pdfPath, pdfFile, {
+            upsert: true,
+            contentType: 'application/pdf',
+          });
+          const prevPath = (item as Chapter).pdf_path;
+          if (prevPath && prevPath !== pdfPath) {
+            await supabase.storage.from('chapters').remove([prevPath]).catch(() => undefined);
+          }
+          fileUpdates.pdf_path = pdfPath;
+          fileUpdates.pdf_name = pdfFile.name;
+          fileUpdates.raw_text = rawText;
+          fileUpdates.status = 'ready';
+        }
+
+        if (docFile) {
+          setProcessingStep('Uploading source doc…');
+          const ext = docFile.name.split('.').pop() || 'docx';
+          const docClean = slugify(docFile.name.split('.')[0]) + '.' + ext;
+          const docPath = `${basePath}/${docClean}`;
+          await supabase.storage.from('chapters').upload(docPath, docFile, { upsert: true });
+          const prevDoc = (item as Chapter).doc_path;
+          if (prevDoc && prevDoc !== docPath) {
+            await supabase.storage.from('chapters').remove([prevDoc]).catch(() => undefined);
+          }
+          fileUpdates.doc_path = docPath;
+          fileUpdates.doc_name = docFile.name;
+          fileUpdates.status = 'ready';
+        }
+
+        if (Object.keys(fileUpdates).length > 0) {
+          const { error: fileErr } = await supabase.from('chapters').update(fileUpdates).eq('id', item.id);
+          if (fileErr) throw fileErr;
+        }
+
+        setIsProcessing(false);
+        setProcessingStep('');
+
+        await fetchData();
       }
     } catch (err: any) {
       alert("Update failed: " + err.message);
@@ -461,6 +492,86 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       setNewItemName('');
       setNewItemNumber('');
       setBiologyBranchDraft('');
+      setPdfFile(null);
+      setDocFile(null);
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  const refreshChapterInRenameModal = async (chapterId: string) => {
+    const { data, error } = await supabase
+      .from('chapters')
+      .select(
+        'id, name, chapter_number, status, pdf_name, pdf_path, doc_name, doc_path, subject_id, subject_name, class_id, class_name, kb_id, kb_name, biology_branch'
+      )
+      .eq('id', chapterId)
+      .single();
+    if (error || !data) return;
+    setRenamingItem((prev) =>
+      prev?.type === 'chapter' && prev.item.id === chapterId ? { ...prev, item: data as Chapter } : prev
+    );
+    setChapters((prev) =>
+      prev.map((c) => (c.id === chapterId ? (data as Chapter) : c)).sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
+    );
+  };
+
+  const removeChapterPdf = async (chapter: Chapter) => {
+    if (!chapter.pdf_path) return;
+    if (
+      !confirm(
+        'Remove the PDF from this chapter? Extracted text used for AI will be cleared. You can upload a new PDF afterward.'
+      )
+    ) {
+      return;
+    }
+    setIsProcessing(true);
+    setProcessingStep('Removing PDF…');
+    try {
+      await supabase.storage.from('chapters').remove([chapter.pdf_path]);
+      const nextStatus: Chapter['status'] = chapter.doc_path ? 'ready' : 'draft';
+      const { error } = await supabase
+        .from('chapters')
+        .update({
+          pdf_path: null,
+          pdf_name: null,
+          raw_text: '',
+          status: nextStatus,
+        })
+        .eq('id', chapter.id);
+      if (error) throw error;
+      await refreshChapterInRenameModal(chapter.id);
+    } catch (err: any) {
+      alert(err?.message || 'Could not remove PDF');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  const removeChapterDoc = async (chapter: Chapter) => {
+    if (!chapter.doc_path) return;
+    if (!confirm('Remove the source document (DOCX/HTML) from this chapter?')) return;
+    setIsProcessing(true);
+    setProcessingStep('Removing document…');
+    try {
+      await supabase.storage.from('chapters').remove([chapter.doc_path]);
+      const nextStatus: Chapter['status'] = chapter.pdf_path ? 'ready' : 'draft';
+      const { error } = await supabase
+        .from('chapters')
+        .update({
+          doc_path: null,
+          doc_name: null,
+          status: nextStatus,
+        })
+        .eq('id', chapter.id);
+      if (error) throw error;
+      await refreshChapterInRenameModal(chapter.id);
+    } catch (err: any) {
+      alert(err?.message || 'Could not remove document');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
     }
   };
 
@@ -520,6 +631,25 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
     } finally {
       setIsProcessing(false);
       setProcessingStep('');
+    }
+  };
+
+  /** Save a storage object to disk (Supabase `chapters` bucket). */
+  const downloadChapterBlob = async (storagePath: string, downloadName: string) => {
+    try {
+      const { data, error } = await supabase.storage.from('chapters').download(storagePath);
+      if (error) throw error;
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = downloadName || storagePath.split('/').pop() || 'chapter-file';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Chapter file download', err);
+      alert(err?.message || 'Download failed.');
     }
   };
   
@@ -714,10 +844,35 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                   <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-stretch justify-end gap-2 rounded-2xl bg-slate-900/0 p-3 opacity-0 transition-all duration-200 group-hover:pointer-events-auto group-hover:bg-slate-900/90 group-hover:opacity-100 group-hover:backdrop-blur-sm">
                     <div className="mt-auto flex flex-col gap-2">
                     {c.status === 'ready' && c.pdf_path && (
+                        <>
                         <button type="button" onClick={() => openPdfViewer(c)} className="w-full rounded-lg bg-white py-2 text-[11px] font-black uppercase tracking-wide text-slate-900 shadow-sm hover:bg-indigo-50 flex items-center justify-center gap-2"><iconify-icon icon="mdi:eye" width="14" /> View PDF</button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void downloadChapterBlob(c.pdf_path!, c.pdf_name || `${slugify(c.name)}.pdf`)
+                          }
+                          className="w-full rounded-lg bg-white/90 py-2 text-[11px] font-black uppercase tracking-wide text-slate-900 shadow-sm ring-1 ring-white/30 hover:bg-emerald-50 flex items-center justify-center gap-2"
+                        >
+                          <iconify-icon icon="mdi:download" width="14" /> Download PDF
+                        </button>
+                        </>
                     )}
                     {c.status === 'ready' && c.doc_path && (
+                        <>
                         <button type="button" onClick={() => openDocViewer(c)} className="w-full rounded-lg bg-white py-2 text-[11px] font-black uppercase tracking-wide text-slate-900 shadow-sm hover:bg-indigo-50 flex items-center justify-center gap-2"><iconify-icon icon="mdi:file-document-outline" width="14" /> View Doc</button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void downloadChapterBlob(
+                              c.doc_path!,
+                              c.doc_name || `${slugify(c.name)}.docx`
+                            )
+                          }
+                          className="w-full rounded-lg bg-white/90 py-2 text-[11px] font-black uppercase tracking-wide text-slate-900 shadow-sm ring-1 ring-white/30 hover:bg-emerald-50 flex items-center justify-center gap-2"
+                        >
+                          <iconify-icon icon="mdi:download" width="14" /> Download Doc
+                        </button>
+                        </>
                     )}
 
                     {isBiologySubjectName(c.subject_name) && (
@@ -756,8 +911,19 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       </div>
 
       {(activeModal || renamingItem) && (
-        <div className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => { setActiveModal(null); setRenamingItem(null); }}>
-          <div className={`bg-white w-full ${renamingItem?.type === 'chapter' ? 'max-w-md' : 'max-w-sm'} rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200`} onClick={e => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => {
+            setActiveModal(null);
+            setRenamingItem(null);
+            setPdfFile(null);
+            setDocFile(null);
+          }}
+        >
+          <div
+            className={`bg-white w-full ${renamingItem?.type === 'chapter' ? 'max-w-lg' : 'max-w-sm'} rounded-2xl p-6 shadow-2xl animate-slide-up border border-slate-200`}
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-sm font-black text-slate-800 mb-4 uppercase tracking-widest">
               {renamingItem
                 ? renamingItem.type === 'chapter'
@@ -851,6 +1017,98 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                 />
               </div>
 
+              {renamingItem?.type === 'chapter' && (
+                <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/90 p-4">
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    ref={pdfInputRef}
+                    className="hidden"
+                    onChange={(e) => setPdfFile(e.target.files?.[0] || null)}
+                  />
+                  <input
+                    type="file"
+                    accept=".docx,.html"
+                    ref={docInputRef}
+                    className="hidden"
+                    onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+                  />
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Source files</p>
+                  <p className="text-[8px] font-semibold leading-snug text-slate-500">
+                    <span className="font-black text-slate-600">Replace</span> — pick a file below, then Save.{' '}
+                    <span className="font-black text-slate-600">Remove</span> — deletes storage immediately (no Save).
+                  </p>
+
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-black uppercase tracking-wider text-rose-700">PDF (AI context)</span>
+                    </div>
+                    {(renamingItem.item as Chapter).pdf_path ? (
+                      <p className="mb-2 truncate text-[11px] font-medium text-slate-700" title={(renamingItem.item as Chapter).pdf_name}>
+                        Current: {(renamingItem.item as Chapter).pdf_name || 'PDF'}
+                      </p>
+                    ) : (
+                      <p className="mb-2 text-[11px] text-slate-500">No PDF uploaded.</p>
+                    )}
+                    {pdfFile ? (
+                      <p className="mb-2 text-[11px] font-bold text-emerald-700">New file: {pdfFile.name}</p>
+                    ) : null}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => pdfInputRef.current?.click()}
+                        className="rounded-lg bg-rose-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-sm hover:bg-rose-700"
+                      >
+                        {(renamingItem.item as Chapter).pdf_path ? 'Replace PDF' : 'Upload PDF'}
+                      </button>
+                      {(renamingItem.item as Chapter).pdf_path ? (
+                        <button
+                          type="button"
+                          onClick={() => void removeChapterPdf(renamingItem.item as Chapter)}
+                          className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-rose-800 hover:bg-rose-50"
+                        >
+                          Remove PDF
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-black uppercase tracking-wider text-indigo-700">Source doc</span>
+                    </div>
+                    {(renamingItem.item as Chapter).doc_path ? (
+                      <p className="mb-2 truncate text-[11px] font-medium text-slate-700" title={(renamingItem.item as Chapter).doc_name}>
+                        Current: {(renamingItem.item as Chapter).doc_name || 'Document'}
+                      </p>
+                    ) : (
+                      <p className="mb-2 text-[11px] text-slate-500">No DOCX/HTML uploaded.</p>
+                    )}
+                    {docFile ? (
+                      <p className="mb-2 text-[11px] font-bold text-emerald-700">New file: {docFile.name}</p>
+                    ) : null}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => docInputRef.current?.click()}
+                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-sm hover:bg-indigo-700"
+                      >
+                        {(renamingItem.item as Chapter).doc_path ? 'Replace Doc' : 'Upload Doc'}
+                      </button>
+                      {(renamingItem.item as Chapter).doc_path ? (
+                        <button
+                          type="button"
+                          onClick={() => void removeChapterDoc(renamingItem.item as Chapter)}
+                          className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-indigo-900 hover:bg-indigo-50"
+                        >
+                          Remove Doc
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {activeModal === 'chapter' && !renamingItem && (
                  <div className="space-y-3 pt-2">
                     <div>
@@ -884,7 +1142,18 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
               )}
 
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => { setActiveModal(null); setRenamingItem(null); }} className="flex-1 py-3 text-[10px] font-black uppercase text-slate-400 hover:bg-slate-50 rounded-lg">Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveModal(null);
+                    setRenamingItem(null);
+                    setPdfFile(null);
+                    setDocFile(null);
+                  }}
+                  className="flex-1 py-3 text-[10px] font-black uppercase text-slate-400 hover:bg-slate-50 rounded-lg"
+                >
+                  Cancel
+                </button>
                 <button type="submit" className="flex-1 py-3 bg-accent text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-accent/10">Save</button>
               </div>
             </form>

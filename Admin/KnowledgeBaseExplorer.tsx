@@ -314,6 +314,25 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
       alert("Could not load PDF view.");
     }
   };
+
+  const downloadChapterPdf = async (chapter: Chapter) => {
+    if (!chapter.pdf_path) return;
+    try {
+      const { data, error } = await supabase.storage.from('chapters').download(chapter.pdf_path);
+      if (error) throw error;
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = chapter.pdf_name || `${slugify(chapter.name)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('PDF download', err);
+      alert(err?.message || 'Download failed.');
+    }
+  };
   
   const filteredSubjects = subjects.filter(s => s.level_id === selectedLevel?.id);
   const filteredChapters = chapters.filter(c => c.subject_id === selectedSubject?.id);
@@ -439,6 +458,7 @@ const KnowledgeBaseExplorer: React.FC<KnowledgeBaseExplorerProps> = ({ kbId, kbN
                     {c.status === 'ready' ? (
                       <>
                         <button onClick={() => openPdfViewer(c)} className="w-full py-1.5 bg-white text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-indigo-50"><iconify-icon icon="mdi:eye" width="12" /> View</button>
+                        <button onClick={() => void downloadChapterPdf(c)} className="w-full py-1.5 bg-white/90 text-slate-900 rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 ring-1 ring-white/40 hover:bg-emerald-50"><iconify-icon icon="mdi:download" width="12" /> Download</button>
                         <button onClick={() => { setUploadingChapter(c); fileInputRef.current?.click(); }} className="w-full py-1.5 bg-white/20 text-white rounded-md text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-white/30"><iconify-icon icon="mdi:refresh" width="12" /> Update</button>
                       </>
                     ) : (

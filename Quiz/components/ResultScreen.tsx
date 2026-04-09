@@ -883,11 +883,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     setIsPaginating(true);
     const measureAndPaginate = () => {
         const examDensity = !includeExplanations;
-        const packingBlockBuffer = examDensity ? 0.45 : 1.45;
+        // With explanations, each unit is taller; keep buffers close to exam mode so columns fill to the footer
+        // without the large bottom slack from over-estimated heights + high pack gaps.
+        const packingBlockBuffer = examDensity ? 0.45 : 0.55;
         const gapCandidates = examDensity
           ? ([6, 7, 8, 9, 10, 11, 12, 13, 14] as const)
-          : ([15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] as const);
-        const targetQuestionGapPx = examDensity ? 10 : 20;
+          : ([7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const);
+        const targetQuestionGapPx = examDensity ? 10 : 11;
 
         const pageWidthMm = 210;
         const availableWidthMm = pageWidthMm - (paperConfig.marginX * 2) - paperConfig.gap;
@@ -1070,14 +1072,16 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               measureContainer.removeChild(tableOnly);
             }
 
-            const pretextFudge = examDensity ? 2 : 10;
+            const pretextFudge = examDensity ? 2 : 3;
             const pretextBasedCoreH = Math.ceil(pretextCoreHeight + tableHeight + pretextFudge);
             measureContainer.appendChild(coreDiv);
             const domCoreH = coreDiv.getBoundingClientRect().height;
             measureContainer.removeChild(coreDiv);
             const isMatchingTable = !!(colA && colB && colA.length > 0);
-            const useExamDomCore = examDensity && !isMatchingTable && domCoreH >= 6;
-            const coreH = useExamDomCore
+            // Use measured DOM core height in explanation mode too (except matching tables) — same tight fit as exam.
+            const useDomCoreForCoreH =
+              !isMatchingTable && domCoreH >= 6 && (examDensity || includeExplanations);
+            const coreH = useDomCoreForCoreH
               ? Math.ceil(domCoreH + 1)
               : Math.max(pretextBasedCoreH, domCoreH * 0.92);
             unitBlocks.push({ type: 'question-core', question: q, globalIndex: qIndex, height: coreH });
@@ -1086,11 +1090,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                  const renderedExp = parsePseudoLatexAndMath(q.explanation);
                  const div = document.createElement('div');
                  
-                 div.style.padding = '6px'; 
-                 div.style.backgroundColor = '#fcfcfc'; 
-                 div.style.border = '0.4pt solid #e5e7eb'; 
-                 div.style.marginTop = '4px'; 
-                 div.style.marginBottom = '5px';
+                 div.style.padding = '6px 8px';
+                 div.style.backgroundColor = '#fcfcfc';
+                 div.style.border = '0.4pt solid #e5e7eb';
+                 div.style.marginTop = '4px';
+                 div.style.marginBottom = '0px';
                  div.style.borderRadius = '2px';
                  div.style.color = 'black';
                  
@@ -1118,7 +1122,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
                     'normal'
                   ) ?? 0;
                 measureContainer.appendChild(div); const expDomH = div.getBoundingClientRect().height; measureContainer.removeChild(div);
-                const expH = Math.max(expDomH * 0.9, expPretextH + 22);
+                const expH = Math.max(Math.ceil(expDomH), expPretextH + 8);
                 unitBlocks.push({ type: 'explanation-box', question: q, globalIndex: qIndex, content: div.innerHTML, height: expH });
              }
 
@@ -1149,7 +1153,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
             hasSubjectHeader: u.blocks.some((b) => b.type === 'subject-header'),
           }));
 
-          const allowLookaheadReorder = true;
+          // Strict syllabus order when explanations are on (Q+exp units); exam mode may reorder within a section for density.
+          const allowLookaheadReorder = examDensity;
           const lookaheadDepth = 24;
 
           const sections: QueueUnit[][] = [];
@@ -1381,11 +1386,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const questionBlockTailMarginPx = (block: QuizBlock, next: QuizBlock | undefined, gapPx: number): number | undefined => {
     if (gapPx <= 0) return undefined;
     if (block.type === 'subject-header' || block.type === 'answer-key') return undefined;
-    if (block.type === 'explanation-box') return Math.round(6 + gapPx);
+    if (block.type === 'explanation-box') return Math.round(4 + gapPx);
     if (block.type === 'question-core') {
       if (next?.type === 'explanation-box' && next.question?.id === block.question?.id) return 2;
       // Former Tailwind space-y-1 (~4px) between column blocks is folded into margin so pagination and DOM stay aligned.
-      const base = includeExplanations ? 6 : 4.5;
+      const base = 4.5;
       return Math.round(base + gapPx);
     }
     return undefined;
