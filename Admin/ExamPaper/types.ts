@@ -39,8 +39,8 @@ export const STYLE_LABELS: Record<StyleKey, string> = {
 
 /**
  * Global subject_mix keys (KB-wide: all classes merged).
- * - `g:bio:botany` | `g:bio:zoology` | `g:bio:unset` — NEET Biology by branch across every class.
- * - `g:sub:<slug>` — non-biology subjects, slug from normalized subject_name.
+ * - `g:bio:botany` | `g:bio:zoology` | `g:bio:unset` — life-science buckets (Botany / Zoology / untagged legacy Biology) across every class.
+ * - `g:sub:<slug>` — other subjects, slug from normalized subject_name.
  */
 export const GLOBAL_BIO_PREFIX = 'g:bio:' as const;
 export const GLOBAL_SUB_PREFIX = 'g:sub:' as const;

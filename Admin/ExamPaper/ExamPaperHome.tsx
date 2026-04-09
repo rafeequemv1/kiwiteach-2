@@ -120,7 +120,7 @@ const ExamPaperHome: React.FC<ExamPaperHomeProps> = ({ userId }) => {
     const s = sumMix(row.subject_mix);
     if (keys.length === 0) return '—';
     const bioSplit = keys.some((k) => k.includes(BIO_BRANCH_SUFFIX) || k.startsWith(GLOBAL_BIO_PREFIX));
-    const bioNote = bioSplit ? 'Bio botany/zoology · ' : '';
+    const bioNote = bioSplit ? 'Botany/Zoology · ' : '';
     return `${bioNote}${keys.length} row(s) · sum ${s}${row.subject_mode === 'percent' ? '%' : ' q'}`;
   };
 

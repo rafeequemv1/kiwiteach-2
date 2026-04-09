@@ -70,7 +70,11 @@ interface TestDashboardProps {
   folders: Folder[];
   allTests: Test[];
   onAddFolder: (folder: { name: string; parent_id: string | null }) => void;
-  onStartNewTest: (folderId: string | null, initialDate?: string) => void;
+  /** Second arg: legacy calendar string date, or options including org class id when a class pill is selected. */
+  onStartNewTest: (
+    folderId: string | null,
+    options?: string | { initialScheduleDate?: string; hubClassId?: string | null }
+  ) => void;
   onTestClick: (test: Test) => void;
   onDeleteItem: (type: 'folder' | 'test', id: string, name: string) => void;
   onDuplicateTest: (test: Test) => void;
@@ -115,6 +119,19 @@ function parseTestDragPayload(e: React.DragEvent): { type: string; id: string } 
     /* ignore */
   }
   return null;
+}
+
+/** Test `created_at` (mapped as `generatedAt`): show date + time if created within the last 24 hours, else date only. */
+function formatTestCreatedLabel(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const ageMs = Date.now() - d.getTime();
+  const within24h = ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000;
+  if (within24h) {
+    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  }
+  return d.toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
 function computeTestStatus(t: Test): TestStatus {
@@ -812,9 +829,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
       setIsRenaming(false);
     };
 
-    const modified = test.generatedAt
-      ? new Date(test.generatedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
-      : '—';
+    const createdLabel = formatTestCreatedLabel(test.generatedAt);
 
     return (
       <div
@@ -840,7 +855,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
             </button>
           )}
         </div>
-        <div className="truncate text-xs text-zinc-600">{modified}</div>
+        <div className="truncate text-xs text-zinc-600">{createdLabel}</div>
         <div className="truncate text-xs text-zinc-600">{statusLabel(status)}</div>
         <div className="flex items-center justify-end gap-1">
           <span className="text-xs tabular-nums text-zinc-600">{test.questionCount}</span>
@@ -891,6 +906,9 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
           )}
           <span className="text-[10px] text-zinc-500">
             {test.questionCount} qs · {statusLabel(status)}
+          </span>
+          <span className="line-clamp-2 max-w-[128px] text-[9px] leading-tight text-zinc-400">
+            {formatTestCreatedLabel(test.generatedAt)}
           </span>
         </button>
       </div>
@@ -966,6 +984,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
             <p className="mt-0.5 text-[11px] text-neutral-500">
               {test.questionCount} q · {statusLabel(status)}
             </p>
+            <p className="mt-0.5 text-[10px] text-neutral-400">{formatTestCreatedLabel(test.generatedAt)}</p>
           </div>
         </div>
       </div>
@@ -1127,7 +1146,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => onStartNewTest(currentFolderId)}
+                onClick={() => onStartNewTest(currentFolderId, { hubClassId: selectedClassId })}
                 className="inline-flex h-9 items-center rounded-md bg-zinc-900 px-3 text-xs font-medium text-white shadow hover:bg-zinc-800"
               >
                 {primaryActionLabel}
@@ -1282,7 +1301,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
               <>
                 <div className={explorerHeaderRowClass}>
                   <span>Name</span>
-                  <span>Date modified</span>
+                  <span>Created</span>
                   <span>Status</span>
                   <span className="text-right"> </span>
                 </div>
@@ -1316,7 +1335,9 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
               <TestsCalendarDemo
                 tests={testsToDisplay}
                 onTestClick={onTestClick}
-                onAddAtDate={(dateISO) => onStartNewTest(currentFolderId, dateISO)}
+                onAddAtDate={(dateISO) =>
+                  onStartNewTest(currentFolderId, { initialScheduleDate: dateISO, hubClassId: selectedClassId })
+                }
                 onDropToDate={(testId, dateISO) => {
                   setOptimisticOverrides((o) => ({ ...o, [testId]: new Date(dateISO).toISOString() }));
                   onScheduleTest(testId, dateISO);

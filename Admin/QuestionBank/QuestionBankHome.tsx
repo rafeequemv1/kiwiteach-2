@@ -25,7 +25,15 @@ import {
   type AnalysisTableRow,
 } from '../../services/forgeBatchAnalysis';
 import { QuestionType, Question } from '../../Quiz/types';
+import { paperSubjectSectionLabel } from '../../Quiz/utils/paperSubjectLabel';
 import { assertBankRowsPassLatexValidation } from '../../utils/latexBankValidation';
+
+/** Sidebar subject pills: Biology never as one bucket — Botany / Zoology / Bio (untagged) via `biology_branch`. */
+function subjectFilterKeyForChapter(c: { subject_name?: string | null; biology_branch?: string | null }): string {
+  const raw = c.subject_name;
+  if (raw == null || String(raw).trim() === '') return 'Unassigned';
+  return paperSubjectSectionLabel(raw, c.biology_branch as 'botany' | 'zoology' | null | undefined);
+}
 
 /** Scale Easy/Medium/Hard template to sum exactly to `total` (largest remainder). Used when splitting forge into per-style API calls. */
 function scaleDifficultyToTotal(
@@ -496,7 +504,7 @@ const QuestionBankHome: React.FC = () => {
     setIsFetching(true);
     try {
         const { data: chaps } = await supabase.from('chapters')
-            .select('id, name, chapter_number, subject_name, class_name, doc_path, pdf_path')
+            .select('id, name, chapter_number, subject_name, class_name, doc_path, pdf_path, biology_branch')
             .eq('kb_id', kbId)
             .order('chapter_number');
         setChapters(chaps || []);
@@ -2006,7 +2014,7 @@ const QuestionBankHome: React.FC = () => {
   const subjectFilterOptions = useMemo(() => {
     const counts = new Map<string, number>();
     chapters.forEach((c: any) => {
-      const v = String(c.subject_name || 'Unassigned');
+      const v = subjectFilterKeyForChapter(c);
       counts.set(v, (counts.get(v) || 0) + 1);
     });
     return Array.from(counts.entries())
@@ -2022,7 +2030,7 @@ const QuestionBankHome: React.FC = () => {
       base = base.filter(c => selectedClassFilters.has(String(c.class_name || 'Unassigned')));
     }
     if (selectedSubjectFilters.size > 0) {
-      base = base.filter(c => selectedSubjectFilters.has(String(c.subject_name || 'Unassigned')));
+      base = base.filter(c => selectedSubjectFilters.has(subjectFilterKeyForChapter(c)));
     }
     return base;
   }, [chapters, chapterSearch, selectedClassFilters, selectedSubjectFilters]);

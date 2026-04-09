@@ -43,6 +43,7 @@ import {
   isUuid,
   recordQuestionUsageForTest,
 } from './services/questionUsageService';
+import { mergePaperLayout } from './utils/paperLayoutMerge';
 import {
   allocateFigureSlotsByChapter,
   eligibleOversampleLimit,
@@ -245,6 +246,8 @@ const Quiz: React.FC = () => {
   const [isLoadingTest, setIsLoadingTest] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(''); // New state for loading text
   const fetchingRef = useRef(false);
+  /** Org class id → bank question UUIDs already used this tab session (enforces no-repeat before/without sync). */
+  const classScopedSessionUsedRef = useRef<Map<string, Set<string>>>(new Map());
   const lastFetchTime = useRef<number>(0);
   const didInitRouteRef = useRef(false);
   
@@ -283,11 +286,15 @@ const Quiz: React.FC = () => {
   const [activeStudentSolution, setActiveStudentSolution] = useState<{ topic: string, questions: Question[], showAnswers?: boolean } | null>(null);
 
   const [creatorFolderId, setCreatorFolderId] = useState<string | null>(null);
+  /** Org class id from Class tests dashboard when a class pill is selected — tags synced papers so the class filter shows them. */
+  const [creatorHubClassId, setCreatorHubClassId] = useState<string | null>(null);
   const [isForging, setIsForging] = useState(false);
   const [forgeStep, setForgeStep] = useState('');
   const [forgeError, setForgeError] = useState<string | null>(null);
   const [forgedResult, setForgedResult] = useState<{ topic: string, questions: Question[], layoutConfig?: LayoutConfig, sourceOptions: CreateTestOptions } | null>(null);
-  
+  /** Paper preview opened from an existing hub row (not a fresh forge) — ResultScreen shows Sync as Saved until edited. */
+  const [paperPreviewAlreadySynced, setPaperPreviewAlreadySynced] = useState(false);
+
   const [editingTestId, setEditingTestId] = useState<string | null>(null);
   const [editInitialChapters, setEditInitialChapters] = useState<SelectedChapter[] | undefined>(undefined);
   const [editInitialTopic, setEditInitialTopic] = useState<string | undefined>(undefined);
@@ -516,6 +523,7 @@ const Quiz: React.FC = () => {
         setIsLoadingWorkspace(false);
         setOrgScopeReady(false);
         didInitRouteRef.current = false;
+        classScopedSessionUsedRef.current.clear();
       }
     });
     return () => subscription.unsubscribe();
@@ -540,10 +548,10 @@ const Quiz: React.FC = () => {
       }
   };
 
-  const fetchWorkspace = async (currentUser?: any) => {
+  const fetchWorkspace = async (currentUser?: any, force?: boolean) => {
     const now = Date.now();
-    if (fetchingRef.current || (now - lastFetchTime.current < 2000)) return;
-    
+    if (fetchingRef.current || (!force && now - lastFetchTime.current < 2000)) return;
+
     fetchingRef.current = true;
     lastFetchTime.current = now;
     
@@ -758,7 +766,19 @@ const Quiz: React.FC = () => {
     }
   };
 
-  const handleStartTestCreator = (folderId: string | null) => {
+  const parseStartNewTestOptions = (
+    options?: string | { initialScheduleDate?: string; hubClassId?: string | null }
+  ): { hubClassId: string | null } => {
+    if (options == null) return { hubClassId: null };
+    if (typeof options === 'string') return { hubClassId: null };
+    return { hubClassId: options.hubClassId ?? null };
+  };
+
+  const handleStartTestCreator = (
+    folderId: string | null,
+    options?: string | { initialScheduleDate?: string; hubClassId?: string | null }
+  ) => {
+      const { hubClassId } = parseStartNewTestOptions(options);
       setEditInitialChapters(undefined);
       setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
       setEditInitialKnowledgeBaseId(undefined);
@@ -767,12 +787,18 @@ const Quiz: React.FC = () => {
       setEditInitialGlobalTypes(undefined);
       setEditInitialGlobalFigureCount(undefined);
       setEditingTestId(null); setCreatorFolderId(folderId);
+      setCreatorHubClassId(hubClassId && isUuid(hubClassId) ? hubClassId : null);
       setIsForging(false); setForgeStep(''); setForgeError(null);
       setForgedResult(null); setOnlineExamResult(null);
+      setPaperPreviewAlreadySynced(false);
       setPendingNewTestKind('paper');
       setNewTestChapterPickerOpen(true);
   };
-  const handleStartOnlineExamCreator = (folderId: string | null) => {
+  const handleStartOnlineExamCreator = (
+    folderId: string | null,
+    options?: string | { initialScheduleDate?: string; hubClassId?: string | null }
+  ) => {
+      const { hubClassId } = parseStartNewTestOptions(options);
       setEditInitialChapters(undefined);
       setEditInitialTopic(undefined); setEditInitialSettings(undefined); setEditInitialManualQuestions(undefined);
       setEditInitialKnowledgeBaseId(undefined);
@@ -781,8 +807,10 @@ const Quiz: React.FC = () => {
       setEditInitialGlobalTypes(undefined);
       setEditInitialGlobalFigureCount(undefined);
       setEditingTestId(null); setCreatorFolderId(folderId);
+      setCreatorHubClassId(hubClassId && isUuid(hubClassId) ? hubClassId : null);
       setIsForging(false); setForgeStep(''); setForgeError(null);
       setForgedResult(null); setOnlineExamResult(null);
+      setPaperPreviewAlreadySynced(false);
       setPendingNewTestKind('online');
       setNewTestChapterPickerOpen(true);
   };
@@ -847,7 +875,8 @@ const Quiz: React.FC = () => {
     }
     setForgeError(null);
     setIsCreatorOpen(true);
-    setForgedResult(null); 
+    setForgedResult(null);
+    setPaperPreviewAlreadySynced(false);
   };
 
   const handleSaveDraft = async (options: CreateTestOptions) => {
@@ -906,8 +935,19 @@ const Quiz: React.FC = () => {
       }
       
       const manualQs = options.manualQuestions || [];
-      let finalQuestions: Question[] = [...manualQs]; 
-      
+      let finalQuestions: Question[] = [...manualQs];
+
+      const effectiveClassIdForBank: string | null =
+        options.targetClassId && isUuid(String(options.targetClassId))
+          ? String(options.targetClassId)
+          : creatorHubClassId && isUuid(creatorHubClassId)
+            ? creatorHubClassId
+            : null;
+
+      const sessionUsedExclude: string[] = effectiveClassIdForBank
+        ? Array.from(classScopedSessionUsedRef.current.get(effectiveClassIdForBank) ?? [])
+        : [];
+
       const chaptersForBank = options.chapters.map((c) => ({ ...c, source: 'db' as const }));
       const figureSlotsByChapter = allocateFigureSlotsByChapter(
         chaptersForBank.map((c) => ({ id: c.id, count: c.count || 0 })),
@@ -958,7 +998,7 @@ const Quiz: React.FC = () => {
 
               const usePerStyle = !!(chap.useStyleMix && chap.styleCounts);
               const baseEligibleArgs = {
-                classId: options.targetClassId || null,
+                classId: effectiveClassIdForBank,
                 chapterId: chap.id,
                 difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
                 allowRepeats: !!options.allowPastQuestions,
@@ -972,7 +1012,7 @@ const Quiz: React.FC = () => {
                 for (const qt of styleKeys) {
                   const want = plan[qt];
                   if (want <= 0) continue;
-                  const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const exclude = [...sessionUsedExclude, ...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
                   const pool = await fetchEligibleQuestions({
                     ...baseEligibleArgs,
                     questionType: qt,
@@ -989,7 +1029,7 @@ const Quiz: React.FC = () => {
                 }
                 let still = neededFromBank - collected.length;
                 if (still > 0) {
-                  const exclude = [...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const exclude = [...sessionUsedExclude, ...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
                   const fillerPool = await fetchEligibleQuestions({
                     ...baseEligibleArgs,
                     excludeIds: exclude,
@@ -1007,7 +1047,7 @@ const Quiz: React.FC = () => {
               } else {
                 const pool = await fetchEligibleQuestions({
                   ...baseEligibleArgs,
-                  excludeIds: currentIds,
+                  excludeIds: [...sessionUsedExclude, ...currentIds],
                   limit: eligibleOversampleLimit(neededFromBank),
                 });
                 newBatch = selectQuestionsMaxTopicSpread(pool, neededFromBank).map((bq) => ({
@@ -1025,6 +1065,7 @@ const Quiz: React.FC = () => {
                   newBatch.some((q) => !questionHasFigure(q))
                 ) {
                   const excludeIds = [
+                    ...sessionUsedExclude,
                     ...currentIds,
                     ...newBatch.map((q) => q.originalId || q.id).filter(isUuid),
                   ];
@@ -1077,7 +1118,42 @@ const Quiz: React.FC = () => {
           }));
           finalQuestions = [...finalQuestions, ...enriched];
       }
+
+      if (effectiveClassIdForBank) {
+        const acc =
+          classScopedSessionUsedRef.current.get(effectiveClassIdForBank) ?? new Set<string>();
+        for (const q of finalQuestions) {
+          const id = q.originalId || q.id;
+          if (isUuid(id)) acc.add(id);
+        }
+        classScopedSessionUsedRef.current.set(effectiveClassIdForBank, acc);
+      }
+
       return finalQuestions;
+  };
+
+  /** Class list on the row + usage RPC: explicit classIds, else merge creator target + dashboard org class, else [] on insert only. */
+  const resolveClassIdsForCommit = (
+    safeConfig: Record<string, unknown>,
+    isUpdate: boolean
+  ): string[] | undefined => {
+    const explicit = safeConfig.classIds;
+    if (Array.isArray(explicit) && explicit.length > 0) {
+      return [...new Set(explicit.map(String).filter((id) => isUuid(id)))];
+    }
+    const so = safeConfig.sourceOptions as CreateTestOptions | undefined;
+    const merged = new Set<string>();
+    if (so?.targetClassId && isUuid(String(so.targetClassId))) {
+      merged.add(String(so.targetClassId));
+    }
+    if (so?.assignedOrgClassId && isUuid(String(so.assignedOrgClassId))) {
+      merged.add(String(so.assignedOrgClassId));
+    }
+    if (merged.size > 0) {
+      return [...merged];
+    }
+    if (!isUpdate) return [];
+    return undefined;
   };
 
   const commitTestToHub = async (topicName: string, questions: Question[], mode: 'paper' | 'online', extraConfig: any = {}) => {
@@ -1089,7 +1165,13 @@ const Quiz: React.FC = () => {
       const safeConfig = sanitizeForPostgres(extraConfig);
       const safeTopicName = sanitizeForPostgres(topicName);
 
-      const payload = { 
+      const isUpdate = !!editingTestId;
+      let resolvedClassIds = resolveClassIdsForCommit(safeConfig, isUpdate);
+      if (!isUpdate && creatorHubClassId && isUuid(creatorHubClassId)) {
+        resolvedClassIds = [...new Set([...(resolvedClassIds ?? []), creatorHubClassId])].filter(isUuid);
+      }
+
+      const payload: Record<string, unknown> = { 
           name: safeTopicName || 'New Assessment', folder_id: creatorFolderId, user_id: user.id, 
           questions: safeQuestions.map((q: any) => JSON.parse(JSON.stringify(q))), 
           question_ids: safeQuestions.map((q: any) => q.id || '').filter((id: string) => id !== ''), 
@@ -1098,23 +1180,34 @@ const Quiz: React.FC = () => {
           status: mode === 'online' ? 'scheduled' : 'generated', 
           question_count: safeQuestions.length, 
           scheduled_at: safeConfig.scheduledAt || null, 
-          class_ids: safeConfig.classIds || [] 
       };
+      if (resolvedClassIds !== undefined) {
+        payload.class_ids = resolvedClassIds;
+      }
+
       let savedTestId = editingTestId || null;
       if (editingTestId) {
-        await supabase.from('tests').update(payload).eq('id', editingTestId);
+        const { error } = await supabase.from('tests').update(payload).eq('id', editingTestId);
+        if (error) throw error;
       } else {
         const { data, error } = await supabase.from('tests').insert([payload]).select('id').single();
         if (error) throw error;
         savedTestId = data?.id || null;
       }
 
+      let usageClassIds: string[] =
+        resolvedClassIds !== undefined ? resolvedClassIds : [];
+      if (resolvedClassIds === undefined && savedTestId) {
+        const { data: row } = await supabase.from('tests').select('class_ids').eq('id', savedTestId).maybeSingle();
+        usageClassIds = Array.isArray(row?.class_ids) ? row.class_ids.filter((id: unknown) => isUuid(String(id))).map(String) : [];
+      }
+
       await recordQuestionUsageForTest({
         testId: savedTestId,
-        classIds: payload.class_ids || [],
-        questionIds: payload.question_ids || [],
+        classIds: usageClassIds,
+        questionIds: (payload.question_ids as string[]) || [],
       });
-      await fetchWorkspace();
+      await fetchWorkspace(session?.user ?? undefined, true);
   };
 
   const handleCreateTest = async (options: CreateTestOptions) => {
@@ -1122,7 +1215,17 @@ const Quiz: React.FC = () => {
       setIsForging(true); setForgeStep('Synthesizing Assessment...');
       try {
           const questions = await generateQuestionsLogic(options, setForgeStep);
-          setForgedResult({ topic: options.topic, questions, sourceOptions: options });
+          setPaperPreviewAlreadySynced(false);
+          setForgedResult({
+            topic: options.topic,
+            questions,
+            sourceOptions: {
+              ...options,
+              assignedOrgClassId:
+                creatorHubClassId && isUuid(creatorHubClassId) ? creatorHubClassId : null,
+            },
+            layoutConfig: mergePaperLayout(undefined),
+          });
           setIsCreatorOpen(false); 
       } catch (err: any) {
           const msg = err?.message ? String(err.message) : 'Unknown error';
@@ -1131,12 +1234,17 @@ const Quiz: React.FC = () => {
   };
 
   const handleSaveTestToSupabase = async (questions: Question[], layoutConfig?: LayoutConfig, updatedTitle?: string) => {
-      if (!forgedResult) return;
+      if (!forgedResult) {
+        alert('Nothing to sync — close this screen and generate the test again.');
+        return;
+      }
       setLoadingMessage('Syncing to Cloud...');
       setIsLoadingTest(true);
       try { 
           await commitTestToHub(updatedTitle || forgedResult.topic, questions, 'paper', { layout_config: layoutConfig, sourceOptions: forgedResult.sourceOptions });
-          setForgedResult(null); setEditingTestId(null); 
+          setForgedResult(null); setEditingTestId(null);
+          setPaperPreviewAlreadySynced(false);
+          setCreatorHubClassId(null);
       } catch (error: any) { alert("Failed to save: " + error.message); } finally { setIsLoadingTest(false); }
   };
 
@@ -1148,6 +1256,7 @@ const Quiz: React.FC = () => {
           if (error) throw error;
 
           if (test.status === 'draft') {
+              setPaperPreviewAlreadySynced(false);
               setIsForging(false); setForgeStep(''); setForgeError(null);
               setIsCreatorOpen(false); setEditingTestId(test.id); setCreatorFolderId(test.folder_id); setEditInitialTopic(test.name);
               const options = test.config?.sourceOptions || test.config;
@@ -1162,8 +1271,18 @@ const Quiz: React.FC = () => {
           }
           
           const isOnline = test.config?.mode === 'online';
-          if (isOnline) setOnlineExamResult({ topic: test.name, questions: test.questions, config: test.config });
-          else setForgedResult({ topic: test.name, questions: test.questions, layoutConfig: test.layout_config, sourceOptions: test.config?.sourceOptions });
+          if (isOnline) {
+            setPaperPreviewAlreadySynced(false);
+            setOnlineExamResult({ topic: test.name, questions: test.questions, config: test.config });
+          } else {
+            setPaperPreviewAlreadySynced(true);
+            setForgedResult({
+              topic: test.name,
+              questions: test.questions,
+              layoutConfig: mergePaperLayout(test.layout_config),
+              sourceOptions: test.config?.sourceOptions,
+            });
+          }
           setEditingTestId(test.id);
       } catch (e: any) { alert("Failed to load: " + e.message); } finally { setIsLoadingTest(false); }
   };
@@ -1519,7 +1638,24 @@ const Quiz: React.FC = () => {
               </div>
           </div>
       )}
-      {forgedResult && <div className="fixed inset-0 z-[210] bg-white"><QuestionListScreen topic={forgedResult.topic} questions={forgedResult.questions} onRestart={() => setForgedResult(null)} onSave={handleSaveTestToSupabase} onEditBlueprint={handleEditBlueprint} brandConfig={brandConfig} initialLayoutConfig={forgedResult.layoutConfig} sourceOptions={forgedResult.sourceOptions} /></div>}
+      {forgedResult && (
+        <div className="fixed inset-0 z-[210] bg-white">
+          <QuestionListScreen
+            topic={forgedResult.topic}
+            questions={forgedResult.questions}
+            onRestart={() => {
+              setForgedResult(null);
+              setPaperPreviewAlreadySynced(false);
+            }}
+            onSave={handleSaveTestToSupabase}
+            onEditBlueprint={handleEditBlueprint}
+            brandConfig={brandConfig}
+            initialLayoutConfig={mergePaperLayout(forgedResult.layoutConfig)}
+            sourceOptions={forgedResult.sourceOptions}
+            initialSaveSynced={paperPreviewAlreadySynced}
+          />
+        </div>
+      )}
       {isOnlineExamCreatorOpen && (
           <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden bg-white">
               {forgeError && (
@@ -1547,7 +1683,17 @@ const Quiz: React.FC = () => {
                           setIsForging(true); setForgeStep('Forging test…');
                           try {
                               const qs = await generateQuestionsLogic(opts, setForgeStep);
-                              setOnlineExamResult({ topic: opts.topic, questions: qs, config: opts });
+                              setOnlineExamResult({
+                                topic: opts.topic,
+                                questions: qs,
+                                config: {
+                                  ...opts,
+                                  assignedOrgClassId:
+                                    creatorHubClassId && isUuid(creatorHubClassId)
+                                      ? creatorHubClassId
+                                      : null,
+                                },
+                              });
                               setIsOnlineExamCreatorOpen(false);
                           } catch (e: any) {
                               const msg = e?.message ? String(e.message) : 'Unknown error';
@@ -1578,6 +1724,7 @@ const Quiz: React.FC = () => {
                   onSave={async (examData) => {
                       await commitTestToHub(examData.title, examData.questions, 'online', { ...examData, mode: 'online', sourceOptions: onlineExamResult.config?.sourceOptions || onlineExamResult.config });
                       setOnlineExamResult(null); setEditingTestId(null);
+                      setCreatorHubClassId(null);
                   }} 
                   institutesList={institutes}
                   classesList={orgClasses}

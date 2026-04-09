@@ -13,6 +13,8 @@ export type MindMapChapterRow = {
   chapter_id: string;
   chapter_name: string;
   chapter_number: number | null;
+  /** From `chapters.biology_branch` for Botany/Zoology labels in bank map. */
+  biology_branch?: 'botany' | 'zoology' | null;
   question_count: number;
 };
 export type MindMapTopicRow = { topic_label: string; question_count: number };
@@ -177,10 +179,17 @@ async function fallbackSubjects(classId: string): Promise<MindMapSubjectRow[]> {
   return out;
 }
 
+function normBioBranch(raw: unknown): 'botany' | 'zoology' | null {
+  const s = raw == null ? '' : String(raw).trim().toLowerCase();
+  if (s === 'botany') return 'botany';
+  if (s === 'zoology') return 'zoology';
+  return null;
+}
+
 async function fallbackChapters(subjectId: string): Promise<MindMapChapterRow[]> {
   const { data: chaps, error: e1 } = await supabase
     .from('chapters')
-    .select('id,name,chapter_number')
+    .select('id,name,chapter_number,biology_branch')
     .eq('subject_id', subjectId)
     .order('chapter_number', { ascending: true, nullsFirst: false })
     .order('name');
@@ -195,6 +204,7 @@ async function fallbackChapters(subjectId: string): Promise<MindMapChapterRow[]>
       chapter_id: id,
       chapter_name: String((c as { name?: string }).name ?? ''),
       chapter_number: num == null ? null : n(num),
+      biology_branch: normBioBranch((c as { biology_branch?: string | null }).biology_branch),
       question_count: counts.get(id) ?? 0,
     };
   });
@@ -313,6 +323,7 @@ export async function fetchMindMapChapters(subjectId: string, opts?: { bypassCac
     chapter_id: String(r.chapter_id),
     chapter_name: String(r.chapter_name ?? ''),
     chapter_number: r.chapter_number == null ? null : n(r.chapter_number),
+    biology_branch: normBioBranch(r.biology_branch),
     question_count: n(r.question_count),
   }));
   mindMapCacheSet(key, list);

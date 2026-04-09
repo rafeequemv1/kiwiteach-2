@@ -14,7 +14,7 @@ import {
   parseSubjectMixKey,
   subjectNameToGlobalMixSlug,
 } from './types';
-import { paperChapterSubjectLine } from '../../Quiz/utils/paperSubjectLabel';
+import { isBiologySubjectName, paperChapterSubjectLine } from '../../Quiz/utils/paperSubjectLabel';
 
 function sumValues(r: Record<string, number>): number {
   return Object.values(r).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
@@ -66,12 +66,6 @@ function subjectQuestionAllocation(
   return Math.max(0, Math.round(raw));
 }
 
-function isBiologySubjectName(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const n = name.trim().toLowerCase();
-  return n === 'biology' || n.includes('biology');
-}
-
 /** KB-wide key: same subject name across all classes shares one row; biology splits only by botany/zoology/unset. */
 function globalSubjectMixKeyForChapter(c: ChapterRow): string {
   const sub = (c.subject_name || '').trim().toLowerCase();
@@ -102,9 +96,9 @@ function legacySubjectMixKeyForChapter(c: ChapterRow): string {
 function labelForGlobalSubjectMixKey(key: string): string {
   if (key.startsWith(GLOBAL_BIO_PREFIX)) {
     const rest = key.slice(GLOBAL_BIO_PREFIX.length);
-    if (rest === 'botany') return 'Biology · Botany (all classes)';
-    if (rest === 'zoology') return 'Biology · Zoology (all classes)';
-    if (rest === 'unset') return 'Biology · Branch not set (all classes)';
+    if (rest === 'botany') return 'Botany (all classes)';
+    if (rest === 'zoology') return 'Zoology (all classes)';
+    if (rest === 'unset') return 'Life science — branch not set (all classes)';
   }
   if (key.startsWith(GLOBAL_SUB_PREFIX)) {
     const slug = key.slice(GLOBAL_SUB_PREFIX.length);
@@ -791,8 +785,8 @@ const ExamPaperFormModal: React.FC<ExamPaperFormModalProps> = ({
               </div>
             </div>
             <p className="mt-1 text-[11px] text-zinc-500">
-              <span className="font-semibold">Global distribution only</span> — each row pools all classes (e.g. 45 for Botany draws from Plus One and Plus Two botany chapters together). Biology uses{' '}
-              <span className="font-semibold">Botany</span>, <span className="font-semibold">Zoology</span>, and “Branch not set” when <code className="text-[10px]">biology_branch</code> is missing. Sum:{' '}
+              <span className="font-semibold">Global distribution only</span> — each row pools all classes (e.g. 45 for Botany draws from Plus One and Plus Two botany chapters together). Use separate{' '}
+              <span className="font-semibold">Botany</span> and <span className="font-semibold">Zoology</span> rows; for legacy chapters still on a combined Biology subject, <code className="text-[10px]">biology_branch</code> splits them (otherwise “Life science — branch not set”). Sum:{' '}
               <span className="font-mono font-semibold text-zinc-800">{subjectSum}</span>
               {subjectMode === 'percent' ? '%' : ' questions'}
             </p>

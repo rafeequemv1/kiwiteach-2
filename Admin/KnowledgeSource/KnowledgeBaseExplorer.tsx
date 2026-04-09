@@ -1,6 +1,7 @@
 import '../../types';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../supabase/client';
+import { isBiologySubjectName } from '../../Quiz/utils/paperSubjectLabel';
 // @ts-ignore
 import * as pdfjs from 'pdfjs-dist';
 
@@ -43,20 +44,13 @@ interface Chapter {
   biology_branch?: BiologyBranch | null;
 }
 
-function isBiologySubjectName(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const n = name.trim().toLowerCase();
-  return n === 'biology' || n.includes('biology');
-}
-
 /** Same rules as SQL migration: rows to replace with Botany + Zoology (excludes Biochemistry). */
 function isLegacyBiologySubjectName(name: string | null | undefined): boolean {
   if (!name) return false;
   const n = name.trim().toLowerCase();
   if (n === 'botany' || n === 'zoology') return false;
-  if (['biology', 'bio', 'neet biology'].includes(n)) return true;
-  if (n.includes('biology') && !n.includes('biochemistry')) return true;
-  return false;
+  if (['bio', 'neet biology'].includes(n)) return true;
+  return isBiologySubjectName(name) && !n.includes('biochemistry');
 }
 
 /** Botany/Zoology subject rows carry stream in the name; legacy "Biology" uses `biology_branch` only. */

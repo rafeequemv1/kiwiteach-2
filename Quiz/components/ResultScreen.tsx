@@ -8,6 +8,7 @@ import {
   comparePaperSubjectSections,
   paperSubjectSectionLabel,
 } from '../utils/paperSubjectLabel';
+import { mergePaperLayout } from '../utils/paperLayoutMerge';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 import { PaperRich } from '../../utils/paperRich';
 import {
@@ -293,11 +294,21 @@ interface ResultScreenProps {
   onEditBlueprint?: (questions: Question[]) => void;
   brandConfig: BrandingConfig;
   initialLayoutConfig?: LayoutConfig;
+  /** When true, paper was opened from the hub (already synced); Sync shows Saved until the user edits. */
+  initialSaveSynced?: boolean;
   sourceOptions?: {
     targetClassId?: string | null;
     allowPastQuestions?: boolean;
     chapters?: SelectedChapter[];
   };
+}
+
+function paperContentFingerprint(questions: Question[], topic: string): string {
+  try {
+    return JSON.stringify({ topic, questions });
+  } catch {
+    return `${topic}:${questions.length}`;
+  }
 }
 
 const AnswerKeyPage: React.FC<{ questions: Question[]; brandConfig: BrandingConfig; topic: string }> = ({ questions, brandConfig, topic }) => {
@@ -395,13 +406,27 @@ const NumberControl: React.FC<{ label: string; value: number; onChange: (v: numb
     </div>
 );
 
-const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onSave, onEditBlueprint, questions, brandConfig, initialLayoutConfig, sourceOptions }) => {
+const QuestionListScreen: React.FC<ResultScreenProps> = ({
+  topic,
+  onRestart,
+  onSave,
+  onEditBlueprint,
+  questions,
+  brandConfig,
+  initialLayoutConfig,
+  sourceOptions,
+  initialSaveSynced = false,
+}) => {
   const [currentQuestions, setCurrentQuestions] = useState<Question[]>(questions);
   const [editableTopic, setEditableTopic] = useState(topic);
   const [isPaginating, setIsPaginating] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isReplacing, setIsReplacing] = useState<string | null>(null);
-  const [saveComplete, setSaveComplete] = useState(false);
+  const [savedFingerprint, setSavedFingerprint] = useState<string | null>(() =>
+    initialSaveSynced ? paperContentFingerprint(questions, topic) : null
+  );
+  const saveComplete =
+    savedFingerprint !== null && paperContentFingerprint(currentQuestions, editableTopic) === savedFingerprint;
   const [isOmrOpen, setIsOmrOpen] = useState(false);
   const [isDownloadingOmrPdf, setIsDownloadingOmrPdf] = useState(false);
   /** Left rail: paper matrix, breakdown, page navigator (lg+). */
@@ -513,14 +538,15 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
     else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
   }, [isLgLayout]);
   
-  const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(initialLayoutConfig?.viewMode || 'scroll');
+  const [layoutBaseline] = useState(() => mergePaperLayout(initialLayoutConfig));
+  const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(layoutBaseline.viewMode || 'scroll');
   const [showChoices, setShowChoices] = useState(true);
   /** Default off: exam-style packing and print; saved tests restore from `initialLayoutConfig`. */
-  const [includeExplanations, setIncludeExplanations] = useState(initialLayoutConfig?.includeExplanations ?? false);
+  const [includeExplanations, setIncludeExplanations] = useState(layoutBaseline.includeExplanations);
   const [showSourceFigure, setShowSourceFigure] = useState(false);
   const [showTopics, setShowTopics] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
-  const [showDifficulty, setShowDifficulty] = useState(initialLayoutConfig?.showDifficulty ?? false);
+  const [showDifficulty, setShowDifficulty] = useState(layoutBaseline.showDifficulty);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
   /** Gap after each question (px); pagination sweeps a range (tighter when explanations are off). */
   const [appliedQuestionGapPx, setAppliedQuestionGapPx] = useState(20);
@@ -530,12 +556,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   const [flaggingQuestionId, setFlaggingQuestionId] = useState<string | null>(null);
   const [viewerUserId, setViewerUserId] = useState<string | null>(null);
 
-  const [showIntroPage, setShowIntroPage] = useState(initialLayoutConfig?.showIntroPage ?? false);
-  const [showChapterListOnCover, setShowChapterListOnCover] = useState(initialLayoutConfig?.showChapterListOnCover ?? true);
-  // Section headers (Botany / Zoology / Chem / Phy) on by default; saved layout restores user choice.
-  const [groupBySubject, setGroupBySubject] = useState(initialLayoutConfig?.groupBySubject ?? true);
-  const [forcedBreaks, setForcedBreaks] = useState<Set<string>>(new Set(initialLayoutConfig?.forcedBreaks || []));
-  const [figureSizes, setFigureSizes] = useState<Record<string, FigureSize>>(initialLayoutConfig?.figureSizes || {});
+  const [showIntroPage, setShowIntroPage] = useState(layoutBaseline.showIntroPage);
+  const [showChapterListOnCover, setShowChapterListOnCover] = useState(layoutBaseline.showChapterListOnCover);
+  // Section headers (Botany / Zoology / Chem / Phy): default ON via mergePaperLayout unless saved false.
+  const [groupBySubject, setGroupBySubject] = useState(layoutBaseline.groupBySubject);
+  const [forcedBreaks, setForcedBreaks] = useState<Set<string>>(new Set(layoutBaseline.forcedBreaks));
+  const [figureSizes, setFigureSizes] = useState<Record<string, FigureSize>>(layoutBaseline.figureSizes || {});
   /** Browser-measured natural size for figures missing `figureDimensions` — tightens pagination vs object-contain. */
   const [figureNaturalById, setFigureNaturalById] = useState<Record<string, { w: number; h: number }>>({});
 
@@ -744,7 +770,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
   useEffect(() => {
     setCurrentQuestions(questions);
     setEditableTopic(topic);
-  }, [questions, topic]);
+    setSavedFingerprint(initialSaveSynced ? paperContentFingerprint(questions, topic) : null);
+  }, [questions, topic, initialSaveSynced]);
 
   const handleSaveToCloud = async () => {
       if (!onSave) return;
@@ -757,8 +784,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({ topic, onRestart, onS
               figureSizes, viewMode,
           };
           await onSave(currentQuestions, layoutConfig, editableTopic);
-          setSaveComplete(true);
-          setTimeout(() => setSaveComplete(false), 3000);
+          setSavedFingerprint(paperContentFingerprint(currentQuestions, editableTopic));
       } catch (e: any) { alert("Save failed: " + e.message); } finally { setIsSaving(false); }
   };
 

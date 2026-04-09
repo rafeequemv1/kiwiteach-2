@@ -7,6 +7,7 @@ import type {
   MindMapSubjectRow,
   MindMapTopicRow,
 } from './questionBankMindmapService';
+import { mindMapChapterPillLabel, mindMapSubjectPillLabel } from './questionBankMindmapLabels';
 
 type NodeKind = 'kb' | 'class' | 'subject' | 'chapter' | 'topic';
 
@@ -152,8 +153,7 @@ function buildGraphForest(
               for (const ch of chaptersBySubject[su.subject_id]) {
                 const chKey = `ch:${ch.chapter_id}`;
                 const chLoad = `ch-load:${ch.chapter_id}`;
-                const chLabel =
-                  ch.chapter_number != null ? `${ch.chapter_number}. ${ch.chapter_name}` : ch.chapter_name || 'Chapter';
+                const chLabel = mindMapChapterPillLabel(ch, su.subject_name);
                 const chChildren: MindMapGraphNode[] = [];
                 if (expanded.has(chKey) && topicsByChapter[ch.chapter_id]) {
                   for (const tg of topicsByChapter[ch.chapter_id]) {
@@ -186,7 +186,7 @@ function buildGraphForest(
             clChildren.push({
               key: suKey,
               kind: 'subject',
-              label: su.subject_name || 'Subject',
+              label: mindMapSubjectPillLabel(su.subject_name),
               count: su.question_count,
               expandable: true,
               loading: loading.has(suLoad),

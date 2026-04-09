@@ -32,7 +32,7 @@ export interface Question {
   sourceChapterId?: string;
   sourceChapterName?: string;
   sourceSubjectName?: string;
-  /** From `chapters.biology_branch` — drives Botany vs Zoology section labels (not merged as Biology). */
+  /** Branch discriminator from `chapters.biology_branch`: Botany vs Zoology section labels (field name is historical). */
   sourceBiologyBranch?: 'botany' | 'zoology' | null;
   pageNumber?: number | string;
   // Metadata for syllabus alignment
@@ -77,7 +77,7 @@ export interface SelectedChapter {
   id: string;
   name: string;
   subjectName: string;
-  /** From `chapters.biology_branch` for NEET Biology → Botany / Zoology splits. */
+  /** From `chapters.biology_branch`: distinguishes Botany vs Zoology when building papers (also set for Botany/Zoology subject rows). */
   biology_branch?: 'botany' | 'zoology' | null;
   className: string;
   count: number;
@@ -114,6 +114,8 @@ export interface MultiChapterAIOptions {
   useAsIsFigures?: boolean;
   selectionMode?: 'auto' | 'manual';
   targetClassId?: string | null;
+  /** Org class id when "New test" was started from a class-filtered dashboard; used on Sync so `tests.class_ids` matches the class pill. */
+  assignedOrgClassId?: string | null;
   /** Knowledge base used in Test Creator (for syllabus + topic exclusions). */
   knowledgeBaseId?: string | null;
   allowPastQuestions?: boolean;

@@ -7,6 +7,7 @@ import {
   globalSubjectMixBioKey,
   subjectNameToGlobalMixSlug,
 } from '../../Admin/ExamPaper/types';
+import { isBiologySubjectName } from '../utils/paperSubjectLabel';
 
 export interface ChapterRowForProfileExpand {
   id: string;
@@ -18,17 +19,11 @@ export interface ChapterRowForProfileExpand {
   chapter_number: number | null;
 }
 
-function isBiology(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const n = name.trim().toLowerCase();
-  return n === 'biology' || n.includes('biology');
-}
-
 export function chapterGlobalSubjectMixKey(ch: ChapterRowForProfileExpand): string {
   const sub = (ch.subject_name || '').trim().toLowerCase();
   if (sub === 'botany') return globalSubjectMixBioKey('botany');
   if (sub === 'zoology') return globalSubjectMixBioKey('zoology');
-  if (isBiology(ch.subject_name)) {
+  if (isBiologySubjectName(ch.subject_name)) {
     const br =
       ch.biology_branch === 'botany' || ch.biology_branch === 'zoology' ? ch.biology_branch : 'unset';
     return `${GLOBAL_BIO_PREFIX}${br}`;

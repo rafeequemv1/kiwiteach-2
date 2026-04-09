@@ -9,7 +9,10 @@ interface OnlineExamDashboardProps {
   folders: any[];
   allTests: any[];
   onAddFolder: (folder: { name: string; parent_id: string | null }) => void;
-  onStartNewExam: (folderId: string | null) => void;
+  onStartNewExam: (
+    folderId: string | null,
+    options?: string | { initialScheduleDate?: string; hubClassId?: string | null }
+  ) => void;
   onTestClick: (test: any) => void;
   onDeleteItem: (type: 'folder' | 'test', id: string, name: string) => void;
   onDuplicateTest: (test: any) => void;

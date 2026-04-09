@@ -1813,7 +1813,7 @@ const PYQManager: React.FC = () => {
       'Reasoning for the answer',
       'assertion_reason',
       '',
-      'Biology',
+      'Botany',
       'Genetics',
       'Mendelian inheritance',
       'NEET',
@@ -1851,10 +1851,36 @@ const PYQManager: React.FC = () => {
       tinyPngBase64,
       'image/png',
     ];
+    const sampleZoologyRow = [
+      'Sample Zoology MCQ: primary site of aerobic respiration in eukaryotes?',
+      'text',
+      'Nucleus',
+      'Mitochondria',
+      'Ribosome',
+      'Golgi body',
+      'B',
+      '1',
+      'Mitochondria carry out oxidative phosphorylation.',
+      'mcq',
+      'easy',
+      'Zoology',
+      'Cell structure',
+      'Organelles',
+      'NEET',
+      '2025',
+      'NEET',
+      'SET-A',
+      'Section A',
+      '2',
+      '',
+      '',
+      '',
+    ];
     const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
     const csv =
       `${headers.map(esc).join(',')}\n` +
       `${sampleUrlRow.map(esc).join(',')}\n` +
+      `${sampleZoologyRow.map(esc).join(',')}\n` +
       `${sampleEmbeddedFigureRow.map(esc).join(',')}\n`;
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);

@@ -51,7 +51,7 @@ export const LandingSeoHelmet: React.FC<LandingSeoHelmetProps> = ({ activeTab })
         return {
           title: `NEET PYQ for teachers | ${SITE_NAME}`,
           description: NEET_DESCRIPTION,
-          keywords: `${HOME_KEYWORDS}, NEET PYQ, previous year questions, medical entrance, biology chemistry physics`,
+          keywords: `${HOME_KEYWORDS}, NEET PYQ, previous year questions, medical entrance, botany, zoology, biology, chemistry, physics`,
           canonical: abs(pathForMarketingTab('neet')),
           ogImageAlt: 'KiwiTeach NEET previous-year questions practice for teachers in India',
         };

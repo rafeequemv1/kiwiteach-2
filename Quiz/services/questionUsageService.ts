@@ -116,9 +116,12 @@ export async function recordQuestionUsageForTest(params: {
   const questionIds = (params.questionIds || []).filter(isUuid);
   if (!testId || !isUuid(testId) || classIds.length === 0 || questionIds.length === 0) return;
 
-  await supabase.rpc('record_question_usage_for_test', {
+  const { error } = await supabase.rpc('record_question_usage_for_test', {
     target_test_id: testId,
     target_class_ids: classIds,
     target_question_ids: questionIds,
   });
+  if (error) {
+    throw new Error(`record_question_usage_for_test: ${error.message}`);
+  }
 }

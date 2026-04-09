@@ -9,7 +9,104 @@ import {
   profileToGlobalTypes,
   type ChapterRowForProfileExpand,
 } from '../services/expandExamPaperProfile';
-import { paperChapterSubjectLine } from '../utils/paperSubjectLabel';
+import { isBiologySubjectName, paperChapterSubjectLine } from '../utils/paperSubjectLabel';
+
+/** Matches Knowledge Base “split biology” rules; excludes Biochemistry. */
+function isLegacyBiologySubjectName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.trim().toLowerCase();
+  if (n === 'botany' || n === 'zoology') return false;
+  if (['bio', 'neet biology'].includes(n)) return true;
+  return isBiologySubjectName(name) && !n.includes('biochemistry');
+}
+
+const BIO_SPLIT_PREFIX = 'bio-split:';
+
+function parseBioSplitSubjectId(
+  id: string
+): { baseSubjectId: string; branch: 'botany' | 'zoology' } | null {
+  if (!id.startsWith(BIO_SPLIT_PREFIX)) return null;
+  const rest = id.slice(BIO_SPLIT_PREFIX.length);
+  const i = rest.lastIndexOf(':');
+  if (i <= 0) return null;
+  const base = rest.slice(0, i);
+  const br = rest.slice(i + 1).toLowerCase();
+  if (br !== 'botany' && br !== 'zoology') return null;
+  if (!base) return null;
+  return { baseSubjectId: base, branch: br };
+}
+
+function syntheticBioSplitSubjectId(baseSubjectId: string, branch: 'botany' | 'zoology'): string {
+  return `${BIO_SPLIT_PREFIX}${baseSubjectId}:${branch}`;
+}
+
+/** Replace combined “Biology” with Botany + Zoology when KB has no separate B/Z subjects yet. */
+function expandSubjectsForNewTestPicker(rows: SubjectRow[]): SubjectRow[] {
+  const lower = (s: SubjectRow) => s.name.trim().toLowerCase();
+  const hasNamed = (n: string) => rows.some((r) => lower(r) === n);
+  const hasBot = hasNamed('botany');
+  const hasZoo = hasNamed('zoology');
+
+  const out: SubjectRow[] = [];
+  for (const s of rows) {
+    if (!isLegacyBiologySubjectName(s.name)) {
+      out.push(s);
+      continue;
+    }
+    if (hasBot && hasZoo) continue;
+    if (hasBot && !hasZoo) {
+      out.push({
+        id: syntheticBioSplitSubjectId(s.id, 'zoology'),
+        name: 'Zoology',
+        class_id: s.class_id,
+      });
+      continue;
+    }
+    if (!hasBot && hasZoo) {
+      out.push({
+        id: syntheticBioSplitSubjectId(s.id, 'botany'),
+        name: 'Botany',
+        class_id: s.class_id,
+      });
+      continue;
+    }
+    out.push({
+      id: syntheticBioSplitSubjectId(s.id, 'botany'),
+      name: 'Botany',
+      class_id: s.class_id,
+    });
+    out.push({
+      id: syntheticBioSplitSubjectId(s.id, 'zoology'),
+      name: 'Zoology',
+      class_id: s.class_id,
+    });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+function baseSubjectIdsFromPickerRows(rows: SubjectRow[]): Set<string> {
+  const set = new Set<string>();
+  for (const s of rows) {
+    const p = parseBioSplitSubjectId(s.id);
+    set.add(p ? p.baseSubjectId : s.id);
+  }
+  return set;
+}
+
+function partitionSelectedSubjectIds(selected: string[]): {
+  plainIds: string[];
+  branchPicks: { baseSubjectId: string; branch: 'botany' | 'zoology' }[];
+} {
+  const plainIds: string[] = [];
+  const branchPicks: { baseSubjectId: string; branch: 'botany' | 'zoology' }[] = [];
+  for (const id of selected) {
+    const p = parseBioSplitSubjectId(id);
+    if (p) branchPicks.push({ baseSubjectId: p.baseSubjectId, branch: p.branch });
+    else plainIds.push(id);
+  }
+  return { plainIds, branchPicks };
+}
 
 export interface NewTestPickerConfirmPayload {
   chapters: SelectedChapter[];
@@ -45,6 +142,34 @@ interface ChapterRow {
   subject_name?: string | null;
   class_name?: string | null;
   biology_branch?: 'botany' | 'zoology' | null;
+}
+
+function effectiveChapterLifeBranch(c: ChapterRow): 'botany' | 'zoology' | null {
+  if (c.biology_branch === 'botany' || c.biology_branch === 'zoology') return c.biology_branch;
+  const sn = (c.subject_name || '').trim().toLowerCase();
+  if (sn === 'botany') return 'botany';
+  if (sn === 'zoology') return 'zoology';
+  return null;
+}
+
+function filterChaptersBySubjectSelection(
+  list: ChapterRow[],
+  plainIds: string[],
+  branchPicks: { baseSubjectId: string; branch: 'botany' | 'zoology' }[]
+): ChapterRow[] {
+  const plainSet = new Set(plainIds);
+  const branchMap = new Map<string, Set<'botany' | 'zoology'>>();
+  for (const p of branchPicks) {
+    if (!branchMap.has(p.baseSubjectId)) branchMap.set(p.baseSubjectId, new Set());
+    branchMap.get(p.baseSubjectId)!.add(p.branch);
+  }
+  return list.filter((c) => {
+    if (plainSet.has(c.subject_id)) return true;
+    const wanted = branchMap.get(c.subject_id);
+    if (!wanted || wanted.size === 0) return false;
+    const eff = effectiveChapterLifeBranch(c);
+    return eff !== null && wanted.has(eff);
+  });
 }
 
 interface NewTestChapterPickerModalProps {
@@ -212,8 +337,9 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
       const allIds = new Set<string>();
       const uniqueById = new Map<string, SubjectRow>();
       results.forEach(([cid, rows]) => {
-        next[cid] = rows;
-        rows.forEach((s) => {
+        const expanded = expandSubjectsForNewTestPicker(rows);
+        next[cid] = expanded;
+        expanded.forEach((s) => {
           allIds.add(s.id);
           if (!uniqueById.has(s.id)) uniqueById.set(s.id, s);
         });
@@ -238,11 +364,20 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
       setChapters([]);
       return;
     }
+    const selected = Array.from(selectedSubjectIds);
+    const { plainIds, branchPicks } = partitionSelectedSubjectIds(selected);
+    const subjectIdsNeeded = new Set<string>(plainIds);
+    branchPicks.forEach((p) => subjectIdsNeeded.add(p.baseSubjectId));
+    const ids = [...subjectIdsNeeded];
+    if (ids.length === 0) {
+      setChapters([]);
+      return;
+    }
     supabase
       .from('chapters')
       .select('id, name, chapter_number, subject_id, subject_name, class_name, biology_branch')
       .eq('kb_id', selectedKb)
-      .in('subject_id', Array.from(selectedSubjectIds))
+      .in('subject_id', ids)
       .order('chapter_number', { ascending: true })
       .then(({ data, error }) => {
         if (error) {
@@ -250,7 +385,9 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
           setChapters([]);
           return;
         }
-        setChapters((data || []) as ChapterRow[]);
+        let list = (data || []) as ChapterRow[];
+        list = filterChaptersBySubjectSelection(list, plainIds, branchPicks);
+        setChapters(list);
       });
   }, [open, selectedKb, selectedSubjectIds]);
 
@@ -277,8 +414,8 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
   const filteredChapters = useMemo(() => {
     let list = chapters;
     if (activeClassPill) {
-      // Use subject_ids under this KB class — chapter.class_name can be missing or out of sync with kb_classes.name.
-      const subjectIdsForClass = new Set((subjectsByClass[activeClassPill] || []).map((s) => s.id));
+      // Use base subject_ids under this KB class (synthetic bio-split ids map to their parent subject).
+      const subjectIdsForClass = baseSubjectIdsFromPickerRows(subjectsByClass[activeClassPill] || []);
       if (subjectIdsForClass.size > 0) {
         list = list.filter((c) => subjectIdsForClass.has(c.subject_id));
       } else {
@@ -287,7 +424,15 @@ const NewTestChapterPickerModal: React.FC<NewTestChapterPickerModalProps> = ({
       }
     }
     if (activeSubjectPill) {
-      list = list.filter((c) => c.subject_id === activeSubjectPill);
+      const split = parseBioSplitSubjectId(activeSubjectPill);
+      if (split) {
+        list = list.filter(
+          (c) =>
+            c.subject_id === split.baseSubjectId && effectiveChapterLifeBranch(c) === split.branch
+        );
+      } else {
+        list = list.filter((c) => c.subject_id === activeSubjectPill);
+      }
     }
     const q = search.trim().toLowerCase();
     if (q) list = list.filter((c) => c.name.toLowerCase().includes(q));

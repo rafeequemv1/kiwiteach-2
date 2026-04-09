@@ -15,6 +15,7 @@ import {
   type MindMapSubjectRow,
   type MindMapTopicRow,
 } from './questionBankMindmapService';
+import { mindMapChapterPillLabel, mindMapSubjectPillLabel } from './questionBankMindmapLabels';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
 type NodeKind = 'kb' | 'class' | 'subject' | 'chapter' | 'topic';
@@ -397,7 +398,7 @@ const QuestionBankMindMap: React.FC = () => {
                                 <TreeNode
                                   key={su.subject_id}
                                   depth={2}
-                                  label={su.subject_name || 'Subject'}
+                                  label={mindMapSubjectPillLabel(su.subject_name)}
                                   count={su.question_count}
                                   icon="mdi:shape-outline"
                                   kind="subject"
@@ -413,10 +414,7 @@ const QuestionBankMindMap: React.FC = () => {
                                       const chExp = expanded.has(chKey);
                                       const tags = topicsByChapter[ch.chapter_id];
                                       const chLoad = `ch-load:${ch.chapter_id}`;
-                                      const chLabel =
-                                        ch.chapter_number != null
-                                          ? `${ch.chapter_number}. ${ch.chapter_name}`
-                                          : ch.chapter_name;
+                                      const chLabel = mindMapChapterPillLabel(ch, su.subject_name);
                                       return (
                                         <TreeNode
                                           key={ch.chapter_id}
