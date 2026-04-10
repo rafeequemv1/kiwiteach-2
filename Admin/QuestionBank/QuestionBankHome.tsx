@@ -174,10 +174,12 @@ function countForgeTextCallsForChapter(cfg: ChapterConfig): number {
   return 1;
 }
 
-/** Image model calls (one per figure prompt) — upper bound = planned figure slots. */
-function countForgeImageCallsForChapter(cfg: ChapterConfig): number {
+/** Image model calls — with 2×2 batching, up to 4 figures share one call; otherwise one call per figure. */
+function countForgeImageCallsForChapter(cfg: ChapterConfig, batchWithSlicing: boolean): number {
   if (cfg.synthesisMode === 'syllabus') return 0;
-  return standardChapterFigureCount(cfg);
+  const n = standardChapterFigureCount(cfg);
+  if (n <= 0) return 0;
+  return batchWithSlicing ? Math.ceil(n / 4) : n;
 }
 
 /**
@@ -292,7 +294,8 @@ function buildForgeCostPreview(
   chapterIds: string[],
   chapterConfigs: Record<string, ChapterConfig>,
   selectedModel: string,
-  selectedImageModel: StudioImageModelId
+  selectedImageModel: StudioImageModelId,
+  figureBatchSlicing: boolean
 ) {
   const gt = sumGrandTotalsForChapters(chapterIds, chapterConfigs);
   const modelKey = selectedModel as keyof typeof COST_ESTIMATES;
@@ -306,7 +309,7 @@ function buildForgeCostPreview(
     const cfg = chapterConfigs[id];
     if (!cfg) return;
     textCalls += countForgeTextCallsForChapter(cfg);
-    imageCalls += countForgeImageCallsForChapter(cfg);
+    imageCalls += countForgeImageCallsForChapter(cfg, figureBatchSlicing);
   });
   const variableInr = gt.questions * rate;
   const textOverheadInr = textCalls * overhead;
@@ -485,6 +488,8 @@ const QuestionBankHome: React.FC = () => {
   const [activeEditingChapterId, setActiveEditingChapterId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3-flash-preview');
   const [selectedImageModel, setSelectedImageModel] = useState<StudioImageModelId>('gemini-3-pro-image-preview');
+  /** When on, up to 4 figure prompts per image API call with client 2×2 slice; when off, one call per figure. */
+  const [figureBatchSlicing, setFigureBatchSlicing] = useState(true);
   
   const [mode, setMode] = useState<'browse' | 'studio' | 'review' | 'graph'>('browse');
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
@@ -740,14 +745,22 @@ const QuestionBankHome: React.FC = () => {
 
   /** Live forge estimate: text (per-Q + per text API) + image (per figure API) shown separately and summed. */
   const forgeCostPreview = useMemo(
-    () => buildForgeCostPreview(Array.from(selectedChapterIds), chapterConfigs, selectedModel, selectedImageModel),
-    [selectedChapterIds, chapterConfigs, selectedModel, selectedImageModel]
+    () =>
+      buildForgeCostPreview(
+        Array.from(selectedChapterIds),
+        chapterConfigs,
+        selectedModel,
+        selectedImageModel,
+        figureBatchSlicing
+      ),
+    [selectedChapterIds, chapterConfigs, selectedModel, selectedImageModel, figureBatchSlicing]
   );
 
   /** Figure forge tab: cost for queued chapters only (matches Run figure queue). */
   const figureForgeCostPreview = useMemo(
-    () => buildForgeCostPreview(figureForgeQueue, chapterConfigs, selectedModel, selectedImageModel),
-    [figureForgeQueue, chapterConfigs, selectedModel, selectedImageModel]
+    () =>
+      buildForgeCostPreview(figureForgeQueue, chapterConfigs, selectedModel, selectedImageModel, figureBatchSlicing),
+    [figureForgeQueue, chapterConfigs, selectedModel, selectedImageModel, figureBatchSlicing]
   );
 
   const selectedChapterIdsKey = useMemo(
@@ -1268,7 +1281,7 @@ const QuestionBankHome: React.FC = () => {
           {
             id: 1,
             t: Date.now(),
-            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · text ${textForgeLabel} (${selectedModel}) · image ${imageForgeLabel} (${selectedImageModel})${forgeSplitLongSource ? ' · long-source multi-call ON (auto chunks)' : ''} · each chapter saves to hub when done`,
+            msg: `Started · ${chapterIds.length} chapter(s) · ${forgeModeLabel} · text ${textForgeLabel} (${selectedModel}) · image ${imageForgeLabel} (${selectedImageModel})${forgeSplitLongSource ? ' · long-source multi-call ON (auto chunks)' : ''}${figureBatchSlicing ? ' · figures: 2×2 batch+slice ON' : ' · figures: batch slice OFF (1 call/fig)'} · each chapter saves to hub when done`,
           },
         ],
         figureUi: null,
@@ -1767,7 +1780,8 @@ const QuestionBankHome: React.FC = () => {
                                 sourceImg.mimeType,
                                 prompts,
                                 false,
-                                selectedImageModel
+                                selectedImageModel,
+                                figureBatchSlicing
                               );
                               for (let cIdx = 0; cIdx < groupQs.length; cIdx++) {
                                 if (stopForgingRef.current) break;
@@ -1799,7 +1813,8 @@ const QuestionBankHome: React.FC = () => {
                             );
                             const images = await generateCompositeFigures(
                               figureQs.map((q) => q.figurePrompt!),
-                              selectedImageModel
+                              selectedImageModel,
+                              figureBatchSlicing
                             );
                             for (let idx = 0; idx < figureQs.length; idx++) {
                               if (stopForgingRef.current) break;
@@ -1824,14 +1839,17 @@ const QuestionBankHome: React.FC = () => {
                                   figureUi: {
                                     ...p.figureUi,
                                     activeSourceImageIndex: null,
-                                    statusLine: 'Synthetic batch (single API call)…',
+                                    statusLine: figureBatchSlicing
+                                      ? 'Synthetic figures · 2×2 batch + slice…'
+                                      : 'Synthetic figures · one API call per diagram…',
                                   },
                                 }
                               : p
                           );
                           const images = await generateCompositeFigures(
                             figureQs.map((q) => q.figurePrompt!),
-                            selectedImageModel
+                            selectedImageModel,
+                            figureBatchSlicing
                           );
                           for (let idx = 0; idx < figureQs.length; idx++) {
                             if (stopForgingRef.current) break;
@@ -3813,6 +3831,21 @@ const QuestionBankHome: React.FC = () => {
                                             );
                                           })}
                                         </div>
+                                        <label className="mt-2 flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-200/90 bg-zinc-50/80 px-2.5 py-1.5 text-[9px] font-semibold text-zinc-600 transition-colors hover:bg-zinc-100">
+                                          <input
+                                            type="checkbox"
+                                            className="h-3.5 w-3.5 shrink-0 rounded border-zinc-300 text-violet-600 focus:ring-violet-500/30"
+                                            checked={figureBatchSlicing}
+                                            onChange={(e) => setFigureBatchSlicing(e.target.checked)}
+                                            disabled={isForgingBatch}
+                                          />
+                                          <span className="leading-tight">
+                                            Batch figures (2×2 slice)
+                                            <span className="block font-normal text-zinc-500">
+                                              Up to 4 diagrams per image call, split into separate PNGs. Off = one call per figure (slower, often more reliable).
+                                            </span>
+                                          </span>
+                                        </label>
                                       </div>
                                     </div>
                                     <div className="flex flex-col gap-2 w-full md:w-auto md:min-w-[200px]">

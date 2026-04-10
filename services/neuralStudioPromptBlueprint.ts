@@ -84,6 +84,6 @@ export const NEURAL_STUDIO_FORGE_SECTIONS: NeuralDocSection[] = [
   },
   {
     title: 'Other Gemini calls',
-    body: `Composite figure generation (\`generateCompositeStyleVariants\`, \`generateCompositeFigures\`) batches up to 16 prompts per image API call on a uniform **square 4×4 grid**, then splits client-side (\`splitBase64ImageTo4x4Grid\`). On batch failure, single-image fallback runs per prompt. Prompt refinement (\`refineSystemPrompt\`) uses separate templates in the same service file.`,
+    body: `Composite figure generation (\`generateCompositeStyleVariants\`, \`generateCompositeFigures\`) can batch up to **four** prompts per image API call on a uniform **square 2×2 grid**, then split client-side (\`splitBase64ImageTo2x2Grid\`). Admin UI defaults this **batch + slice** mode on; turning it off uses **one image call per figure**. On batch failure, single-image fallback runs per prompt. Prompt refinement (\`refineSystemPrompt\`) uses separate templates in the same service file.`,
   },
 ];

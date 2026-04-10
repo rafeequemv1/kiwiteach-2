@@ -67,13 +67,18 @@ function mergePaperStyle(s?: AnswerKeyPaperStyle): AnswerKeyPaperStyle {
   return { ...DEFAULT_PAPER_STYLE, ...s };
 }
 
-function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): HTMLElement {
+/** Build DOM in `doc` (e.g. iframe) so html2canvas never inherits host Tailwind/shadcn `oklch()` variables. */
+function buildExportRoot(
+  config: AnswerKeyConfig,
+  paper: AnswerKeyPaperStyle,
+  doc: Document
+): HTMLElement {
   const { topic, questions, brandConfig, includeExplanations } = config;
   const padTop = paper.marginY * QUESTION_PAGE_TOP_MARGIN_FRAC;
   const padX = paper.marginX;
   const padBottom = paper.marginY;
 
-  const root = document.createElement('div');
+  const root = doc.createElement('div');
   root.className = 'answer-key-pdf-export-root';
   root.setAttribute('data-answer-key-export', '1');
   root.style.cssText = [
@@ -88,7 +93,7 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
     'color-scheme:light',
   ].join(';');
 
-  const style = document.createElement('style');
+  const style = doc.createElement('style');
   style.textContent = `
     .answer-key-pdf-export-root .math-content .katex { font-size: 1em !important; }
     .answer-key-pdf-export-root .math-content .katex-display { margin: 0.2em 0 !important; }
@@ -96,7 +101,7 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
   `;
   root.appendChild(style);
 
-  const inner = document.createElement('div');
+  const inner = doc.createElement('div');
   inner.style.cssText = [
     'box-sizing:border-box',
     'width:100%',
@@ -105,7 +110,7 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
   ].join(';');
 
   if (includeExplanations) {
-    const head = document.createElement('div');
+    const head = doc.createElement('div');
     head.style.cssText =
       'text-align:center;border-bottom:0.5pt solid #000;padding-bottom:8px;margin-bottom:16px;color:#000';
     head.innerHTML = `
@@ -117,19 +122,19 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
     `;
     inner.appendChild(head);
 
-    const list = document.createElement('div');
+    const list = doc.createElement('div');
     list.style.cssText = 'display:flex;flex-direction:column;gap:12px;color:#000';
 
     questions.forEach((q, i) => {
-      const block = document.createElement('div');
+      const block = doc.createElement('div');
       block.style.cssText =
         'break-inside:avoid;page-break-inside:avoid;margin-bottom:4px;color:#000;border-bottom:0.25pt dotted #e5e7eb;padding-bottom:10px';
-      const ansLine = document.createElement('div');
+      const ansLine = doc.createElement('div');
       ansLine.style.cssText =
         'color:#000;font-size:0.9em;font-weight:700;margin-bottom:4px;font-family:inherit';
       ansLine.textContent = `${i + 1}. ${explanationAnswerHeaderLine(q)}`;
 
-      const box = document.createElement('div');
+      const box = doc.createElement('div');
       box.className = 'math-content';
       box.style.cssText = [
         'padding:6px 8px',
@@ -149,7 +154,7 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
     });
     inner.appendChild(list);
   } else {
-    const head = document.createElement('div');
+    const head = doc.createElement('div');
     head.style.cssText =
       'text-align:center;border-bottom:0.5pt solid #000;padding-bottom:8px;margin-bottom:20px;color:#000';
     const brand = brandConfig?.name ? escapeAttr(brandConfig.name) : '';
@@ -171,22 +176,22 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
       return questions.slice(start, start + itemsPerColumn);
     });
 
-    const grid = document.createElement('div');
+    const grid = doc.createElement('div');
     grid.style.cssText = 'display:flex;gap:8mm;flex:1;align-items:flex-start;color:#000';
 
     columns.forEach((col, colIndex) => {
-      const c = document.createElement('div');
+      const c = doc.createElement('div');
       c.style.cssText = 'flex:1;display:flex;flex-direction:column;min-width:0';
       const colStart = colIndex * itemsPerColumn;
       col.forEach((q, j) => {
         const globalIdx = colStart + j;
-        const row = document.createElement('div');
+        const row = doc.createElement('div');
         row.style.cssText =
           'display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px dotted #d4d4d8;color:#000';
-        const num = document.createElement('span');
+        const num = doc.createElement('span');
         num.style.cssText = 'font-weight:700;font-size:7.5pt;color:#71717a;width:20px';
         num.textContent = `${globalIdx + 1}.`;
-        const val = document.createElement('span');
+        const val = doc.createElement('span');
         val.style.cssText = 'font-weight:900;font-size:8pt;color:#18181b;padding-right:2px';
         val.textContent = answerDisplayForCompactRow(q);
         row.appendChild(num);
@@ -197,7 +202,7 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
     });
     inner.appendChild(grid);
 
-    const foot = document.createElement('div');
+    const foot = doc.createElement('div');
     foot.style.cssText =
       'margin-top:16px;padding-top:8px;border-top:0.5pt solid #000;display:flex;justify-content:space-between;align-items:flex-end;font-size:5pt;color:#a1a1aa;text-transform:uppercase;font-weight:800';
     foot.innerHTML = `
@@ -207,7 +212,7 @@ function buildExportRoot(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle): H
     inner.appendChild(foot);
   }
 
-  const footNote = document.createElement('div');
+  const footNote = doc.createElement('div');
   footNote.style.cssText = 'margin-top:14px;font-size:7pt;color:#a1a1aa;font-style:italic;text-align:center';
   footNote.textContent = `Generated by ${brandConfig?.name || 'KiwiTeach'}`;
   inner.appendChild(footNote);
@@ -224,22 +229,64 @@ function escapeAttr(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-async function domToPdf(root: HTMLElement, filename: string): Promise<void> {
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const windowWidth = Math.max(600, Math.round(PAGE_W * MM_TO_PX));
+/** Same KaTeX major as package.json — loaded only inside the export iframe (no host `oklch` CSS). */
+const KATEX_CSS_HREF = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css';
 
-  document.body.appendChild(root);
+async function domToPdf(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle, filename: string): Promise<void> {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText =
+    'position:fixed;left:-9999px;top:0;width:210mm;min-height:297mm;border:0;opacity:0;pointer-events:none';
+  document.body.appendChild(iframe);
+
+  const idoc = iframe.contentDocument;
+  if (!idoc) {
+    iframe.remove();
+    throw new Error('Cannot create isolated document for PDF export');
+  }
+
+  idoc.open();
+  idoc.write(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light">' +
+      '<style>html,body{margin:0;background:#fff;color:#000;}</style></head><body></body></html>'
+  );
+  idoc.close();
+
+  await new Promise<void>((resolve) => {
+    const link = idoc.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = KATEX_CSS_HREF;
+    link.crossOrigin = 'anonymous';
+    const done = () => resolve();
+    link.onload = done;
+    link.onerror = done;
+    idoc.head.appendChild(link);
+  });
+
+  const root = buildExportRoot(config, paper, idoc);
+  idoc.body.appendChild(root);
 
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
   try {
-    if (typeof document !== 'undefined' && 'fonts' in document && document.fonts?.ready) {
-      await document.fonts.ready;
-    }
+    if (idoc.fonts?.ready) await idoc.fonts.ready;
   } catch {
     /* ignore */
   }
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const windowWidth = Math.max(600, Math.round(PAGE_W * MM_TO_PX));
+
+  /** jsPDF moves the clone onto the host `document.body`; host Tailwind/shadcn use `oklch()` which html2canvas cannot parse. */
+  const hack = document.createElement('style');
+  hack.id = 'kiwi-answer-key-pdf-hack';
+  hack.textContent = `
+    .html2pdf__overlay, .html2pdf__overlay * {
+      color: #000000 !important;
+    }
+  `;
+  document.head.appendChild(hack);
 
   try {
     await doc.html(root, {
@@ -254,11 +301,26 @@ async function domToPdf(root: HTMLElement, filename: string): Promise<void> {
         useCORS: true,
         logging: false,
         backgroundColor: '#ffffff',
+        onclone: (clonedDoc) => {
+          const s = clonedDoc.createElement('style');
+          s.textContent = `
+            :root, :host {
+              --background: #ffffff;
+              --foreground: #000000;
+              --border: #e5e7eb;
+              --muted-foreground: #71717a;
+              --card: #ffffff;
+              --card-foreground: #000000;
+            }
+          `;
+          clonedDoc.documentElement.insertBefore(s, clonedDoc.documentElement.firstChild);
+        },
       },
     });
     doc.save(filename);
   } finally {
-    root.remove();
+    hack.remove();
+    iframe.remove();
   }
 }
 
@@ -270,11 +332,5 @@ export async function generateAnswerKeyPDF(config: AnswerKeyConfig): Promise<voi
   const safeName =
     config.filename ||
     `${config.topic.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, '_')}_Answer_Key${config.includeExplanations ? '_Explained' : ''}.pdf`;
-  const root = buildExportRoot(config, paper);
-  /* Off-screen but opaque: html2canvas often rasterizes opacity:0 as blank. */
-  root.style.position = 'fixed';
-  root.style.left = '-240mm';
-  root.style.top = '0';
-  root.style.pointerEvents = 'none';
-  await domToPdf(root, safeName);
+  await domToPdf(config, paper, safeName);
 }

@@ -430,7 +430,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
   const [isOmrOpen, setIsOmrOpen] = useState(false);
   const [isDownloadingOmrPdf, setIsDownloadingOmrPdf] = useState(false);
   const [isDownloadingAnswerSheet, setIsDownloadingAnswerSheet] = useState(false);
-  /** Answer sheet PDF: off = compact one-page key; on = two-column key + explanations (matches paper order). */
+  /** Answer key PDF: off = compact one-page key; on = key + explanations (matches paper order). */
   const [answerSheetWithExplanations, setAnswerSheetWithExplanations] = useState(false);
   /** Left rail: paper matrix, breakdown, page navigator (lg+). */
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
@@ -805,7 +805,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
     setIsDownloadingAnswerSheet(true);
     try {
       const safeName = editableTopic.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, '_') || 'Test';
-      const suffix = answerSheetWithExplanations ? '_Answer_Key_Explained.pdf' : '_Answer_Sheet.pdf';
+      const suffix = answerSheetWithExplanations ? '_Answer_Key_Explained.pdf' : '_Answer_Key.pdf';
       await generateAnswerKeyPDF({
         topic: editableTopic,
         questions: questionsOrderedForAnswerKey,
@@ -821,7 +821,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
         },
       });
     } catch (e: any) {
-      alert('Answer sheet download failed: ' + (e?.message ? String(e.message) : String(e)));
+      alert('Answer key PDF failed: ' + (e?.message ? String(e.message) : String(e)));
     } finally {
       setIsDownloadingAnswerSheet(false);
     }
@@ -2598,10 +2598,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                 type="button"
                 onClick={() => setDownloadModalOpen(true)}
                 className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-900 bg-zinc-900 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
-                title="Download OMR sheet or answer sheet"
+                title="Answer key PDF and OMR sheet"
               >
-                <iconify-icon icon="mdi:file-download-outline" width="16" />
-                <span>Download</span>
+                <iconify-icon icon="mdi:key-variant" width="16" />
+                <span>Answer key</span>
               </button>
 
               <button
@@ -2627,10 +2627,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                 onClick={handlePrint}
                 disabled={isPaginating}
                 className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-zinc-700 shadow-sm transition-all hover:border-zinc-300 hover:bg-zinc-50 active:scale-[0.99] disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
-                title="Print"
+                title="Download test paper — opens print dialog (save as PDF)"
               >
-                <iconify-icon icon="mdi:printer" width="16" />
-                <span className="max-[380px]:sr-only">Print</span>
+                <iconify-icon icon="mdi:file-download-outline" width="16" />
+                <span className="max-[380px]:sr-only">Download</span>
               </button>
 
               <button
@@ -3025,7 +3025,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
              <button
                type="button"
                className="fixed inset-0 z-[300] animate-in fade-in-0 bg-black/45 backdrop-blur-[1px] duration-150"
-               aria-label="Close download options"
+               aria-label="Close answer key options"
                onClick={() => setDownloadModalOpen(false)}
              />
              <div
@@ -3037,10 +3037,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                <div className="mb-4 flex items-start justify-between gap-3">
                  <div>
                    <h2 id="download-modal-title" className="text-sm font-black tracking-tight text-zinc-900">
-                     Download
+                     Answer key
                    </h2>
                    <p className="mt-1 text-[10px] font-medium text-zinc-500">
-                     OMR bubble sheet or answer key PDF (paper question order).
+                     OMR bubble sheet or answer key PDF (same order as the test paper).
                    </p>
                  </div>
                  <button
@@ -3076,7 +3076,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                      onChange={(e) => setAnswerSheetWithExplanations(e.target.checked)}
                      className="h-4 w-4 rounded border-zinc-400 text-cyan-700 focus:ring-cyan-500"
                    />
-                   Include explanations on answer sheet
+                   Include explanations on answer key
                  </label>
                  <button
                    type="button"
@@ -3092,7 +3092,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                    ) : (
                      <iconify-icon icon="mdi:file-document-outline" width="18" />
                    )}
-                   Answer sheet (PDF)
+                   Answer key (PDF)
                  </button>
                </div>
              </div>

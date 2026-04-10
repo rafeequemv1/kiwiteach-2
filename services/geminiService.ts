@@ -12,7 +12,7 @@ import {
   scaleTypeWeightsToTotal,
 } from "./forgeSourceChunking";
 import { getReferenceLayerBlock } from "./neetReferenceLayer";
-import { splitBase64ImageTo4x4Grid } from "../utils/splitImageGrid4x4";
+import { splitBase64ImageTo2x2Grid } from "../utils/splitImageGrid4x4";
 import * as pdfjs from "pdfjs-dist";
 
 declare const mammoth: any;
@@ -980,16 +980,16 @@ ${figureCount > 0 ? '- For diagram items: vary what is being tested (different s
 /** Default for Neural Studio figure pipeline; override via Admin image-model selector. */
 export const COMPOSITE_IMAGE_MODEL_DEFAULT = 'gemini-3-pro-image-preview' as const;
 
-/** One image API call per up to 16 figures; client splits a uniform 4×4 grid (square canvas → square cells). */
-const FIGURE_GRID_CELLS = 16;
+/** One image API call per up to 4 figures; client splits a uniform 2×2 grid (square canvas → four equal quadrants). */
+const FIGURE_SLICE_BATCH = 4;
 
-const GRID_LAYOUT_PREAMBLE = `LAYOUT (MANDATORY — UNIFORM 4×4 BATCHING):
+const GRID_LAYOUT_PREAMBLE = `LAYOUT (MANDATORY — UNIFORM 2×2 BATCHING, EXACTLY FOUR PANELS):
 - Output exactly **one** raster image.
-- Canvas must be **square** (image width = image height) so each grid cell is **square** and identical in aspect ratio across all batches.
-- Divide the canvas into exactly **4 columns × 4 rows** = **16 cells** of **equal** size (same pixel width and height for every cell).
-- **Row-major cell index**: cell 1 = top-left corner, 2 = immediately to the right, … 4 = top-right, 5 = start of second row (left), … **16 = bottom-right**.
-- Leave a thin white gutter between adjacent cells. **No diagram, line, or label may cross** from one cell into another.
-- For any cell marked "unused" below: fill with solid **#FFFFFF** only — no strokes, no text, no marks.`;
+- Canvas must be **square** (image width = image height) so each quadrant is **square** and the same size in every batch.
+- Divide the canvas into exactly **2 columns × 2 rows** = **4 cells** of **equal** pixel width and height (four quadrants).
+- **Row-major cell index**: cell 1 = **top-left**, cell 2 = **top-right**, cell 3 = **bottom-left**, cell 4 = **bottom-right**.
+- Use a **thin white gutter** (or crisp boundary) between quadrants. **No diagram, line, or label may cross** from one quadrant into another.
+- For any cell marked UNUSED below: fill with solid **#FFFFFF** only — no strokes, no text, no marks.`;
 
 const SYNTHETIC_FIGURE_RULES = `NEET EXAM STYLE — applies to every non-empty cell:
 0. **NO COLOR**: **Monochrome only** — black linework on pure white. **Never** use color, tinted fills, colored arrows, gradients, heatmaps, or photorealistic color.
@@ -1014,8 +1014,8 @@ EXECUTION RULES (STRICT FIDELITY — per cell that uses the SOURCE):
 4. **STYLE**: Black on white only; no shading or grey fills.`;
 
 function padFigureChunk(chunk: string[]): string[] {
-  const padded = chunk.slice(0, FIGURE_GRID_CELLS);
-  while (padded.length < FIGURE_GRID_CELLS) padded.push('');
+  const padded = chunk.slice(0, FIGURE_SLICE_BATCH);
+  while (padded.length < FIGURE_SLICE_BATCH) padded.push('');
   return padded;
 }
 
@@ -1079,11 +1079,14 @@ ${buildSyntheticGridCellSpecs(padded)}`;
   });
   const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
   if (!outputPart?.inlineData?.data) {
-    throw new Error('Gemini did not return an image for synthetic 4×4 batch');
+    throw new Error('Gemini did not return an image for synthetic 2×2 batch');
   }
   const mime = outputPart.inlineData.mimeType || 'image/png';
   const data = cleanBase64(outputPart.inlineData.data);
-  const cells = await splitBase64ImageTo4x4Grid(data, mime);
+  const cells = await splitBase64ImageTo2x2Grid(data, mime);
+  if (cells.length !== FIGURE_SLICE_BATCH) {
+    throw new Error('2×2 split did not yield 4 cells');
+  }
   return chunk.map((raw, i) => ((raw || '').trim() ? cells[i] || '' : ''));
 }
 
@@ -1118,7 +1121,7 @@ async function runReferenceGridBatch(
   const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
   const instruction = `${GRID_LAYOUT_PREAMBLE}
 
-TASK: The first attachment is the SOURCE reference. Output **one** square image with a 4×4 grid. For each ACTIVE cell, produce **one** independent diagram derived from the source geometry and that cell’s instructions. Unused cells stay pure white.
+TASK: The first attachment is the SOURCE reference. Output **one** square image with a **2×2** grid (four quadrants). For each ACTIVE cell, produce **one** independent diagram derived from the source geometry and that cell’s instructions. Unused cells stay pure white.
 
 ${REFERENCE_TRACE_RULES}
 
@@ -1130,11 +1133,14 @@ ${buildReferenceGridCellSpecs(padded)}`;
   });
   const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
   if (!outputPart?.inlineData?.data) {
-    throw new Error('Gemini did not return an image for reference 4×4 batch');
+    throw new Error('Gemini did not return an image for reference 2×2 batch');
   }
   const mime = outputPart.inlineData.mimeType || 'image/png';
   const data = cleanBase64(outputPart.inlineData.data);
-  const cells = await splitBase64ImageTo4x4Grid(data, mime);
+  const cells = await splitBase64ImageTo2x2Grid(data, mime);
+  if (cells.length !== FIGURE_SLICE_BATCH) {
+    throw new Error('2×2 split did not yield 4 cells');
+  }
   return chunk.map((raw, i) => ((raw || '').trim() ? cells[i] || '' : ''));
 }
 
@@ -1143,7 +1149,8 @@ export const generateCompositeStyleVariants = async (
   sourceMimeType: string,
   prompts: string[],
   useAsIs: boolean = false,
-  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
+  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT,
+  batchWithSlicing: boolean = true
 ): Promise<string[]> => {
   const cleanedSource = cleanBase64(sourceBase64);
   if (!cleanedSource) return prompts.map(() => '');
@@ -1154,8 +1161,26 @@ export const generateCompositeStyleVariants = async (
 
   const results: string[] = [];
 
-  for (let start = 0; start < prompts.length; start += FIGURE_GRID_CELLS) {
-    const chunk = prompts.slice(start, start + FIGURE_GRID_CELLS);
+  if (!batchWithSlicing) {
+    for (const p of prompts) {
+      const t = (p || '').trim();
+      if (!t) {
+        results.push('');
+        continue;
+      }
+      try {
+        results.push(
+          await generateOneReferenceVariant(t, cleanedSource, sourceMimeType, imageModelId)
+        );
+      } catch {
+        results.push('');
+      }
+    }
+    return results;
+  }
+
+  for (let start = 0; start < prompts.length; start += FIGURE_SLICE_BATCH) {
+    const chunk = prompts.slice(start, start + FIGURE_SLICE_BATCH);
     const hasWork = chunk.some((p) => (p || '').trim());
     if (!hasWork) {
       results.push(...chunk.map(() => ''));
@@ -1165,7 +1190,7 @@ export const generateCompositeStyleVariants = async (
       const batch = await runReferenceGridBatch(chunk, cleanedSource, sourceMimeType, imageModelId);
       results.push(...batch);
     } catch (e) {
-      console.warn('[figures] 4×4 reference batch failed, using single-image fallback:', e);
+      console.warn('[figures] 2×2 reference batch failed, using single-image fallback:', e);
       for (const p of chunk) {
         const t = (p || '').trim();
         if (!t) {
@@ -1224,12 +1249,29 @@ OUTPUT: One PNG image. Monochrome black strokes on #FFFFFF. Keep labels readable
 
 export const generateCompositeFigures = async (
   prompts: string[],
-  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
+  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT,
+  batchWithSlicing: boolean = true
 ): Promise<string[]> => {
   const results: string[] = [];
 
-  for (let start = 0; start < prompts.length; start += FIGURE_GRID_CELLS) {
-    const chunk = prompts.slice(start, start + FIGURE_GRID_CELLS);
+  if (!batchWithSlicing) {
+    for (const p of prompts) {
+      const t = (p || '').trim();
+      if (!t) {
+        results.push('');
+        continue;
+      }
+      try {
+        results.push(await generateOneSyntheticFigure(t, imageModelId));
+      } catch {
+        results.push('');
+      }
+    }
+    return results;
+  }
+
+  for (let start = 0; start < prompts.length; start += FIGURE_SLICE_BATCH) {
+    const chunk = prompts.slice(start, start + FIGURE_SLICE_BATCH);
     const hasWork = chunk.some((p) => (p || '').trim());
     if (!hasWork) {
       results.push(...chunk.map(() => ''));
@@ -1239,7 +1281,7 @@ export const generateCompositeFigures = async (
       const batch = await runSyntheticGridBatch(chunk, imageModelId);
       results.push(...batch);
     } catch (e) {
-      console.warn('[figures] 4×4 synthetic batch failed, using single-image fallback:', e);
+      console.warn('[figures] 2×2 synthetic batch failed, using single-image fallback:', e);
       for (const p of chunk) {
         const t = (p || '').trim();
         if (!t) {
