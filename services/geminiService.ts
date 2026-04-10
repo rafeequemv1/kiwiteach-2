@@ -493,28 +493,126 @@ export const extractImagesFromPdfArrayBuffer = async (
     }
 };
 
+/** In-memory cache so Figure forge / Neural Studio does not re-fetch DOCX/PDF on every chapter focus. */
+const REF_CHAPTER_IMAGE_CACHE_TTL_MS = 30 * 60 * 1000;
+const REF_CHAPTER_IMAGE_CACHE_MAX = 40;
+const refChapterImageCache = new Map<
+    string,
+    { storedAt: number; images: { data: string; mimeType: string }[] }
+>();
+
+function refChapterImageCacheKey(
+    docPath: string | null | undefined,
+    pdfPath: string | null | undefined,
+    options?: { maxPdfPages?: number; pdfScale?: number; maxDim?: number }
+): string {
+    const d = (docPath ?? "").trim();
+    const p = (pdfPath ?? "").trim();
+    if (!d && !p) return "";
+    const o = options
+        ? `${options.maxPdfPages ?? ""}|${options.pdfScale ?? ""}|${options.maxDim ?? ""}`
+        : "";
+    return `${d}\n${p}\n${o}`;
+}
+
+function refChapterImageCacheGet(key: string): { data: string; mimeType: string }[] | null {
+    if (!key) return null;
+    const hit = refChapterImageCache.get(key);
+    if (!hit) return null;
+    if (Date.now() - hit.storedAt > REF_CHAPTER_IMAGE_CACHE_TTL_MS) {
+        refChapterImageCache.delete(key);
+        return null;
+    }
+    return hit.images.map((img) => ({ data: img.data, mimeType: img.mimeType }));
+}
+
+function refChapterImageCacheSet(key: string, images: { data: string; mimeType: string }[]): void {
+    if (!key) return;
+    while (refChapterImageCache.size >= REF_CHAPTER_IMAGE_CACHE_MAX) {
+        let oldestKey: string | null = null;
+        let oldestAt = Infinity;
+        for (const [k, v] of refChapterImageCache.entries()) {
+            if (v.storedAt < oldestAt) {
+                oldestAt = v.storedAt;
+                oldestKey = k;
+            }
+        }
+        if (oldestKey) refChapterImageCache.delete(oldestKey);
+        else break;
+    }
+    refChapterImageCache.set(key, {
+        storedAt: Date.now(),
+        images: images.map((img) => ({ data: img.data, mimeType: img.mimeType })),
+    });
+}
+
 /**
  * Neural Studio / forge: embedded images from DOCX when present; otherwise page renders from chapter PDF.
+ * Results are cached briefly by storage path + options to avoid repeated extraction when switching UI focus.
  */
 export const extractChapterReferenceImages = async (
     docPath: string | null | undefined,
     pdfPath: string | null | undefined,
     options?: { maxPdfPages?: number; pdfScale?: number; maxDim?: number }
 ): Promise<{ data: string; mimeType: string }[]> => {
+    const cacheKey = refChapterImageCacheKey(docPath, pdfPath, options);
+    const cached = refChapterImageCacheGet(cacheKey);
+    if (cached) return cached;
+
     let fromDoc: { data: string; mimeType: string }[] = [];
     if (docPath && !storagePathLooksPdf(docPath)) {
         fromDoc = await extractImagesFromDoc(docPath);
     }
-    if (fromDoc.length > 0) return fromDoc;
+    if (fromDoc.length > 0) {
+        refChapterImageCacheSet(cacheKey, fromDoc);
+        return fromDoc;
+    }
     const pdfRef =
         docPath && storagePathLooksPdf(docPath) ? docPath : pdfPath && pdfPath.trim() ? pdfPath : null;
-    if (!pdfRef) return [];
-    return extractImagesFromPdfPath(pdfRef, {
+    if (!pdfRef) {
+        refChapterImageCacheSet(cacheKey, []);
+        return [];
+    }
+    const out = await extractImagesFromPdfPath(pdfRef, {
         maxPages: options?.maxPdfPages,
         scale: options?.pdfScale,
         maxDim: options?.maxDim,
     });
+    refChapterImageCacheSet(cacheKey, out);
+    return out;
 };
+
+/**
+ * When splitLongSource splits one request into segments, scale parent topic quotas to each segment's question count
+ * (largest-remainder) so topic_tag spread stays roughly uniform per chunk.
+ */
+function scaleTopicQuotaBatchToSubcount(
+  batch: { label: string; count: number }[],
+  subCount: number,
+  parentCount: number
+): { label: string; count: number }[] | null {
+  if (!batch.length || parentCount <= 0 || subCount <= 0) return null;
+  const exact = batch.map((b) => ({
+    label: b.label,
+    share: (b.count * subCount) / parentCount,
+  }));
+  const floors = exact.map((e) => Math.floor(e.share));
+  let sum = floors.reduce((a, b) => a + b, 0);
+  let rem = subCount - sum;
+  const idxByFrac = exact
+    .map((e, i) => ({ i, frac: e.share - floors[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  const counts = [...floors];
+  for (let k = 0; k < idxByFrac.length && rem > 0; k++) {
+    counts[idxByFrac[k].i] += 1;
+    rem -= 1;
+  }
+  const out: { label: string; count: number }[] = [];
+  for (let i = 0; i < exact.length; i++) {
+    if (counts[i] > 0) out.push({ label: exact[i].label, count: counts[i] });
+  }
+  return out.length > 0 ? out : null;
+}
 
 export const generateQuizQuestions = async (
   topic: string,
@@ -578,6 +676,16 @@ export const generateQuizQuestions = async (
         }
         const fc = subFigures[i] ?? 0;
         onProgress?.(`Gemini · source ${i + 1}/${chunks.length} · ${sc} Q (batch ${count})…`);
+        const subBatch =
+          syllabusTopicQuotaBatch && syllabusTopicQuotaBatch.length > 0 && count > 0
+            ? scaleTopicQuotaBatchToSubcount(syllabusTopicQuotaBatch, sc, count)
+            : null;
+        const segSyllabusTopics =
+          subBatch && subBatch.length > 0
+            ? syllabusTopics
+            : syllabusTopicQuotaBatch && syllabusTopicQuotaBatch.length >= 2
+              ? syllabusTopicQuotaBatch.map((b) => b.label)
+              : syllabusTopics;
         const part = await generateQuizQuestions(
           topic,
           subDiff,
@@ -590,7 +698,7 @@ export const generateQuizQuestions = async (
           fc > 0 ? figureBreakdown : undefined,
           modelName,
           visualMode,
-          syllabusTopics,
+          segSyllabusTopics,
           pyqContext,
           isLengthy,
           isConfusingChoices,
@@ -598,7 +706,7 @@ export const generateQuizQuestions = async (
           knowledgeBaseId,
           promptSetIdOverride,
           false,
-          undefined
+          subBatch && subBatch.length > 0 ? subBatch : undefined
         );
         part.forEach((q, idx) => {
           merged.push({ ...q, id: `forge-${batchId}-${i}-${idx}` });

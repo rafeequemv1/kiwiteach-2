@@ -179,6 +179,25 @@ function countForgeImageCallsForChapter(cfg: ChapterConfig): number {
   return standardChapterFigureCount(cfg);
 }
 
+/**
+ * Standard **text-only** forge: exact per-topic counts so topic_tags spread evenly across KB boundary topics
+ * (same list as [STRICT BOUNDARIES] in the prompt). Requires ≥2 topics; otherwise returns undefined.
+ */
+function buildUniformTopicQuotaForTextForge(
+  total: number,
+  boundaryTopicLabels: string[]
+): { label: string; count: number }[] | undefined {
+  const labels = boundaryTopicLabels.map((t) => String(t).trim()).filter(Boolean);
+  if (total <= 0 || labels.length < 2) return undefined;
+  const n = labels.length;
+  const base = Math.floor(total / n);
+  const rem = total - base * n;
+  return labels.map((label, i) => ({
+    label,
+    count: base + (i < rem ? 1 : 0),
+  }));
+}
+
 interface GraphNode {
   id: string;
   label: string;
@@ -1319,14 +1338,15 @@ const QuestionBankHome: React.FC = () => {
                 let producedBeforeInsert = 0;
                 try {
                   let boundariesContext = "";
+                  let forgeBoundaryTopics: string[] = [];
                   try {
-                    const boundaryTopics = await fetchSyllabusTopicsForChapter({
+                    forgeBoundaryTopics = await fetchSyllabusTopicsForChapter({
                       kbId: selectedKbId,
                       chapterName: String(chapter.name).trim(),
                       subjectName: chapter.subject_name || null,
                     });
-                    if (boundaryTopics.length > 0) {
-                      boundariesContext = `[STRICT BOUNDARIES]: Topics: ${boundaryTopics.join(', ')}.`;
+                    if (forgeBoundaryTopics.length > 0) {
+                      boundariesContext = `[STRICT BOUNDARIES]: Topics: ${forgeBoundaryTopics.join(', ')}.`;
                     }
                   } catch { /* ignore */ }
                   const contentRes = await supabase.from('chapters').select('raw_text, doc_path, pdf_path').eq('id', chapId).single();
@@ -1491,6 +1511,12 @@ const QuestionBankHome: React.FC = () => {
                         ...(includeFigures && sourceImages.length > 0 ? { images: sourceImages } : {}),
                       };
                       const visualModeForGen: 'image' | 'text' = includeFigures ? config.visualMode : 'text';
+
+                      /** Text-only standard forge: enforce even topic_tag counts across KB boundary topics (≥2 topics). */
+                      const textOnlyUniformTopicQuota = (qCount: number) =>
+                        forgeVisualPhase === 'text_only' && forgeBoundaryTopics.length >= 2
+                          ? buildUniformTopicQuotaForTextForge(qCount, forgeBoundaryTopics)
+                          : undefined;
 
                       if (includeFigures) {
                         const selectedEntries = Object.entries(config.selectedFigures || {}) as [string, number][];
@@ -1782,7 +1808,7 @@ const QuestionBankHome: React.FC = () => {
                                   selectedKbId,
                                   forgePromptSetOverrideId,
                                   forgeSplitLongSource,
-                                  undefined
+                                  textOnlyUniformTopicQuota(n)
                               );
                               genParts.push(...part);
                               producedBeforeInsert += part.length;
@@ -1841,7 +1867,7 @@ const QuestionBankHome: React.FC = () => {
                               selectedKbId,
                               forgePromptSetOverrideId,
                               forgeSplitLongSource,
-                              undefined
+                              textOnlyUniformTopicQuota(config.total)
                           );
                           producedBeforeInsert += gen.length;
                           setForgeDetail((p) =>

@@ -21,12 +21,17 @@ export function questionHasFigure(q: Question): boolean {
 /** Fetch enough rows from the bank/RPC so we can pick a diverse subset client-side. */
 export function eligibleOversampleLimit(need: number): number {
   const n = Math.max(1, need);
-  return Math.min(420, Math.max(n * 8, n + 48));
+  return Math.min(600, Math.max(n * 12, n + 64));
+}
+
+function qid(q: Question): string {
+  return String(q.originalId || q.id);
 }
 
 /**
- * Pick `need` questions by round-robin across topic_tag buckets so one subtopic does not dominate.
- * Falls back to arbitrary order if buckets are exhausted.
+ * Pick `need` questions using **uniform topic spread**: always prefer the `topic_tag` bucket with the
+ * fewest picks so far (water-filling), maximizing how many distinct topics appear and keeping counts even.
+ * Falls back to any remaining pool order if buckets are exhausted.
  */
 export function selectQuestionsMaxTopicSpread(pool: Question[], need: number): Question[] {
   if (need <= 0) return [];
@@ -45,30 +50,51 @@ export function selectQuestionsMaxTopicSpread(pool: Question[], need: number): Q
 
   const picked: Question[] = [];
   const used = new Set<string>();
+  const pickedCount = new Map<string, number>();
+  for (const k of keys) pickedCount.set(k, 0);
 
-  const tryTakeOne = (): boolean => {
-    for (const k of keys) {
-      const b = buckets.get(k)!;
-      while (b.length > 0) {
-        const q = b.pop()!;
-        const id = String(q.originalId || q.id);
-        if (used.has(id)) continue;
-        used.add(id);
-        picked.push(q);
-        return true;
-      }
+  const pruneUsedFromBucket = (k: string): void => {
+    const b = buckets.get(k)!;
+    while (b.length > 0) {
+      const id = qid(b[b.length - 1]);
+      if (used.has(id)) b.pop();
+      else break;
     }
-    return false;
   };
 
   while (picked.length < need) {
-    if (!tryTakeOne()) break;
+    let bestK: string | null = null;
+    let bestCount = Infinity;
+    let bestRemain = -1;
+
+    for (const k of keys) {
+      pruneUsedFromBucket(k);
+      const b = buckets.get(k)!;
+      if (b.length === 0) continue;
+      const c = pickedCount.get(k) ?? 0;
+      const remain = b.length;
+      if (c < bestCount || (c === bestCount && remain > bestRemain)) {
+        bestCount = c;
+        bestRemain = remain;
+        bestK = k;
+      }
+    }
+
+    if (bestK === null) break;
+
+    const b = buckets.get(bestK)!;
+    const q = b.pop()!;
+    const id = qid(q);
+    if (used.has(id)) continue;
+    used.add(id);
+    picked.push(q);
+    pickedCount.set(bestK, (pickedCount.get(bestK) ?? 0) + 1);
   }
 
   if (picked.length < need) {
     for (const q of pool) {
       if (picked.length >= need) break;
-      const id = String(q.originalId || q.id);
+      const id = qid(q);
       if (used.has(id)) continue;
       used.add(id);
       picked.push(q);
