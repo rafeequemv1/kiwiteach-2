@@ -81,9 +81,11 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
     - **MONOCHROME ONLY**: 0% Color. Use #000000 (Pure Black) and #FFFFFF (Pure White) only. 
     - **NO GREYSCALE**: No shading, no grey, no gradients. Use stippling (dots) for density if needed.
     - **LABEL STYLE**: Labels must be BOLD and SOLID BLACK. Cushion each label with a small solid white mask.
-    - **TARGETED LABELING**: ONLY draw labels referenced in the question stem or options. Remove all original source text; never copy an entire labeled textbook figure if the question only needs one or two markers.
+    - **INTEGRAL, NOT REDUNDANT**: The figure must add information the stem cannot (layout, single structure, graph, apparatus). **Do not** redraw a full multi-step reaction or long scheme **already written in the stem**.
+    - **NO MCQ OPTION PANEL IN IMAGE**: For standard MCQ with four structures or names in **written** options, **never** command a figure that shows those four choices with **A, B, C, D** and arrows — it looks like the answer key. Use **P/Q/R/?** on-diagram only when the stem asks to identify parts **on the diagram**; options stay in JSON text.
+    - **TARGETED LABELING**: ONLY draw labels referenced in the question stem. Remove all original source text; never copy an entire labeled textbook figure if the question only needs one or two markers.
     - **LABEL-TYPE vs CONTEXT-ONLY**: If the question does not ask to identify specific marked parts (no "P, Q, R", no "structures labeled"), the figurePrompt must request an unlabeled line diagram—no letters and no structure names printed on the image.
-    - **NO DUAL LABELING**: Never show both a part marker (P, Q, A–D) and the written name of that part on the figure. **Forbidden**: on-image captions that mix prose with letters (e.g. "Vegetative cell P", "Nucleus Q") — the diagram may show **only** P, Q, R, … with leader lines; names stay in stem/options only.
+    - **NO DUAL LABELING**: Never show both a part marker (P, Q, R) and the written name of that part on the figure. **Forbidden**: on-image captions that mix prose with letters (e.g. "Vegetative cell P", "Nucleus Q") — the diagram may show **only** P, Q, R, … with leader lines when needed; names stay in stem/options only.
     - **STYLE**: Clean, high-resolution 2D technical line-art suitable for laser printing.`,
 
   Chemistry: `EXPERT CHEMISTRY EXAM PROTOCOL (NEET/AIIMS STANDARD):
@@ -99,8 +101,8 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
 3.  **IUPAC NOMENCLATURE:** For naming questions, provide complex, branched structures involving multiple functional groups, double/triple bonds, and stereocenters to rigorously test IUPAC rules.
 
 **FIGURE & DIAGRAM PROTOCOL (MANDATORY):**
-1.  **COMPOSITE IMAGE GENERATION:** For any question involving a reaction scheme AND structural options, the 'figurePrompt' MUST command the image model to generate a SINGLE, composite diagram. This diagram must cleanly display the main reaction pathway AND the four labeled options (A, B, C, D) below it. This is non-negotiable.
-2.  **VISUAL CLARITY:** All structures must be rendered as clean, unambiguous bond-line (skeletal) formulas. Ensure correct bond angles, valencies, and clear representation of stereochemistry (wedges/dashes) where relevant.
+1.  **NO ANSWER-IN-PICTURE:** Structural **options (A–D)** belong in **KaTeX option fields only**. The figure must **not** repeat all four option structures with A/B/C/D arrows — that duplicates the answer UI and confuses students. The figure shows only a **non-redundant** visual (e.g. starting material, one intermediate, graph, or apparatus) that the stem references; unknowns use **?** or **P/Q/R** when the stem asks to identify parts on the diagram.
+2.  **VISUAL CLARITY:** Any structure drawn in the figure must be clean bond-line (skeletal) art where applicable. Ensure correct bond angles, valencies, and stereochemistry (wedges/dashes) when relevant.
 3.  **KaTeX for TEXT:** Use standard chemical formulas and KaTeX notation (e.g., H_2SO_4, CH_3COOH) for all chemical text in the question stem, options, and explanation. AVOID plain text like 'H2SO4'.`,
 
   Latex: `MATH & LATEX TYPOGRAPHY PROTOCOL (CRITICAL - STRICT COMPLIANCE REQUIRED):

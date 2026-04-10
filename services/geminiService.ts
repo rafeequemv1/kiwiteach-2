@@ -291,9 +291,11 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
     - **STYLE**: Strictly PURE BLACK lines on PURE WHITE background. High-contrast technical line art.
     - **NO COLOR (MANDATORY)**: Figures must be **monochrome line drawings only** — black ink on white. **Forbidden**: any color, hue, tinted fills, pastel or “realistic” shading, colored arrows or regions, heatmaps, false-color labels, or photorealistic rendering. If the source reference is colored, the figurePrompt must still demand a **black-and-white line trace** with no chroma.
     - **INTEGRATED_REASONING**: Figure-backed stems must require **multi-concept thinking** — weave at least two syllabus ideas (e.g. structure ↔ function, pathway step ↔ condition, graph axis ↔ interpretation, setup ↔ principle). Avoid trivial one-hop “spot the label” items unless the difficulty slot is Easy — and even then keep option-level discrimination meaningful.
-    - **ANTI-CHEAT CONSTRAINT**: NEVER include structural answers or descriptive names of products directly in the figure. 
-    - **MASKING**: Use placeholder labels (P, Q, R, X, Y) in the diagram. The student must identify these from the options.
-    - **LEADER / POINTER LINES**: Whenever the stem or options name lettered or numbered parts on the diagram, the figurePrompt must require **clear leader lines (pointing lines)** from each marker to the correct locus — NEET-style. Do not leave letters floating without pointers.
+    - **NON-REDUNDANT**: The figure must **not** repeat long reaction schemes, multi-step arrows, or equations **already fully stated in the stem**. Show only the **minimal** extra visual the student needs (e.g. one structure, graph, or setup).
+    - **ANTI-CHEAT / NO OPTION PANEL**: NEVER draw the four MCQ options inside the image with **A, B, C, D** (or arrows from those letters) pointing at structures — that mirrors the answer UI and confuses students. Structures for selection stay in **written options** only.
+    - **ANTI-CHEAT CONSTRAINT**: NEVER include structural answers or descriptive names of products directly in the figure when they match an option.
+    - **MASKING**: Use placeholder labels **P, Q, R, X, Y, ?** on the diagram when needed — not **A–D** as option stand-ins. The student maps P/Q/R to choices via the stem/options.
+    - **LEADER / POINTER LINES**: Only when the stem asks to identify **specific marked parts on the diagram** (P, Q, R, numbered loci). Do **not** add pointers from **A–D** to structures when A–D are the four MCQ option labels in text.
     - **NO DESCRIPTIVE WORDS + MARKERS ON IMAGE**: **Forbidden** on the drawing: combining prose names with exam letters (e.g. "Vegetative cell P", "Generative cell Q", "Nucleus R", "Mitochondrion S"). The image may show **only** the marker glyphs (P, Q, R, …) with pointers — put structure names **only** in stem/options/explanation, never as on-diagram captions beside P/Q.
     - **MANDATORY**: A figure must pose a PROBLEM, not display the SOLUTION. If a reaction is shown, the product must be replaced with a label.`,
 
@@ -801,14 +803,16 @@ export const generateQuizQuestions = async (
        - **MULTI-CONCEPT COGNITION (FIGURE ITEMS)**: Each figure-backed question must integrate **at least two distinct concepts** in the stem (cross-link subtopics, conditions, scales, or consequences). Do **not** write recall-only items that reduce to naming a single obvious structure without a second reasoning hinge — except sparingly in Easy slots, where options must still force a real choice.
        ${hasReferenceDiagrams ? `- **REFERENCE_DIAGRAM_FIDELITY**: REFERENCE DIAGRAM images are attached. For items using a source bitmap, figurePrompt must instruct a **faithful trace**: **same layout, topology, proportions, and relative positions** as the reference. **Forbidden**: redesigning, simplifying, adding/removing drawn structures, rearranging panels, “cleaner” reinterpretations, or moving pathways. **Allowed only**: pure white background, watermark/noise cleanup, erasing original printed words, and applying the exam label set — while **preserving pointer/leader geometry** so each line still targets the same locus as in the reference (unless the prompt explicitly says otherwise).
        ` : ''}
-       - **POINTER LINES FOR LABEL QUESTIONS**: If the stem or options refer to on-diagram markers (P, Q, R, A–D, numbered loci, arrows), figurePrompt **must** require **visible leader / pointing lines** from each marker to the correct site (NEET-style). Never use floating letters without pointers.
+       - **POINTER LINES (WHEN REQUIRED)**: If the stem asks to identify **specific parts drawn on the diagram** (P, Q, R, numbered loci), figurePrompt **must** require **leader lines** from each such marker to the correct site. **Do not** require pointers from **A–D** to structures when A–D are the four **written MCQ option labels** — options are text-only.
+       - **NO STEM REDRAW IN FIGURE**: figurePrompt must **not** tell the image model to redraw a full multi-step reaction or long scheme **already given in the stem**. Command a **single complementary** visual (e.g. one structure, “?” for unknown product, apparatus, graph).
+       - **NO OPTION PANEL IN IMAGE**: figurePrompt must **not** ask for a composite of “four structures labeled A–B–C–D with arrows” for standard structure-MCQ — that duplicates the answer choices in the figure.
        - **FIGURE PROMPT RULES**: 
          - The 'figurePrompt' must be a direct command to the image generator to TRACE the source image (or synthesize when no source).
          - **LABEL-TYPE vs CONTEXT-ONLY**:
-           - **Label-type** (stem or options require identifying specific lettered/numbered parts: e.g. "Identify P", "structures marked P–S", "which arrow shows"): figurePrompt must name ONLY those exact markers (P, Q, … or A–D on the diagram). Strip every other label from the source; never copy the full textbook figure’s labels. **Include explicit pointer-line wording** for each marker.
-           - **Context-only** (diagram is setup only—pathway, graph, apparatus—and the stem does NOT ask to choose among marked parts): figurePrompt MUST say explicitly: "Unlabeled diagram only: NO letters, NO Roman numerals, NO words naming structures on the drawing—clean line art only."
+           - **Label-type** (stem asks to identify **on-diagram** markers P, Q, R, … or numbered sites): figurePrompt names ONLY those markers; **include pointer-line wording** for each. Prefer **P/Q/R**, not A–D, unless the stem explicitly defines regions A–D on the figure.
+           - **Context-only** (diagram is setup only—graph, apparatus, unlabeled pathway—and the stem does NOT ask to pick among marked parts on the image): figurePrompt MUST say: "Unlabeled diagram only: NO letters, NO Roman numerals, NO words naming structures on the drawing—clean line art only."
          - **NO DUAL LABELING**: Never label the same structure twice. Forbidden: both a marker (P, Q, A, B) and a written structure name (e.g. mitochondria, nucleus) on the figure for the same pointer — and **forbidden** any phrase that joins a name with a letter on-image (e.g. "Vegetative cell P"). The image uses only the minimal exam markers the question needs, OR no on-image text for context-only items.
-         - **SYNC RULE**: Any letter/number drawn on the image must appear in the stem or options; do not add extra letters.
+         - **SYNC RULE**: Any marker drawn on the image must be named in the stem; do not add extra letters.
          - For trace-from-source: "Faithfully trace the reference geometry. Remove ALL original text. Add ONLY the labels listed below with leader lines: …"
          - **ANTI-DUPLICATION**: Use each label (P, Q, R…) EXACTLY ONCE on the image.
        - **QUESTION SYNERGY**: The question text MUST match what is (or is not) labeled on the figure.`
@@ -988,21 +992,28 @@ const GRID_LAYOUT_PREAMBLE = `LAYOUT (MANDATORY — UNIFORM 2×2 BATCHING, EXACT
 - Canvas must be **square** (image width = image height) so each quadrant is **square** and the same size in every batch.
 - Divide the canvas into exactly **2 columns × 2 rows** = **4 cells** of **equal** pixel width and height (four quadrants).
 - **Row-major cell index**: cell 1 = **top-left**, cell 2 = **top-right**, cell 3 = **bottom-left**, cell 4 = **bottom-right**.
-- Use a **thin white gutter** (or crisp boundary) between quadrants. **No diagram, line, or label may cross** from one quadrant into another.
+- **INVISIBLE PARTITIONS (CRITICAL)**: Separate quadrants using **extra white margin only**. **Forbidden**: black lines, grey lines, rules, borders, “grid”, crop guides, hairlines, or any stroke between quadrants. The split must be **invisible** — client software crops by geometry; your drawing must show **no** outline or frame around cells.
+- **No diagram, line, or label may cross** from one quadrant into another.
 - For any cell marked UNUSED below: fill with solid **#FFFFFF** only — no strokes, no text, no marks.`;
 
 const SYNTHETIC_FIGURE_RULES = `NEET EXAM STYLE — applies to every non-empty cell:
 0. **NO COLOR**: **Monochrome only** — black linework on pure white. **Never** use color, tinted fills, colored arrows, gradients, heatmaps, or photorealistic color.
 1. **STYLE**: Pure black ink on white. No shading, no grey. Professional textbook quality.
 2. **CLEANING**: Cell background 100% white. No artifacts, no watermarks.
-3. **LABELS**:
+3. **INTEGRAL, NON-REDUNDANT FIGURE**:
+   - The drawing must add what the **stem cannot** (spatial layout, single structure, apparatus, graph, circuit, crystal, etc.). **Do not** repeat a full reaction sequence, multi-step scheme, or long equation **already described in text** inside the same question — that wastes space and confuses students.
+   - Prefer **one** clear focal diagram (e.g. starting material only, intermediate marked “?”, or apparatus) that the stem **refers to**, not a second copy of the written pathway.
+4. **ANTI-ANSWER / NO MCQ OPTION PANEL**:
+   - **Forbidden**: Drawing the four MCQ choices as structures (or names) inside the image with **A, B, C, D** (or arrows from A–D) pointing at them — that makes the figure look like the **answer key**. Options belong in the written options only.
+   - **Forbidden**: Any layout that duplicates “pick A/B/C/D from this picture” when those letters are the exam’s option labels.
+   - **Allowed markers** (only when the stem truly asks to identify parts **on this diagram**): neutral placeholders **P, Q, R, X, Y, ?** with leader lines — never reuse **A–D** as on-image markers unless the stem explicitly defines A–D as diagram regions (rare; prefer P/Q/R).
+5. **LABELS & POINTERS**:
    - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested.
    - **UNLABELED DIAGRAMS**: If the prompt requires no on-image text, draw ZERO letters and ZERO structure names in that cell.
    - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part.
-   - Use HUGE, BOLD, BLACK letters (A, B, C…) or numbers when labels are required.
+   - **POINTER LINES**: Use leader lines **only** for markers the stem actually asks about (e.g. “identify P and Q”). Do **not** add decorative arrows or labels “just to look like NEET” if they duplicate options or give away the answer.
    - **NO DUPLICATES** within a cell: do not label two parts with the same letter.
-   - **LEADER / POINTER LINES** for every on-diagram marker the prompt names.
-4. **CLARITY**: Lines distinct; parts easily distinguishable within the cell.`;
+6. **CLARITY**: Lines distinct; parts easily distinguishable within the cell.`;
 
 const REFERENCE_TRACE_RULES = `CRITICAL — NO COLOR: Output **only** monochrome line art: **black strokes on pure white**. If the source is in color, **discard all chroma**.
 
@@ -1067,7 +1078,7 @@ async function runSyntheticGridBatch(
   const padded = padFigureChunk(chunk);
   const instruction = `${GRID_LAYOUT_PREAMBLE}
 
-TASK: Produce one batched sheet: each ACTIVE cell below contains its own separate diagram. Follow the rules for every active cell.
+TASK: Produce one batched sheet: each ACTIVE cell below contains its own separate diagram. **Quadrant boundaries must be invisible** (white space only — no black/grey grid lines). Follow the rules for every active cell.
 
 ${SYNTHETIC_FIGURE_RULES}
 
@@ -1121,7 +1132,7 @@ async function runReferenceGridBatch(
   const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
   const instruction = `${GRID_LAYOUT_PREAMBLE}
 
-TASK: The first attachment is the SOURCE reference. Output **one** square image with a **2×2** grid (four quadrants). For each ACTIVE cell, produce **one** independent diagram derived from the source geometry and that cell’s instructions. Unused cells stay pure white.
+TASK: The first attachment is the SOURCE reference. Output **one** square image with **2×2** quadrants separated by **white space only** — **no** black or grey lines between cells. For each ACTIVE cell, produce **one** independent diagram derived from the source geometry and that cell’s instructions. Unused cells stay pure white.
 
 ${REFERENCE_TRACE_RULES}
 
