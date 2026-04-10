@@ -2597,7 +2597,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
               <button
                 type="button"
                 onClick={() => setDownloadModalOpen(true)}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-900 bg-zinc-900 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-zinc-700 shadow-sm transition-all hover:border-zinc-300 hover:bg-zinc-50 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
                 title="Answer key PDF and OMR sheet"
               >
                 <iconify-icon icon="mdi:key-variant" width="16" />
@@ -2626,7 +2626,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                 type="button"
                 onClick={handlePrint}
                 disabled={isPaginating}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-zinc-700 shadow-sm transition-all hover:border-zinc-300 hover:bg-zinc-50 active:scale-[0.99] disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-900 bg-zinc-900 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
                 title="Download test paper — opens print dialog (save as PDF)"
               >
                 <iconify-icon icon="mdi:file-download-outline" width="16" />

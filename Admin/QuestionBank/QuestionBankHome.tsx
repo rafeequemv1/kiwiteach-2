@@ -1537,22 +1537,46 @@ const QuestionBankHome: React.FC = () => {
                         }
                       }
 
+                      /** Gemini must return ≥1 stem per figurePrompt; if question total < figure budget, scale the text batch up (avoids "4 figures, 1 question"). */
+                      const configuredQuestionTotal = config.total;
+                      const genQuestionTotal =
+                        includeFigures && figureCount > 0
+                          ? Math.max(configuredQuestionTotal, figureCount)
+                          : configuredQuestionTotal;
+                      const typesForGemini =
+                        genQuestionTotal !== configuredQuestionTotal
+                          ? scaleTypeWeightsToTotal(typesForGen, genQuestionTotal)
+                          : typesForGen;
+                      const diffForGemini =
+                        genQuestionTotal !== configuredQuestionTotal
+                          ? scaleDifficultyToTotal(diffForGen, genQuestionTotal)
+                          : diffForGen;
+
                       const willSplitStyles = shouldSplitStandardForgeByStyle(typesForGen, diffForGen, figureCount);
                       patchForgeDetail({
-                        plannedEasy: diffForGen.easy,
-                        plannedMedium: diffForGen.medium,
-                        plannedHard: diffForGen.hard,
-                        plannedMcq: typesForGen.mcq,
-                        plannedReasoning: typesForGen.reasoning,
-                        plannedMatching: typesForGen.matching,
-                        plannedStatements: typesForGen.statements,
-                        plannedTotalQs: config.total,
+                        plannedEasy: diffForGemini.easy,
+                        plannedMedium: diffForGemini.medium,
+                        plannedHard: diffForGemini.hard,
+                        plannedMcq: typesForGemini.mcq,
+                        plannedReasoning: typesForGemini.reasoning,
+                        plannedMatching: typesForGemini.matching,
+                        plannedStatements: typesForGemini.statements,
+                        plannedTotalQs: genQuestionTotal,
                         recipeNote:
                           (includeFigures ? '' : 'Text-only forge: no figure prompts or image generation. ') +
+                          (genQuestionTotal > configuredQuestionTotal
+                            ? `Adjusted to ${genQuestionTotal} question(s) so the ${figureCount} figure slot(s) can each get a stem (your total was ${configuredQuestionTotal}). `
+                            : '') +
                           (willSplitStyles
                             ? 'Split-by-style: your chapter E/M/H mix is scaled per style (largest remainder) — each style’s call gets its own Easy/Medium/Hard counts adding up to that style’s question total.'
                             : 'Single Gemini call: one JSON array with your exact style counts and global E/M/H totals.'),
                       });
+                      if (genQuestionTotal > configuredQuestionTotal) {
+                        patchForgeDetail(
+                          { line: `${progressPrefix}: batch size ${configuredQuestionTotal} → ${genQuestionTotal} (match figure slots)` },
+                          `Using ${genQuestionTotal} text question(s) so ${figureCount} figure(s) are possible (configured total was ${configuredQuestionTotal}).`
+                        );
+                      }
 
                       const persistForgeChapterQuestions = async (qs: Question[], logHint: string) => {
                         const pending = qs.filter((q) => !forgeChapterPersisted.has(q));
@@ -1881,7 +1905,17 @@ const QuestionBankHome: React.FC = () => {
                         );
                       };
 
-                      if (willSplitStyles) {
+                      if (genQuestionTotal <= 0) {
+                        patchForgeDetail(
+                          {
+                            line: `${progressPrefix}: skipped — 0 questions to generate`,
+                            phase: 'gemini',
+                            geminiLine: '',
+                          },
+                          'Set Total questions above 0 or add synthetic / reference figure slots.'
+                        );
+                        chapterGeneratedQs = [];
+                      } else if (willSplitStyles) {
                           const styleOrder: QuestionType[] = ['mcq', 'reasoning', 'matching', 'statements'];
                           const plannedRows: ForgeStyleRowState[] = styleOrder.map((k) => {
                             const n = typesForGen[k];
@@ -1987,15 +2021,15 @@ const QuestionBankHome: React.FC = () => {
                               line: `${progressPrefix}: single Gemini batch (mixed styles)…`,
                               geminiLine: 'Building prompt…',
                             },
-                            `Mixed batch · ${config.total} Q · ${figureCount > 0 ? `${figureCount} with figures` : 'text only'}`
+                            `Mixed batch · ${genQuestionTotal} Q · ${figureCount > 0 ? `${figureCount} with figures` : 'text only'}`
                           );
                           setForgeProgress(`${progressPrefix}: Synthesizing Questions…`);
                           const gen: Question[] = await generateQuizQuestions(
                               String(chapter.name),
-                              diffForGen,
-                              config.total,
+                              diffForGemini,
+                              genQuestionTotal,
                               sourceCtxForGen,
-                              typesForGen,
+                              typesForGemini,
                               (status) => {
                                 setForgeProgress(`${progressPrefix}: ${status}`);
                                 setForgeDetail((p) => (p ? { ...p, geminiLine: status } : p));
@@ -2013,7 +2047,7 @@ const QuestionBankHome: React.FC = () => {
                               selectedKbId,
                               forgePromptSetOverrideId,
                               forgeSplitLongSource,
-                              textOnlyUniformTopicQuota(config.total)
+                              textOnlyUniformTopicQuota(genQuestionTotal)
                           );
                           producedBeforeInsert += gen.length;
                           setForgeDetail((p) =>
@@ -2387,7 +2421,7 @@ const QuestionBankHome: React.FC = () => {
   /** Figure forge inline panel: keep MCQ-only + all Hard totals in sync with preset. */
   const setFigureForgeActiveMcqHardTotal = useCallback((raw: number) => {
     if (!activeEditingChapterId) return;
-    const next = Math.max(1, Math.min(500, Math.floor(Number.isFinite(raw) ? raw : 1) || 1));
+    const next = Math.max(0, Math.min(500, Math.floor(Number.isFinite(raw) ? raw : 0) || 0));
     setChapterConfigs((prev) => {
       const base = prev[activeEditingChapterId] || {
         total: 10,
@@ -4148,22 +4182,29 @@ const QuestionBankHome: React.FC = () => {
                                                 <label className="text-[8px] font-black uppercase tracking-wide text-zinc-600">
                                                   Total questions (Hard MCQ)
                                                 </label>
+                                                <p className="mb-1 text-[7px] font-medium leading-snug text-zinc-500">
+                                                  Can be 0 if you only want synthetic figures — the run still asks Gemini for enough stems to match figure slots.
+                                                </p>
                                                 <div className="mt-1 flex items-center rounded-lg border border-zinc-200 bg-white">
                                                   <button
                                                     type="button"
                                                     disabled={isForgingBatch}
-                                                    onClick={() => setFigureForgeActiveMcqHardTotal(activeConfig.total - 1)}
+                                                    onClick={() => setFigureForgeActiveMcqHardTotal(Math.max(0, activeConfig.total - 1))}
                                                     className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
                                                   >
                                                     <iconify-icon icon="mdi:minus" width="18" />
                                                   </button>
                                                   <input
                                                     type="number"
-                                                    min={1}
+                                                    min={0}
                                                     max={500}
                                                     disabled={isForgingBatch}
                                                     value={activeConfig.total}
-                                                    onChange={(e) => setFigureForgeActiveMcqHardTotal(parseInt(e.target.value, 10))}
+                                                    onChange={(e) =>
+                                                      setFigureForgeActiveMcqHardTotal(
+                                                        Math.max(0, Math.min(500, parseInt(e.target.value, 10) || 0))
+                                                      )
+                                                    }
                                                     className="min-w-0 flex-1 border-0 bg-transparent py-1 text-center text-sm font-black text-emerald-900 outline-none"
                                                   />
                                                   <button
@@ -4236,22 +4277,29 @@ const QuestionBankHome: React.FC = () => {
                                                 <label className="text-[8px] font-black uppercase tracking-wide text-zinc-600">
                                                   Total questions (Hard MCQ)
                                                 </label>
+                                                <p className="mb-1 text-[7px] font-medium leading-snug text-zinc-500">
+                                                  If this is less than your reference figure counts, the batch is enlarged so each figure slot gets a question.
+                                                </p>
                                                 <div className="mt-1 flex items-center rounded-lg border border-zinc-200 bg-white">
                                                   <button
                                                     type="button"
                                                     disabled={isForgingBatch}
-                                                    onClick={() => setFigureForgeActiveMcqHardTotal(activeConfig.total - 1)}
+                                                    onClick={() => setFigureForgeActiveMcqHardTotal(Math.max(0, activeConfig.total - 1))}
                                                     className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
                                                   >
                                                     <iconify-icon icon="mdi:minus" width="18" />
                                                   </button>
                                                   <input
                                                     type="number"
-                                                    min={1}
+                                                    min={0}
                                                     max={500}
                                                     disabled={isForgingBatch}
                                                     value={activeConfig.total}
-                                                    onChange={(e) => setFigureForgeActiveMcqHardTotal(parseInt(e.target.value, 10))}
+                                                    onChange={(e) =>
+                                                      setFigureForgeActiveMcqHardTotal(
+                                                        Math.max(0, Math.min(500, parseInt(e.target.value, 10) || 0))
+                                                      )
+                                                    }
                                                     className="min-w-0 flex-1 border-0 bg-transparent py-1 text-center text-sm font-black text-violet-900 outline-none"
                                                   />
                                                   <button

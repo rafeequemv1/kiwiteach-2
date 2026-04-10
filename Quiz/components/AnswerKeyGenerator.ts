@@ -232,11 +232,34 @@ function escapeAttr(s: string): string {
 /** Same KaTeX major as package.json — loaded only inside the export iframe (no host `oklch` CSS). */
 const KATEX_CSS_HREF = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css';
 
+/** jsPDF `html()` clones into the host page, so html2canvas sees Tailwind/shadcn `oklch()` and throws. Render only inside the iframe, then rasterize. */
+function addCanvasToPdfPaged(pdf: jsPDF, canvas: HTMLCanvasElement): void {
+  const imgData = canvas.toDataURL('image/png');
+  const pdfW = pdf.internal.pageSize.getWidth();
+  const pdfH = pdf.internal.pageSize.getHeight();
+  const iw = canvas.width;
+  const ih = canvas.height;
+  const imgW = pdfW;
+  const imgH = (ih * imgW) / iw;
+
+  let heightLeft = imgH;
+  let y = 0;
+  pdf.addImage(imgData, 'PNG', 0, y, imgW, imgH);
+  heightLeft -= pdfH;
+
+  while (heightLeft > 0) {
+    y = heightLeft - imgH;
+    pdf.addPage();
+    pdf.addImage(imgData, 'PNG', 0, y, imgW, imgH);
+    heightLeft -= pdfH;
+  }
+}
+
 async function domToPdf(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle, filename: string): Promise<void> {
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
-  iframe.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:210mm;min-height:297mm;border:0;opacity:0;pointer-events:none';
+  const pxW = Math.max(600, Math.round(PAGE_W * MM_TO_PX));
+  iframe.style.cssText = `position:fixed;left:-9999px;top:0;width:${pxW}px;min-height:${Math.round(297 * MM_TO_PX)}px;border:0;opacity:0;pointer-events:none`;
   document.body.appendChild(iframe);
 
   const idoc = iframe.contentDocument;
@@ -275,53 +298,32 @@ async function domToPdf(config: AnswerKeyConfig, paper: AnswerKeyPaperStyle, fil
     /* ignore */
   }
 
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const windowWidth = Math.max(600, Math.round(PAGE_W * MM_TO_PX));
+  const { default: html2canvas } = await import('html2canvas');
 
-  /** jsPDF moves the clone onto the host `document.body`; host Tailwind/shadcn use `oklch()` which html2canvas cannot parse. */
-  const hack = document.createElement('style');
-  hack.id = 'kiwi-answer-key-pdf-hack';
-  hack.textContent = `
-    .html2pdf__overlay, .html2pdf__overlay * {
-      color: #000000 !important;
-    }
-  `;
-  document.head.appendChild(hack);
+  const capW = Math.max(root.scrollWidth, root.offsetWidth, pxW);
+  const capH = Math.max(root.scrollHeight, root.offsetHeight, Math.round(297 * MM_TO_PX));
 
+  let canvas: HTMLCanvasElement;
   try {
-    await doc.html(root, {
-      x: 0,
-      y: 0,
-      margin: 0,
-      autoPaging: 'text',
-      width: PAGE_W,
-      windowWidth,
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-        onclone: (clonedDoc) => {
-          const s = clonedDoc.createElement('style');
-          s.textContent = `
-            :root, :host {
-              --background: #ffffff;
-              --foreground: #000000;
-              --border: #e5e7eb;
-              --muted-foreground: #71717a;
-              --card: #ffffff;
-              --card-foreground: #000000;
-            }
-          `;
-          clonedDoc.documentElement.insertBefore(s, clonedDoc.documentElement.firstChild);
-        },
-      },
+    canvas = await html2canvas(root, {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      width: capW,
+      height: capH,
+      windowWidth: capW,
+      windowHeight: capH,
+      scrollX: 0,
+      scrollY: 0,
     });
-    doc.save(filename);
   } finally {
-    hack.remove();
     iframe.remove();
   }
+
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  addCanvasToPdfPaged(pdf, canvas);
+  pdf.save(filename);
 }
 
 export async function generateAnswerKeyPDF(config: AnswerKeyConfig): Promise<void> {
