@@ -36,6 +36,8 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
   const showStudentZone = appRole === 'developer' || appRole === 'student';
   const showAdminInFooter =
     appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
+  const showReviewNav =
+    appRole === 'reviewer' || appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
 
   const navItems = [
     { id: 'overview', label: 'Overview', icon: 'mdi:view-dashboard-outline', role: 'teacher' },
@@ -105,7 +107,6 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
         </div>
 
         <nav className={`flex flex-1 flex-col gap-0.5 overflow-y-auto pb-4 ${isCollapsed ? 'px-2' : 'px-3'}`}>
-        
         {/* Teacher nav */}
         {showTeacherNav &&
           navItems.map((item) => {
@@ -149,6 +150,28 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
                     )
                 })}
             </>
+        )}
+
+        {showReviewNav && (
+          <>
+            {!isCollapsed && (
+              <div className="mb-1 mt-4 px-3 text-[10px] font-medium uppercase tracking-widest text-white/50">
+                Review
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => handleNavClick('question-bank-review')}
+              title="Question bank review"
+              className={`flex shrink-0 items-center rounded-md px-3 py-2 text-sm transition-colors ${isCollapsed ? 'justify-center gap-0' : 'gap-3'} ${
+                activeView === 'question-bank-review' ? navActiveClass : navInactiveClass
+              }`}
+              style={activeView === 'question-bank-review' ? { backgroundColor: pb.primary_color } : undefined}
+            >
+              <iconify-icon icon="mdi:clipboard-check-outline" className="w-5 h-5"></iconify-icon>
+              {!isCollapsed && <span>Question bank</span>}
+            </button>
+          </>
         )}
         </nav>
 

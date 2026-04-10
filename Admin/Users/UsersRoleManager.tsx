@@ -2,7 +2,7 @@ import '../../types';
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../supabase/client';
 
-type AppUserRole = 'developer' | 'teacher' | 'student' | 'school_admin';
+type AppUserRole = 'developer' | 'teacher' | 'student' | 'school_admin' | 'reviewer';
 
 interface AppUserRow {
   id: string;
@@ -13,7 +13,17 @@ interface AppUserRow {
   business_id: string | null;
 }
 
-const ROLE_OPTIONS: AppUserRole[] = ['student', 'teacher', 'school_admin', 'developer'];
+interface KbOption {
+  id: string;
+  name: string;
+}
+
+interface UserKbAccessRow {
+  user_id: string;
+  knowledge_base_id: string;
+}
+
+const ROLE_OPTIONS: AppUserRole[] = ['student', 'teacher', 'reviewer', 'school_admin', 'developer'];
 
 interface UsersRoleManagerProps {
   /** When true, omit outer card and duplicate title (e.g. Admin section frame). */
@@ -27,18 +37,29 @@ const UsersRoleManager: React.FC<UsersRoleManagerProps> = ({ embedded }) => {
   const [filterRole, setFilterRole] = useState<'all' | AppUserRole>('all');
   const [query, setQuery] = useState('');
   const [savingUserId, setSavingUserId] = useState<string | null>(null);
+  const [kbOptions, setKbOptions] = useState<KbOption[]>([]);
+  const [kbAccessRows, setKbAccessRows] = useState<UserKbAccessRow[]>([]);
+  const [savingKbKey, setSavingKbKey] = useState<string | null>(null);
 
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.rpc('admin_list_users');
-      if (error) throw error;
+      const [usersRes, kbRes, accessRes] = await Promise.all([
+        supabase.rpc('admin_list_users'),
+        supabase.from('knowledge_bases').select('id, name').order('name'),
+        supabase.from('user_knowledge_base_access').select('user_id, knowledge_base_id'),
+      ]);
+      if (usersRes.error) throw usersRes.error;
+      if (kbRes.error) throw kbRes.error;
+      if (accessRes.error) throw accessRes.error;
       setUsers(
-        ((data || []) as AppUserRow[]).map((u) => ({
+        ((usersRes.data || []) as AppUserRow[]).map((u) => ({
           ...u,
           business_id: u.business_id ?? null,
         }))
       );
+      setKbOptions((kbRes.data || []) as KbOption[]);
+      setKbAccessRows((accessRes.data || []) as UserKbAccessRow[]);
     } catch (e: any) {
       alert(e?.message || 'Failed to fetch users');
     } finally {
@@ -85,6 +106,38 @@ const UsersRoleManager: React.FC<UsersRoleManagerProps> = ({ embedded }) => {
       alert(e?.message || 'Failed to update role');
     } finally {
       setSavingUserId(null);
+    }
+  };
+
+  const reviewerHasKb = (userId: string, kbId: string) =>
+    kbAccessRows.some((r) => r.user_id === userId && r.knowledge_base_id === kbId);
+
+  const toggleReviewerKb = async (userId: string, kbId: string, nextChecked: boolean) => {
+    const key = `${userId}:${kbId}`;
+    setSavingKbKey(key);
+    try {
+      if (nextChecked) {
+        const { error } = await supabase.from('user_knowledge_base_access').insert({
+          user_id: userId,
+          knowledge_base_id: kbId,
+        });
+        if (error) throw error;
+        setKbAccessRows((prev) => [...prev, { user_id: userId, knowledge_base_id: kbId }]);
+      } else {
+        const { error } = await supabase
+          .from('user_knowledge_base_access')
+          .delete()
+          .eq('user_id', userId)
+          .eq('knowledge_base_id', kbId);
+        if (error) throw error;
+        setKbAccessRows((prev) =>
+          prev.filter((r) => !(r.user_id === userId && r.knowledge_base_id === kbId))
+        );
+      }
+    } catch (e: any) {
+      alert(e?.message || 'Failed to update knowledge base access');
+    } finally {
+      setSavingKbKey(null);
     }
   };
 
@@ -159,43 +212,80 @@ const UsersRoleManager: React.FC<UsersRoleManagerProps> = ({ embedded }) => {
           {filtered.map((u) => (
             <div
               key={u.id}
-              className="grid grid-cols-1 items-center gap-3 rounded-xl border border-zinc-100 bg-white p-3 hover:border-zinc-200 md:grid-cols-[1.6fr_1fr_0.7fr_1fr]"
+              className="rounded-xl border border-zinc-100 bg-white p-3 hover:border-zinc-200"
             >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-zinc-900">{u.full_name || 'Unnamed user'}</p>
-                <p className="truncate text-xs font-medium text-zinc-500">{u.email}</p>
+              <div className="grid grid-cols-1 items-center gap-3 md:grid-cols-[1.6fr_1fr_0.7fr_1fr]">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-zinc-900">{u.full_name || 'Unnamed user'}</p>
+                  <p className="truncate text-xs font-medium text-zinc-500">{u.email}</p>
+                </div>
+                <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                  {new Date(u.created_at).toLocaleDateString()}
+                </div>
+                <select
+                  value={u.role}
+                  disabled={savingUserId === u.id}
+                  onChange={(e) => void updateRole(u.id, e.target.value as AppUserRole)}
+                  className="rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-[10px] font-medium uppercase tracking-wide outline-none disabled:opacity-60"
+                >
+                  {ROLE_OPTIONS.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={u.business_id ?? ''}
+                  disabled={savingUserId === u.id}
+                  onChange={(e) =>
+                    void updateBusiness(u.id, e.target.value ? e.target.value : null)
+                  }
+                  className="rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-[10px] font-medium outline-none disabled:opacity-60"
+                  title="Business / org"
+                >
+                  <option value="">No business</option>
+                  {businesses.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-                {new Date(u.created_at).toLocaleDateString()}
-              </div>
-              <select
-                value={u.role}
-                disabled={savingUserId === u.id}
-                onChange={(e) => void updateRole(u.id, e.target.value as AppUserRole)}
-                className="rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-[10px] font-medium uppercase tracking-wide outline-none disabled:opacity-60"
-              >
-                {ROLE_OPTIONS.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={u.business_id ?? ''}
-                disabled={savingUserId === u.id}
-                onChange={(e) =>
-                  void updateBusiness(u.id, e.target.value ? e.target.value : null)
-                }
-                className="rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-[10px] font-medium outline-none disabled:opacity-60"
-                title="Business / org"
-              >
-                <option value="">No business</option>
-                {businesses.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
+              {u.role === 'reviewer' && (
+                <div className="mt-3 border-t border-zinc-100 pt-3">
+                  <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                    Knowledge bases for review
+                  </p>
+                  {kbOptions.length === 0 ? (
+                    <p className="text-[11px] text-zinc-500">No knowledge bases in the project.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {kbOptions.map((kb) => {
+                        const checked = reviewerHasKb(u.id, kb.id);
+                        const busy = savingKbKey === `${u.id}:${kb.id}`;
+                        return (
+                          <label
+                            key={kb.id}
+                            className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-700"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={busy || savingUserId === u.id}
+                              onChange={(e) => void toggleReviewerKb(u.id, kb.id, e.target.checked)}
+                              className="rounded border-zinc-300"
+                            />
+                            <span className={checked ? 'text-zinc-900' : 'text-zinc-600'}>{kb.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <p className="mt-2 text-[10px] leading-snug text-zinc-400">
+                    Reviewers only see hubs listed here (plus any catalog bases your RLS allows).
+                  </p>
+                </div>
+              )}
             </div>
           ))}
           {filtered.length === 0 && (

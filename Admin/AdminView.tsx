@@ -79,7 +79,7 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
   },
   flags: {
     title: 'Flags',
-    subtitle: 'Out-of-syllabus reports and moderation',
+    subtitle: 'Teacher out-of-syllabus reports and reviewer quality queue',
     icon: 'mdi:flag-outline',
   },
   subscriptions: {
@@ -170,7 +170,7 @@ const SECTION_META: Record<AdminSection, SectionMeta> = {
 };
 
 /** Full-height tools with their own chrome */
-const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab', 'question-db-latex'];
+const FULL_BLEED_SECTIONS: AdminSection[] = ['lab', 'quality-lab', 'question-db-latex', 'flags'];
 
 /** Section body uses flex column + overflow hidden (roles manager, blog CMS) */
 const ROLES_SECTIONS: AdminSection[] = ['roles', 'blog'];

@@ -87,6 +87,7 @@ function shouldSplitStandardForgeByStyle(
   return true;
 }
 import QuestionPaperItem, { QuestionFlagReason } from '../../Quiz/components/QuestionPaperItem';
+import { FigureEditorModal } from './FigureEditorModal';
 import { ChapterStatChips } from '../../Quiz/components/ChapterStatChips';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
 
@@ -361,11 +362,22 @@ type ForgeStyleRowState = {
 type ForgeFigureUiState = {
   modeLabel: string;
   subLabel: string;
-  referenceThumbs: { dataUrl: string; label: string }[];
+  referenceThumbs: { dataUrl: string; label: string; sourceIndex: number }[];
+  /** Chapter reference strip index (0-based) currently being forged; null when idle or non-reference path. */
+  activeSourceImageIndex: number | null;
   expectedOutputs: number | null;
   renderedCount: number;
   outputDataUrls: string[];
   statusLine: string;
+};
+
+/** Multi-chapter forge: one row per selected chapter, updated as the run advances. */
+type ForgeChapterQueueRow = {
+  id: string;
+  name: string;
+  status: 'pending' | 'running' | 'saved' | 'error';
+  /** Set when status is saved (may be 0 if chapter produced no questions). */
+  savedQuestionCount?: number;
 };
 
 type ForgeDetailState = {
@@ -374,6 +386,8 @@ type ForgeDetailState = {
   chapterName: string;
   line: string;
   phase: ForgePhase;
+  /** Ordered list for the modal chapter strip (same order as the forge queue). */
+  chapterQueue: ForgeChapterQueueRow[];
   /** Cumulative count written to question_bank_neet this run. */
   totalQuestions: number;
   /** Chapters fully saved this run (insert succeeded). */
@@ -538,6 +552,7 @@ const QuestionBankHome: React.FC = () => {
     preview: string;
     fromReview: boolean;
   } | null>(null);
+  const [figureEditor, setFigureEditor] = useState<{ id: string; url: string } | null>(null);
 
   const [chapterConfigs, setChapterConfigs] = useState<Record<string, ChapterConfig>>({});
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
@@ -1241,6 +1256,14 @@ const QuestionBankHome: React.FC = () => {
         plannedStatements: 0,
         plannedTotalQs: 0,
         recipeNote: '',
+        chapterQueue: chapterIds.map((cid) => {
+          const c = chapters.find((x) => x.id === cid);
+          return {
+            id: cid,
+            name: c ? String(c.name) : cid,
+            status: 'pending' as const,
+          };
+        }),
         log: [
           {
             id: 1,
@@ -1318,6 +1341,15 @@ const QuestionBankHome: React.FC = () => {
                 },
                 `Chapter ${i + 1}/${chapterIds.length}: ${String(chapter.name)}`
               );
+              setForgeDetail((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  chapterQueue: prev.chapterQueue.map((row) =>
+                    row.id === chapId ? { ...row, status: 'running' as const } : row
+                  ),
+                };
+              });
               setForgeProgress(`${progressPrefix}: Boundary Lookup...`);
               
               for (
@@ -1336,6 +1368,7 @@ const QuestionBankHome: React.FC = () => {
                   await sleepForgeMs(2800);
                 }
                 let producedBeforeInsert = 0;
+                let incrementalHubSavesThisChapter = 0;
                 try {
                   let boundariesContext = "";
                   let forgeBoundaryTopics: string[] = [];
@@ -1356,6 +1389,8 @@ const QuestionBankHome: React.FC = () => {
 
                   let chapterGeneratedQs: Question[] = [];
                   let forgeReferenceSourceFigureCount = 0;
+                  /** Questions already inserted this chapter (incremental hub save). */
+                  const forgeChapterPersisted = new WeakSet<Question>();
                   if (config.synthesisMode === 'syllabus') {
                       const enabledTopics = (Object.entries(config.topicCounts) as [string, { count: number; enabled: boolean }][]).filter(([_, tConf]) => tConf.enabled && tConf.count > 0);
                       const totalSyllabusQ = enabledTopics.reduce((acc, [, tConf]) => acc + tConf.count, 0);
@@ -1506,6 +1541,62 @@ const QuestionBankHome: React.FC = () => {
                             : 'Single Gemini call: one JSON array with your exact style counts and global E/M/H totals.'),
                       });
 
+                      const persistForgeChapterQuestions = async (qs: Question[], logHint: string) => {
+                        const pending = qs.filter((q) => !forgeChapterPersisted.has(q));
+                        if (pending.length === 0) return;
+                        const forgeOpts =
+                          forgeVisualPhase === 'with_figures' &&
+                          config.synthesisMode === 'standard' &&
+                          config.visualMode === 'image' &&
+                          forgeReferenceSourceFigureCount > 0
+                            ? { referenceSourceFigureCount: forgeReferenceSourceFigureCount }
+                            : undefined;
+                        const rows = questionsToNeetBankRows(
+                          chapter,
+                          pending,
+                          batchPromptSetId,
+                          batchPromptGenerationSource,
+                          selectedModel,
+                          batchPromptSetName,
+                          forgeOpts
+                        );
+                        assertBankRowsPassLatexValidation(rows, { chapterName: String(chapter.name) });
+                        const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
+                        if (insertErr) {
+                          throw new Error(
+                            `Hub save failed (${pending.length} question(s)): ${insertErr.message}${
+                              insertErr.code ? ` [${insertErr.code}]` : ''
+                            }`
+                          );
+                        }
+                        for (const r of rows) {
+                          forgeRunSnapshotRef.current.push(
+                            sanitizeRowForAnalysis({ ...(r as object) } as Record<string, unknown>)
+                          );
+                        }
+                        pending.forEach((q) => forgeChapterPersisted.add(q));
+                        incrementalHubSavesThisChapter += pending.length;
+                        savedToHubThisRun += pending.length;
+                        forgeLogIdRef.current += 1;
+                        const logId = forgeLogIdRef.current;
+                        setForgeDetail((p) => {
+                          if (!p) return p;
+                          return {
+                            ...p,
+                            totalQuestions: p.totalQuestions + pending.length,
+                            log: [
+                              ...p.log,
+                              {
+                                id: logId,
+                                t: Date.now(),
+                                msg: `✓ Hub +${pending.length} · ${logHint}`,
+                              },
+                            ].slice(-80),
+                          };
+                        });
+                        setForgeProgress(`${progressPrefix}: saved ${pending.length} Q · ${logHint}`);
+                      };
+
                       const sourceCtxForGen = {
                         text: rawText,
                         ...(includeFigures && sourceImages.length > 0 ? { images: sourceImages } : {}),
@@ -1543,14 +1634,19 @@ const QuestionBankHome: React.FC = () => {
                             return {
                               dataUrl: `data:${img.mimeType};base64,${img.data}`,
                               label: `#${i + 1} ×${n}`,
+                              sourceIndex: i,
                             };
                           })
-                          .filter((x): x is { dataUrl: string; label: string } => x !== null);
+                          .filter(
+                            (x): x is { dataUrl: string; label: string; sourceIndex: number } =>
+                              x !== null
+                          );
                         patchForgeDetail({
                           figureUi: {
                             modeLabel,
                             subLabel,
                             referenceThumbs,
+                            activeSourceImageIndex: null,
                             expectedOutputs: null,
                             renderedCount: 0,
                             outputDataUrls: [],
@@ -1560,185 +1656,211 @@ const QuestionBankHome: React.FC = () => {
                       }
 
                       const runFigurePipeline = async (gen: Question[]) => {
-                          if (!includeFigures) return;
-                          const figureQs = gen.filter((q) => q.figurePrompt);
-                          if (figureQs.length === 0 || figureCount <= 0) {
-                            setForgeDetail((p) =>
-                              p?.figureUi
-                                ? {
-                                    ...p,
-                                    phase: 'figures',
-                                    line: `${progressPrefix}: no figure images to render`,
-                                    figureUi: {
-                                      ...p.figureUi,
-                                      expectedOutputs: 0,
-                                      statusLine:
-                                        figureQs.length === 0
-                                          ? 'No figure_prompt fields in this batch.'
-                                          : 'Figure budget is zero — skipped image API.',
-                                    },
-                                  }
-                                : p
-                            );
-      return;
-    }
+                        if (!includeFigures) return;
+                        const figureQs = gen.filter((q) => q.figurePrompt);
+                        if (figureQs.length === 0 || figureCount <= 0) {
+                          setForgeDetail((p) =>
+                            p?.figureUi
+                              ? {
+                                  ...p,
+                                  phase: 'figures',
+                                  line: `${progressPrefix}: no figure images to render`,
+                                  figureUi: {
+                                    ...p.figureUi,
+                                    activeSourceImageIndex: null,
+                                    expectedOutputs: 0,
+                                    statusLine:
+                                      figureQs.length === 0
+                                        ? 'No figure_prompt fields in this batch.'
+                                        : 'Figure budget is zero — skipped image API.',
+                                  },
+                                }
+                              : p
+                          );
+                          return;
+                        }
 
-                            patchForgeDetail(
-                              {
-                                phase: 'figures',
-                                line: `${progressPrefix}: rendering figures…`,
-                              },
-                              `Figures · ${figureQs.length} prompt(s)`
+                        const hubEachFigure =
+                          config.synthesisMode === 'standard' && forgeVisualPhase === 'with_figures';
+
+                        patchForgeDetail(
+                          {
+                            phase: 'figures',
+                            line: `${progressPrefix}: rendering figures…`,
+                          },
+                          `Figures · ${figureQs.length} prompt(s)`
+                        );
+                        setForgeDetail((p) =>
+                          p?.figureUi
+                            ? {
+                                ...p,
+                                figureUi: {
+                                  ...p.figureUi,
+                                  expectedOutputs: figureQs.length,
+                                  renderedCount: 0,
+                                  outputDataUrls: [],
+                                  activeSourceImageIndex: null,
+                                  statusLine: `Starting ${figureQs.length} image render(s)…`,
+                                },
+                              }
+                            : p
+                        );
+                        setForgeProgress(`${progressPrefix}: Processing Visuals...`);
+                        const bumpOutputs = (newPngBase64s: string[]) => {
+                          if (newPngBase64s.length === 0) return;
+                          const newUrls = newPngBase64s.map((b64) => `data:image/png;base64,${b64}`);
+                          setForgeDetail((p) =>
+                            p?.figureUi
+                              ? {
+                                  ...p,
+                                  figureUi: {
+                                    ...p.figureUi,
+                                    renderedCount: p.figureUi.renderedCount + newUrls.length,
+                                    outputDataUrls: [...p.figureUi.outputDataUrls, ...newUrls].slice(-36),
+                                    statusLine: `Rendered ${p.figureUi.renderedCount + newUrls.length}/${figureQs.length}`,
+                                  },
+                                }
+                              : p
+                          );
+                        };
+
+                        if (config.visualMode === 'image') {
+                          if (sourceImages.length > 0) {
+                            const sourceEditGroups: Record<number, Question[]> = {};
+                            figureQs.forEach((q) => {
+                              const sIdx =
+                                q.sourceImageIndex !== undefined && sourceImages[q.sourceImageIndex]
+                                  ? q.sourceImageIndex
+                                  : 0;
+                              const sourceImg = sourceImages[sIdx];
+                              if (sourceImg?.data) {
+                                q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`;
+                              }
+                              if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = [];
+                              sourceEditGroups[sIdx].push(q);
+                            });
+                            const sortedRefKeys = Object.keys(sourceEditGroups).sort(
+                              (a, b) => parseInt(a, 10) - parseInt(b, 10)
                             );
-                            setForgeDetail((p) =>
-                              p?.figureUi
-                                ? {
-                                    ...p,
-                                    figureUi: {
-                                      ...p.figureUi,
-                                      expectedOutputs: figureQs.length,
-                                      renderedCount: 0,
-                                      outputDataUrls: [],
-                                      statusLine: `Starting ${figureQs.length} image render(s)…`,
-                                    },
-                                  }
-                                : p
-                            );
-                            setForgeProgress(`${progressPrefix}: Processing Visuals...`);
-                            const bumpOutputs = (newPngBase64s: string[]) => {
-                              if (newPngBase64s.length === 0) return;
-                              const newUrls = newPngBase64s.map(
-                                (b64) => `data:image/png;base64,${b64}`
-                              );
+                            for (const imgIdxStr of sortedRefKeys) {
+                              if (stopForgingRef.current) break;
+                              const groupQs = sourceEditGroups[parseInt(imgIdxStr, 10)];
+                              const imgIdx = parseInt(imgIdxStr, 10);
+                              const sourceImg = sourceImages[imgIdx];
+                              if (!sourceImg?.data) continue;
                               setForgeDetail((p) =>
                                 p?.figureUi
                                   ? {
                                       ...p,
+                                      line: `${progressPrefix}: figures · reference #${imgIdx + 1} (${groupQs.length})…`,
                                       figureUi: {
                                         ...p.figureUi,
-                                        renderedCount: p.figureUi.renderedCount + newUrls.length,
-                                        outputDataUrls: [...p.figureUi.outputDataUrls, ...newUrls].slice(
-                                          -36
-                                        ),
-                                        statusLine: `Rendered ${p.figureUi.renderedCount + newUrls.length}/${figureQs.length}`,
+                                        activeSourceImageIndex: imgIdx,
+                                        statusLine: `Rendering ${groupQs.length} from ref #${imgIdx + 1}…`,
                                       },
                                     }
                                   : p
                               );
-                            };
-
-                            if (config.visualMode === 'image') {
-                                if (sourceImages.length > 0) {
-                                    const sourceEditGroups: Record<number, Question[]> = {};
-                                    figureQs.forEach((q) => {
-                                      const sIdx =
-                                        q.sourceImageIndex !== undefined &&
-                                        sourceImages[q.sourceImageIndex]
-                                          ? q.sourceImageIndex
-                                          : 0;
-                                      const sourceImg = sourceImages[sIdx];
-                                      if (sourceImg?.data) {
-                                        q.sourceFigureDataUrl = `data:${sourceImg.mimeType};base64,${sourceImg.data}`;
-                                      }
-                                      if (!sourceEditGroups[sIdx]) sourceEditGroups[sIdx] = [];
-                                      sourceEditGroups[sIdx].push(q);
-                                    });
-                                    for (const [imgIdxStr, groupQs] of Object.entries(sourceEditGroups)) {
-                                      if (stopForgingRef.current) break;
-                                      const imgIdx = parseInt(imgIdxStr, 10);
-                                      const sourceImg = sourceImages[imgIdx];
-                                      if (!sourceImg?.data) continue;
-                                      setForgeDetail((p) =>
-                                        p?.figureUi
-                                          ? {
-                                              ...p,
-                                              line: `${progressPrefix}: figures · reference #${imgIdx + 1} (${groupQs.length})…`,
-                                              figureUi: {
-                                                ...p.figureUi,
-                                                statusLine: `Rendering ${groupQs.length} from ref #${imgIdx + 1}…`,
-                                              },
-                                            }
-                                          : p
-                                      );
-                                      const prompts = groupQs.map((q) => q.figurePrompt!).filter(Boolean);
-                                      const images = await generateCompositeStyleVariants(
-                                        sourceImg.data,
-                                        sourceImg.mimeType,
-                                        prompts,
-                                        false,
-                                        selectedImageModel
-                                      );
-                                      const outs: string[] = [];
-                                      groupQs.forEach((q, cIdx) => {
-                                        if (images[cIdx]) {
-                                          q.figureDataUrl = `data:image/png;base64,${images[cIdx]}`;
-                                          outs.push(images[cIdx]!);
-                                        }
-                                      });
-                                      bumpOutputs(outs);
-                                    }
-                                } else {
-                                    setForgeDetail((p) =>
-                                      p?.figureUi
-                                        ? {
-                                            ...p,
-                                            figureUi: {
-                                              ...p.figureUi,
-                                              statusLine: 'No reference bitmaps — prompt-only composition…',
-                                            },
-                                          }
-                                        : p
-                                    );
-                                    const images = await generateCompositeFigures(
-                                      figureQs.map((q) => q.figurePrompt!),
-                                      selectedImageModel
-                                    );
-                                    const outs: string[] = [];
-                                    figureQs.forEach((q, idx) => {
-                                      if (images[idx]) {
-                                        q.figureDataUrl = `data:image/png;base64,${images[idx]}`;
-                                        outs.push(images[idx]!);
-                                      }
-                                    });
-                                    bumpOutputs(outs);
+                              const prompts = groupQs.map((q) => q.figurePrompt!).filter(Boolean);
+                              const images = await generateCompositeStyleVariants(
+                                sourceImg.data,
+                                sourceImg.mimeType,
+                                prompts,
+                                false,
+                                selectedImageModel
+                              );
+                              for (let cIdx = 0; cIdx < groupQs.length; cIdx++) {
+                                if (stopForgingRef.current) break;
+                                const q = groupQs[cIdx];
+                                const b64 = images[cIdx];
+                                if (!b64) continue;
+                                q.figureDataUrl = `data:image/png;base64,${b64}`;
+                                bumpOutputs([b64]);
+                                if (hubEachFigure) {
+                                  await persistForgeChapterQuestions(
+                                    [q],
+                                    `ref #${imgIdx + 1} · ${cIdx + 1}/${groupQs.length}`
+                                  );
                                 }
-                            } else {
-                                setForgeDetail((p) =>
-                                  p?.figureUi
-                                    ? {
-                                        ...p,
-                                        figureUi: {
-                                          ...p.figureUi,
-                                          statusLine: 'Synthetic batch (single API call)…',
-                                        },
-                                      }
-                                    : p
-                                );
-                                const images = await generateCompositeFigures(
-                                  figureQs.map((q) => q.figurePrompt!),
-                                  selectedImageModel
-                                );
-                                const outs: string[] = [];
-                                figureQs.forEach((q, idx) => {
-                                  if (images[idx]) {
-                                    q.figureDataUrl = `data:image/png;base64,${images[idx]}`;
-                                    outs.push(images[idx]!);
-                                  }
-                                });
-                                bumpOutputs(outs);
+                              }
                             }
-
+                          } else {
                             setForgeDetail((p) =>
                               p?.figureUi
                                 ? {
                                     ...p,
                                     figureUi: {
                                       ...p.figureUi,
-                                      statusLine: `Figure pass complete · ${p.figureUi.renderedCount}/${figureQs.length} ok`,
+                                      activeSourceImageIndex: null,
+                                      statusLine: 'No reference bitmaps — prompt-only composition…',
                                     },
                                   }
                                 : p
                             );
+                            const images = await generateCompositeFigures(
+                              figureQs.map((q) => q.figurePrompt!),
+                              selectedImageModel
+                            );
+                            for (let idx = 0; idx < figureQs.length; idx++) {
+                              if (stopForgingRef.current) break;
+                              const q = figureQs[idx];
+                              const b64 = images[idx];
+                              if (!b64) continue;
+                              q.figureDataUrl = `data:image/png;base64,${b64}`;
+                              bumpOutputs([b64]);
+                              if (hubEachFigure) {
+                                await persistForgeChapterQuestions(
+                                  [q],
+                                  `prompt-only · ${idx + 1}/${figureQs.length}`
+                                );
+                              }
+                            }
+                          }
+                        } else {
+                          setForgeDetail((p) =>
+                            p?.figureUi
+                              ? {
+                                  ...p,
+                                  figureUi: {
+                                    ...p.figureUi,
+                                    activeSourceImageIndex: null,
+                                    statusLine: 'Synthetic batch (single API call)…',
+                                  },
+                                }
+                              : p
+                          );
+                          const images = await generateCompositeFigures(
+                            figureQs.map((q) => q.figurePrompt!),
+                            selectedImageModel
+                          );
+                          for (let idx = 0; idx < figureQs.length; idx++) {
+                            if (stopForgingRef.current) break;
+                            const q = figureQs[idx];
+                            const b64 = images[idx];
+                            if (!b64) continue;
+                            q.figureDataUrl = `data:image/png;base64,${b64}`;
+                            bumpOutputs([b64]);
+                            if (hubEachFigure) {
+                              await persistForgeChapterQuestions(
+                                [q],
+                                `synthetic · ${idx + 1}/${figureQs.length}`
+                              );
+                            }
+                          }
+                        }
+
+                        setForgeDetail((p) =>
+                          p?.figureUi
+                            ? {
+                                ...p,
+                                figureUi: {
+                                  ...p.figureUi,
+                                  activeSourceImageIndex: null,
+                                  statusLine: `Figure pass complete · ${p.figureUi.renderedCount}/${figureQs.length} ok`,
+                                },
+                              }
+                            : p
+                        );
                       };
 
                       if (willSplitStyles) {
@@ -1831,6 +1953,12 @@ const QuestionBankHome: React.FC = () => {
                                 `✓ ${FORGE_STYLE_LABELS[styleKey]} · +${part.length} Q`
                               );
                           }
+                          if (includeFigures && forgeVisualPhase === 'with_figures') {
+                            const stemsOnly = genParts.filter((q) => !q.figurePrompt);
+                            if (stemsOnly.length > 0) {
+                              await persistForgeChapterQuestions(stemsOnly, 'text stems (pre-figures)');
+                            }
+                          }
                           await runFigurePipeline(genParts);
                           chapterGeneratedQs = genParts;
       } else {
@@ -1883,66 +2011,91 @@ const QuestionBankHome: React.FC = () => {
                             { line: `${progressPrefix}: mixed batch done` },
                             `✓ Mixed styles · +${gen.length} Q`
                           );
+                          if (includeFigures && forgeVisualPhase === 'with_figures') {
+                            const stemsOnly = gen.filter((q) => !q.figurePrompt);
+                            if (stemsOnly.length > 0) {
+                              await persistForgeChapterQuestions(stemsOnly, 'text stems (pre-figures)');
+                            }
+                          }
                           await runFigurePipeline(gen);
                           chapterGeneratedQs = gen;
                       }
                   }
                   if (chapterGeneratedQs.length > 0) {
-                    const rows = questionsToNeetBankRows(
-                      chapter,
-                      chapterGeneratedQs,
-                      batchPromptSetId,
-                      batchPromptGenerationSource,
-                      selectedModel,
-                      batchPromptSetName,
+                    const forgeOpts =
                       forgeVisualPhase === 'with_figures' &&
-                        config.synthesisMode === 'standard' &&
-                        config.visualMode === 'image' &&
-                        forgeReferenceSourceFigureCount > 0
+                      config.synthesisMode === 'standard' &&
+                      config.visualMode === 'image' &&
+                      forgeReferenceSourceFigureCount > 0
                         ? { referenceSourceFigureCount: forgeReferenceSourceFigureCount }
-                        : undefined
-                    );
-                    assertBankRowsPassLatexValidation(rows, { chapterName: String(chapter.name) });
-                    const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
-                    if (insertErr) {
-                      throw new Error(
-                        `Hub save failed (${rows.length} new question(s)): ${insertErr.message}${insertErr.code ? ` [${insertErr.code}]` : ''}`
+                        : undefined;
+                    const unsaved = chapterGeneratedQs.filter((q) => !forgeChapterPersisted.has(q));
+                    let nInsertedFinal = 0;
+                    if (unsaved.length > 0) {
+                      const rows = questionsToNeetBankRows(
+                        chapter,
+                        unsaved,
+                        batchPromptSetId,
+                        batchPromptGenerationSource,
+                        selectedModel,
+                        batchPromptSetName,
+                        forgeOpts
                       );
+                      assertBankRowsPassLatexValidation(rows, { chapterName: String(chapter.name) });
+                      const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
+                      if (insertErr) {
+                        throw new Error(
+                          `Hub save failed (${rows.length} new question(s)): ${insertErr.message}${insertErr.code ? ` [${insertErr.code}]` : ''}`
+                        );
+                      }
+                      for (const r of rows) {
+                        forgeRunSnapshotRef.current.push(
+                          sanitizeRowForAnalysis({ ...(r as object) } as Record<string, unknown>)
+                        );
+                      }
+                      unsaved.forEach((q) => forgeChapterPersisted.add(q));
+                      savedToHubThisRun += unsaved.length;
+                      nInsertedFinal = unsaved.length;
                     }
-                    for (const r of rows) {
-                      forgeRunSnapshotRef.current.push(
-                        sanitizeRowForAnalysis({ ...(r as object) } as Record<string, unknown>)
-                      );
-                    }
-                    const nSaved = chapterGeneratedQs.length;
-                    savedToHubThisRun += nSaved;
+                    const nChapterQs = chapterGeneratedQs.length;
                     const chLabel = String(chapter.name);
                     forgeLogIdRef.current += 1;
                     const logId = forgeLogIdRef.current;
                     setForgeDetail((p) => {
                       if (!p) return p;
-                      const nextTotal = p.totalQuestions + nSaved;
+                      const nextTotal = p.totalQuestions + nInsertedFinal;
                       const nextChapters = p.savedChaptersCount + 1;
                       const shortCh =
                         chLabel.length > 40 ? `${chLabel.slice(0, 40)}…` : chLabel;
+                      const tail =
+                        nInsertedFinal > 0
+                          ? ` (+${nInsertedFinal} in final batch)`
+                          : incrementalHubSavesThisChapter > 0
+                            ? ' (all saved incrementally)'
+                            : '';
                       return {
                         ...p,
                         totalQuestions: nextTotal,
                         savedChaptersCount: nextChapters,
                         lastSavedChapterLabel: shortCh,
                         phase: 'done',
-                        line: `${progressPrefix}: saved ${nSaved} Q → hub total ${nextTotal} Q · ${nextChapters} chapter(s)`,
+                        line: `${progressPrefix}: saved ${nChapterQs} Q${tail} → hub total ${nextTotal} Q · ${nextChapters} chapter(s)`,
+                        chapterQueue: p.chapterQueue.map((row) =>
+                          row.id === chapId
+                            ? { ...row, status: 'saved' as const, savedQuestionCount: nChapterQs }
+                            : row
+                        ),
                         log: [
                           ...p.log,
                           {
                             id: logId,
                             t: Date.now(),
-                            msg: `✓ Saved ${nSaved} Q · ${shortCh} → run total ${nextTotal} Q, ${nextChapters} ch`,
+                            msg: `✓ Chapter ${nChapterQs} Q · ${shortCh} → run total ${nextTotal} Q, ${nextChapters} ch${tail}`,
                           },
                         ].slice(-80),
                       };
                     });
-                    setForgeProgress(`${progressPrefix}: saved ${nSaved} Q to hub`);
+                    setForgeProgress(`${progressPrefix}: saved ${nChapterQs} Q to hub`);
                   } else {
                     patchForgeDetail(
                       {
@@ -1951,6 +2104,17 @@ const QuestionBankHome: React.FC = () => {
                       },
                       `Chapter skipped · 0 Q`
                     );
+                    setForgeDetail((p) => {
+                      if (!p) return p;
+                      return {
+                        ...p,
+                        chapterQueue: p.chapterQueue.map((row) =>
+                          row.id === chapId
+                            ? { ...row, status: 'saved' as const, savedQuestionCount: 0 }
+                            : row
+                        ),
+                      };
+                    });
                   }
                   break;
                 } catch (chapErr: unknown) {
@@ -1969,12 +2133,33 @@ const QuestionBankHome: React.FC = () => {
                   if (producedBeforeInsert > 0) {
                     failedForgeChapters.push({
                       name: String(chapter.name),
-                      error: `${msg} (partial progress not saved — avoids duplicate rows)`,
+                      error:
+                        incrementalHubSavesThisChapter > 0
+                          ? `${msg} (${incrementalHubSavesThisChapter} question(s) may already be in the hub from incremental saves — review before retry to avoid duplicates.)`
+                          : `${msg} (partial progress not saved — avoids duplicate rows)`,
+                    });
+                    setForgeDetail((p) => {
+                      if (!p) return p;
+                      return {
+                        ...p,
+                        chapterQueue: p.chapterQueue.map((row) =>
+                          row.id === chapId ? { ...row, status: 'error' as const } : row
+                        ),
+                      };
                     });
                     break;
                   }
                   if (chapterAttempt >= 2) {
                     failedForgeChapters.push({ name: String(chapter.name), error: msg });
+                    setForgeDetail((p) => {
+                      if (!p) return p;
+                      return {
+                        ...p,
+                        chapterQueue: p.chapterQueue.map((row) =>
+                          row.id === chapId ? { ...row, status: 'error' as const } : row
+                        ),
+                      };
+                    });
                     break;
                   }
                 }
@@ -2468,6 +2653,34 @@ const QuestionBankHome: React.FC = () => {
     setFlagReasonsByQuestionId((prev) => ({ ...prev, [questionId]: reason }));
   };
 
+  const handleFigureEditorSave = useCallback(
+    async (questionId: string, pngDataUrl: string) => {
+      if (!isUuidLike(questionId)) {
+        throw new Error('Only saved hub questions (UUID id) can update the figure.');
+      }
+      const { error } = await supabase
+        .from('question_bank_neet')
+        .update({ figure_url: pngDataUrl })
+        .eq('id', questionId);
+      if (error) throw error;
+      setQuestions((prev) =>
+        prev.map((row) =>
+          String(row.id) === questionId
+            ? { ...row, figure_url: pngDataUrl, figureDataUrl: pngDataUrl }
+            : row
+        )
+      );
+      setReviewQueue((prev) =>
+        prev.map((row) =>
+          String(row.id) === questionId
+            ? { ...row, figure_url: pngDataUrl, figureDataUrl: pngDataUrl }
+            : row
+        )
+      );
+    },
+    []
+  );
+
   return (
     <div className={`${workspacePageClass} flex-1 overflow-hidden relative`}>
         {/* PROGRESS OVERLAY — forge or save */}
@@ -2516,6 +2729,62 @@ const QuestionBankHome: React.FC = () => {
                     </div>
                   </section>
 
+                  {forgeDetail.chaptersTotal > 1 && forgeDetail.chapterQueue.length > 0 ? (
+                    <section className="rounded-xl border border-emerald-100 bg-gradient-to-b from-emerald-50/90 to-white p-3 shadow-sm">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-emerald-800">
+                        Chapters in this run
+                      </p>
+                      <ul className="mt-2 max-h-36 space-y-1.5 overflow-y-auto pr-0.5 custom-scrollbar sm:max-h-44">
+                        {forgeDetail.chapterQueue.map((row, idx) => (
+                          <li
+                            key={row.id}
+                            className="flex items-center gap-2 rounded-lg border border-transparent px-1 py-0.5 text-[11px] leading-tight"
+                          >
+                            <span className="w-5 shrink-0 text-center text-[9px] font-black tabular-nums text-zinc-400">
+                              {idx + 1}
+                            </span>
+                            {row.status === 'saved' ? (
+                              <iconify-icon
+                                icon="mdi:check-decagram"
+                                width="20"
+                                className="shrink-0 text-emerald-600"
+                                aria-label="Saved"
+                              />
+                            ) : row.status === 'running' ? (
+                              <span
+                                className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-indigo-500 ring-2 ring-indigo-200"
+                                aria-hidden
+                              />
+                            ) : row.status === 'error' ? (
+                              <iconify-icon
+                                icon="mdi:alert-circle"
+                                width="20"
+                                className="shrink-0 text-rose-600"
+                                aria-label="Failed"
+                              />
+                            ) : (
+                              <span className="h-2 w-2 shrink-0 rounded-full bg-zinc-300" aria-hidden />
+                            )}
+                            <span className="min-w-0 flex-1 truncate font-semibold text-zinc-800">
+                              {row.name}
+                            </span>
+                            {row.status === 'saved' && row.savedQuestionCount != null ? (
+                              <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-black text-emerald-900">
+                                {row.savedQuestionCount} Q · saved
+                              </span>
+                            ) : null}
+                            {row.status === 'running' ? (
+                              <span className="shrink-0 text-[9px] font-bold text-indigo-600">In progress…</span>
+                            ) : null}
+                            {row.status === 'error' ? (
+                              <span className="shrink-0 text-[9px] font-bold text-rose-700">Failed</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+
                   <section className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
                     <p className="text-[9px] font-black uppercase tracking-widest text-indigo-600">Gemini</p>
                     <p className="mt-1 font-mono text-[11px] leading-relaxed text-indigo-950">{forgeDetail.geminiLine || '—'}</p>
@@ -2545,10 +2814,18 @@ const QuestionBankHome: React.FC = () => {
                       </p>
                       <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] custom-scrollbar">
                         {forgeDetail.figureUi.referenceThumbs.length > 0 ? (
-                          forgeDetail.figureUi.referenceThumbs.map((t, i) => (
+                          forgeDetail.figureUi.referenceThumbs.map((t, i) => {
+                            const isActive =
+                              forgeDetail.figureUi!.activeSourceImageIndex !== null &&
+                              t.sourceIndex === forgeDetail.figureUi!.activeSourceImageIndex;
+                            return (
                             <div
                               key={`${t.label}-${i}`}
-                              className="w-20 shrink-0 overflow-hidden rounded-xl border border-violet-200 bg-white shadow-sm sm:w-24"
+                              className={`w-20 shrink-0 overflow-hidden rounded-xl border bg-white shadow-sm sm:w-24 ${
+                                isActive
+                                  ? 'border-amber-400 ring-2 ring-amber-400/90 ring-offset-2 ring-offset-violet-50'
+                                  : 'border-violet-200'
+                              }`}
                             >
                               <div className="flex h-[4.5rem] items-center justify-center bg-white sm:h-[5rem]">
                                 <img
@@ -2561,7 +2838,8 @@ const QuestionBankHome: React.FC = () => {
                                 {t.label}
                               </p>
                             </div>
-                          ))
+                            );
+                          })
                         ) : (
                           [0, 1, 2, 3].map((i) => (
                             <div
@@ -2826,6 +3104,16 @@ const QuestionBankHome: React.FC = () => {
             </div>
             )
         )}
+
+        {figureEditor ? (
+          <FigureEditorModal
+            open
+            questionId={figureEditor.id}
+            imageUrl={figureEditor.url}
+            onClose={() => setFigureEditor(null)}
+            onSave={handleFigureEditorSave}
+          />
+        ) : null}
         
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row lg:items-stretch">
             <aside className="flex min-h-0 w-full flex-1 flex-col border-b border-zinc-100 bg-white shadow-sm shrink-0 z-20 lg:max-w-[20rem] lg:w-80 lg:shrink-0 lg:flex-none lg:self-stretch lg:border-b-0 lg:border-r">
@@ -4723,6 +5011,11 @@ const QuestionBankHome: React.FC = () => {
                                     onRequestDelete={
                                       mode === 'browse' || mode === 'review'
                                         ? openDeleteQuestionConfirm
+                                        : undefined
+                                    }
+                                    onEditFigure={
+                                      mode === 'browse' || mode === 'review'
+                                        ? (id, url) => setFigureEditor({ id, url })
                                         : undefined
                                     }
                                 />

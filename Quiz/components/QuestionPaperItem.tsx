@@ -16,6 +16,10 @@ export function flagReasonTooltip(raw: string | null | undefined): string {
   return normalizeFlagReason(raw) === 'incorrect_figure' ? 'Incorrect figure' : 'Out of syllabus';
 }
 
+/** Saved hub rows use UUID ids; skip edit for unsynced / temp items. */
+const HUB_QUESTION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function htmlToPlainText(htmlLike: string | null | undefined): string {
   if (!htmlLike) return '';
   if (typeof document === 'undefined') return htmlLike;
@@ -57,6 +61,8 @@ interface QuestionPaperItemProps {
   sourceFigureIconToggle?: boolean;
   /** Question DB browse/review: opens parent confirmation before delete/remove. */
   onRequestDelete?: (id: string) => void;
+  /** Question DB: open figure editor modal (paint / crop / save to hub). */
+  onEditFigure?: (id: string, imageUrl: string) => void;
 }
 
 const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({ 
@@ -81,6 +87,7 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   flagReason = null,
   sourceFigureIconToggle = false,
   onRequestDelete,
+  onEditFigure,
 }) => {
   const [sourcePeekOpen, setSourcePeekOpen] = useState(false);
   const isMatching = (question.type as any) === 'matching';
@@ -266,6 +273,21 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
             className="relative my-3 flex justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2"
             title={isFlaggedOutOfSyllabus && onFlagOutOfSyllabus ? flagTooltip : undefined}
           >
+              {onEditFigure && HUB_QUESTION_ID_RE.test(String(question.id)) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const url = String(question.figureDataUrl || question.figure_url || '');
+                    if (url) onEditFigure(String(question.id), url);
+                  }}
+                  className="absolute left-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md border border-violet-200 bg-white/95 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-violet-800 shadow-sm backdrop-blur-sm hover:bg-violet-50"
+                  title="Edit figure (draw, crop, save)"
+                >
+                  <iconify-icon icon="mdi:pencil-outline" width="14" />
+                  Edit
+                </button>
+              )}
               {showSourcePeekButton && (
                 <button
                   type="button"

@@ -288,8 +288,12 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
 
     'Figure': `VISUAL PROTOCOL (ANTI-CHEAT & ACCURACY):
     - **STYLE**: Strictly PURE BLACK lines on PURE WHITE background. High-contrast technical line art.
+    - **NO COLOR (MANDATORY)**: Figures must be **monochrome line drawings only** — black ink on white. **Forbidden**: any color, hue, tinted fills, pastel or “realistic” shading, colored arrows or regions, heatmaps, false-color labels, or photorealistic rendering. If the source reference is colored, the figurePrompt must still demand a **black-and-white line trace** with no chroma.
+    - **INTEGRATED_REASONING**: Figure-backed stems must require **multi-concept thinking** — weave at least two syllabus ideas (e.g. structure ↔ function, pathway step ↔ condition, graph axis ↔ interpretation, setup ↔ principle). Avoid trivial one-hop “spot the label” items unless the difficulty slot is Easy — and even then keep option-level discrimination meaningful.
     - **ANTI-CHEAT CONSTRAINT**: NEVER include structural answers or descriptive names of products directly in the figure. 
     - **MASKING**: Use placeholder labels (P, Q, R, X, Y) in the diagram. The student must identify these from the options.
+    - **LEADER / POINTER LINES**: Whenever the stem or options name lettered or numbered parts on the diagram, the figurePrompt must require **clear leader lines (pointing lines)** from each marker to the correct locus — NEET-style. Do not leave letters floating without pointers.
+    - **NO DESCRIPTIVE WORDS + MARKERS ON IMAGE**: **Forbidden** on the drawing: combining prose names with exam letters (e.g. "Vegetative cell P", "Generative cell Q", "Nucleus R", "Mitochondrion S"). The image may show **only** the marker glyphs (P, Q, R, …) with pointers — put structure names **only** in stem/options/explanation, never as on-diagram captions beside P/Q.
     - **MANDATORY**: A figure must pose a PROBLEM, not display the SOLUTION. If a reaction is shown, the product must be replaced with a label.`,
 
     'Chemistry': `EXPERT CHEMISTRY EXAM PROTOCOL (NEET/AIIMS STANDARD):
@@ -785,19 +789,26 @@ export const generateQuizQuestions = async (
     - Every item's "difficulty" must be exactly "${capitalizeDifficultyMandate(difficulty)}", and every stem must match that tier’s cognitive demand in the Difficulty protocol.`
         : "";
 
+  const hasReferenceDiagrams = !!(sourceContext?.images && sourceContext.images.length > 0);
+
   const visualInstruction = figureCount > 0 
     ? `[VISUAL_MANDATE]:
        - EXACTLY ${figureCount} out of ${count} questions MUST include a "figurePrompt".
        - For these ${figureCount} questions, you MUST specify a "sourceImageIndex" (integer) mapping to the diagrams provided.
        ${figureBreakdown ? `- FREQUENCY PER IMAGE (SourceIndex: Q_Count): ${figureBreakdown}` : ''}
+       - **MONOCHROME LINE ART ONLY**: Every figurePrompt must explicitly require **black (#000000) linework on white (#FFFFFF) only** — **no color** (no fills, tinted regions, colored arrows, gradients, heatmaps, or photoreal color). If tracing a colored reference, convert to **neutral line art**; do not preserve or introduce chroma.
+       - **MULTI-CONCEPT COGNITION (FIGURE ITEMS)**: Each figure-backed question must integrate **at least two distinct concepts** in the stem (cross-link subtopics, conditions, scales, or consequences). Do **not** write recall-only items that reduce to naming a single obvious structure without a second reasoning hinge — except sparingly in Easy slots, where options must still force a real choice.
+       ${hasReferenceDiagrams ? `- **REFERENCE_DIAGRAM_FIDELITY**: REFERENCE DIAGRAM images are attached. For items using a source bitmap, figurePrompt must instruct a **faithful trace**: **same layout, topology, proportions, and relative positions** as the reference. **Forbidden**: redesigning, simplifying, adding/removing drawn structures, rearranging panels, “cleaner” reinterpretations, or moving pathways. **Allowed only**: pure white background, watermark/noise cleanup, erasing original printed words, and applying the exam label set — while **preserving pointer/leader geometry** so each line still targets the same locus as in the reference (unless the prompt explicitly says otherwise).
+       ` : ''}
+       - **POINTER LINES FOR LABEL QUESTIONS**: If the stem or options refer to on-diagram markers (P, Q, R, A–D, numbered loci, arrows), figurePrompt **must** require **visible leader / pointing lines** from each marker to the correct site (NEET-style). Never use floating letters without pointers.
        - **FIGURE PROMPT RULES**: 
          - The 'figurePrompt' must be a direct command to the image generator to TRACE the source image (or synthesize when no source).
          - **LABEL-TYPE vs CONTEXT-ONLY**:
-           - **Label-type** (stem or options require identifying specific lettered/numbered parts: e.g. "Identify P", "structures marked P–S", "which arrow shows"): figurePrompt must name ONLY those exact markers (P, Q, … or A–D on the diagram). Strip every other label from the source; never copy the full textbook figure’s labels.
+           - **Label-type** (stem or options require identifying specific lettered/numbered parts: e.g. "Identify P", "structures marked P–S", "which arrow shows"): figurePrompt must name ONLY those exact markers (P, Q, … or A–D on the diagram). Strip every other label from the source; never copy the full textbook figure’s labels. **Include explicit pointer-line wording** for each marker.
            - **Context-only** (diagram is setup only—pathway, graph, apparatus—and the stem does NOT ask to choose among marked parts): figurePrompt MUST say explicitly: "Unlabeled diagram only: NO letters, NO Roman numerals, NO words naming structures on the drawing—clean line art only."
-         - **NO DUAL LABELING**: Never label the same structure twice. Forbidden: both a marker (P, Q, A, B) and a written structure name (e.g. mitochondria, nucleus) on the figure for the same pointer. The image uses only the minimal exam markers the question needs, OR no on-image text for context-only items.
+         - **NO DUAL LABELING**: Never label the same structure twice. Forbidden: both a marker (P, Q, A, B) and a written structure name (e.g. mitochondria, nucleus) on the figure for the same pointer — and **forbidden** any phrase that joins a name with a letter on-image (e.g. "Vegetative cell P"). The image uses only the minimal exam markers the question needs, OR no on-image text for context-only items.
          - **SYNC RULE**: Any letter/number drawn on the image must appear in the stem or options; do not add extra letters.
-         - For trace-from-source: "Trace the structure EXACTLY. Remove ALL original text. Add ONLY the labels listed below: …"
+         - For trace-from-source: "Faithfully trace the reference geometry. Remove ALL original text. Add ONLY the labels listed below with leader lines: …"
          - **ANTI-DUPLICATION**: Use each label (P, Q, R…) EXACTLY ONCE on the image.
        - **QUESTION SYNERGY**: The question text MUST match what is (or is not) labeled on the figure.`
     : `[VISUAL_CONSTRAINT]: Do NOT include any figurePrompts. Generate text-only questions.`;
@@ -874,6 +885,7 @@ ${figureCount > 0 ? '- For diagram items: vary what is being tested (different s
     - The difficulty counts MUST match exactly the mandate above.
     - **NEET GOAL**: Overall batch reflects a real paper mix — Easy items are genuinely accessible; Hard items are repeater-grade discriminators that still respect the syllabus; options vary across the batch (substantial numeric-option questions and near-miss distractors where topics allow, per OPTION FORMAT MIX in forge protocols).
     - **LABEL EXPLANATION CHECK**: If a question asks to identify labels (e.g. "Identify P"), the explanation MUST be ultra-short (max 2 sentences).
+    ${figureCount > 0 ? `- **FIGURE_BATCH_QUALITY**: Figure stems must demand linked reasoning across concepts (see VISUAL_MANDATE). Label-type items must specify pointer lines in figurePrompt. **All** figurePrompts must demand **black line drawing on white only — no color.**${hasReferenceDiagrams ? ' Reference diagrams: trace fidelity is mandatory — no creative edits to layout.' : ''}` : ''}
 
     - TARGET CHAPTER: "${topic}"
     - TOTAL QUANTITY: ${count} questions.
@@ -987,24 +999,27 @@ export const generateCompositeStyleVariants = async (
             const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
             const instruction = `TASK: Create a professional "NEET Exam Style" black-and-white line diagram based on the source image.
 
-EXECUTION RULES (STRICT FIDELITY & CLEANING):
-1. **TRACING MODE - ANCHOR PRESERVATION**: 
-   - Trace the biological structures exactly as they appear. 
-   - **CRITICAL**: Keep the leader lines (pointers) in the EXACT same position and angle as the original image.
-   - ONLY change the text at the end of the line. 
-   - If a line points to the Nucleus in the original, the new line MUST point to the Nucleus.
+CRITICAL — NO COLOR: Output **only** monochrome line art: **black strokes on pure white**. **Forbidden**: any color, colored lines or arrows, filled color regions, gradients, pastel tints, false-color styling, or photorealistic color. If the source image is in color, **discard all chroma** and redraw as black linework only.
+
+EXECUTION RULES (STRICT FIDELITY — REPRODUCE, DO NOT RE-INVENT):
+0. **NO LAYOUT / TOPOLOGY EDITS**: Match the source diagram’s **geometry** — same structures, bonds, cells, organs, axes, and panels in the **same arrangement and proportions**. **Forbidden**: adding or removing drawn elements, rearranging the scene, simplifying pathways, merging panels, or “artistic” redrawing that changes shape. **Allowed**: converting to clean black-on-white line art, removing watermarks/scan noise, erasing old printed words, and applying the prompt’s exam labels while **each leader line still terminates at the same target** as in the source.
+1. **TRACING MODE — POINTER PRESERVATION**: 
+   - Trace structures exactly as they appear in the source. 
+   - **CRITICAL**: Keep leader lines (pointing lines) in the **same position and angle** as the original; they must terminate at the **same loci**.
+   - **TEXT SWAP ONLY**: Where the prompt supplies new markers, replace text at line ends — do not move the lines to “improve” the layout.
 2. **CLEANING PHASE**: 
-   - **REMOVE WATERMARKS**: Detect and erase any faint text, logos, or patterns overlaid on the image. The background must be pure white (#FFFFFF).
-   - **REMOVE ORIGINAL TEXT**: Erase ALL existing text labels from the source image.
-   - **AGGRESSIVE WHITENING**: Treat any light grey pixels as white to remove background noise/scans.
+   - **REMOVE WATERMARKS**: Erase faint logos or overlay text. Background must be pure white (#FFFFFF).
+   - **REMOVE ORIGINAL TEXT**: Erase ALL pre-existing printed labels from the source before adding prompt-specified markers.
+   - **AGGRESSIVE WHITENING**: Treat light grey noise as white where appropriate.
 3. **LABELING PHASE**:
-   - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested. If the original image had multiple labels, IGNORE them.
-   - **CONTEXT-ONLY / UNLABELED**: If the prompt says "unlabeled", "no labels", "no text on the diagram", or equivalent, draw ZERO text on the image (no letters, no names).
-   - **NO DUAL LABELING**: Never place both a marker (P, Q, A–D) and a word name (e.g. mitochondria) for the same leader line—letters only when the exam uses letters.
-   - **STRICT MINIMALISM**: Only add the labels explicitly requested in the prompt. Do NOT add extra labels.
-   - **NO DUPLICATES**: Use each label variable (P, Q, A, B) EXACTLY ONCE. Never label two different parts with the same letter.
-   - **TYPOGRAPHY**: Use HUGE, BOLD, BLACK sans-serif font (size 40px+). Ensure letters are perfectly formed and horizontal.
-4. **STYLE**: High-contrast black ink on white. No shading, gradients, or grey areas.
+   - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested. Ignore unrelated labels from the source.
+   - **CONTEXT-ONLY / UNLABELED**: If the prompt says "unlabeled", "no labels", "no text on the diagram", or equivalent, draw ZERO text on the image.
+   - **NO DUAL LABELING**: Never place both a marker (P, Q, A–D) and a full structure name on the same pointer. **Never** print combined captions like "Vegetative cell P" or "Nucleus Q" — **only** the single letter/number at the line end.
+   - **POINTER LINES REQUIRED FOR MARKERS**: For every letter/number the prompt places on the diagram, include a **clear leader line** from the marker to the correct part (NEET-style).
+   - **STRICT MINIMALISM**: Only add labels the prompt names. Do NOT add extras.
+   - **NO DUPLICATES**: Each label letter (P, Q, A, B…) EXACTLY ONCE.
+   - **TYPOGRAPHY**: HUGE, BOLD, BLACK sans-serif (40px+). Letters horizontal and legible.
+4. **STYLE**: High-contrast **black** ink on **white** only. No shading, gradients, grey fills, or **any color**.
 
 Prompt: ${prompt}`;
             
@@ -1027,6 +1042,43 @@ Prompt: ${prompt}`;
     return results;
 };
 
+/**
+ * Question DB figure editor: user-described edits to an existing PNG diagram (server Gemini).
+ * Returns raw base64 (no data: prefix).
+ */
+export async function editBankFigureWithUserPrompt(
+  pngBase64OrDataUrl: string,
+  userPrompt: string,
+  imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
+): Promise<string> {
+  const trimmed = (userPrompt || '').trim();
+  if (!trimmed) {
+    throw new Error('Describe what to change in the figure.');
+  }
+  const cleaned = cleanBase64(pngBase64OrDataUrl);
+  if (!cleaned) {
+    throw new Error('No image data to edit.');
+  }
+  const instruction = `You are editing a NEET-style exam diagram: **black line art on pure white** only. No color, no grey fills, no photorealism.
+
+USER REQUEST (apply precisely, change only what they ask; keep the rest of the diagram intact unless they say otherwise):
+${trimmed}
+
+OUTPUT: One PNG image. Monochrome black strokes on #FFFFFF. Keep labels readable and leader lines clear unless the user asked to remove or change them.`;
+
+  const response = await adminGeminiGenerateContent({
+    model: imageModelId,
+    contents: {
+      parts: [{ inlineData: { mimeType: 'image/png', data: cleaned } }, { text: instruction }],
+    },
+  });
+  const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (!outputPart?.inlineData?.data) {
+    throw new Error('The model did not return an image. Try a shorter or clearer prompt.');
+  }
+  return cleanBase64(outputPart.inlineData.data);
+}
+
 export const generateCompositeFigures = async (
   prompts: string[],
   imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
@@ -1043,15 +1095,16 @@ export const generateCompositeFigures = async (
 PROMPT: ${prompt}
 
 RULES:
+0. **NO COLOR**: **Monochrome only** — black linework on pure white. **Never** use color, tinted fills, colored arrows, gradients, heatmaps, or photorealistic color. The entire figure must read as a single-hue technical line drawing.
 1. **STYLE**: Pure black ink on white. No shading, no grey. Professional textbook quality.
 2. **CLEANING**: Ensure background is 100% white. No artifacts, no watermarks.
 3. **LABELS**:
    - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested.
    - **UNLABELED DIAGRAMS**: If the prompt requires no on-image text (unlabeled / context-only), output a diagram with ZERO letters and ZERO structure names on the drawing.
-   - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part (e.g. not "P" and "Nucleus" together). Use only the exam-style marker the prompt specifies.
+   - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part. **Forbidden**: adjacent or inline prose + marker text such as "Vegetative cell P", "Generative cell Q" — output **only** "P", "Q", etc. with leader lines. Names belong in the question JSON text fields, not on the bitmap.
    - Use HUGE, BOLD, BLACK letters (A, B, C...) or numbers when labels are required.
    - **NO DUPLICATES**: Ensure every label is unique. Do not label two parts with 'A'.
-   - Draw precise leader lines only for parts that must be labeled per the prompt.
+   - **LEADER / POINTER LINES (MANDATORY FOR LABEL ITEMS)**: For every on-diagram marker the prompt names, draw a **clear pointing line** from the marker text to the correct locus — NEET-style. No floating letters.
    - **CENSORSHIP**: Do NOT write anatomical or chemical names on the image unless the prompt explicitly asks for names only (rare). Prefer single-letter or single-number markers only when the question uses them.
 4. **CLARITY**: Ensure lines are distinct and parts are easily distinguishable.`;
             

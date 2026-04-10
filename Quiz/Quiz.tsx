@@ -19,6 +19,7 @@ import InteractiveQuizSession from './components/InteractiveQuizSession';
 import StudentOnlineTestDashboard from '../Student/OnlineTest/StudentOnlineTestDashboard';
 import StudentMockTestDashboard from '../Student/MockTest/StudentMockTestDashboard';
 import SolutionViewer from '../Student/OnlineTest/SolutionViewer';
+import QuestionBankReviewWorkspace from '../Review/QuestionBankReviewWorkspace';
 import LandingPage from '../Landing/LandingPage';
 import { appShellTheme, landingTheme } from '../Landing/theme';
 import {
@@ -92,6 +93,7 @@ const VIEW_TO_SLUG: Record<DashboardView, string> = {
   reports: 'reports',
   settings: 'settings',
   admin: 'admin',
+  'question-bank-review': 'question-bank-review',
   'student-online-test': 'online-tests',
   'student-mock-test': 'mock-tests',
 };
@@ -132,6 +134,10 @@ const VIEW_SEO: Record<DashboardView, { title: string; description: string }> = 
   admin: {
     title: 'Admin',
     description: 'Admin controls for knowledge, question DB, prompts, and users.',
+  },
+  'question-bank-review': {
+    title: 'Question bank review',
+    description: 'Review hub questions, flag issues, and save notes.',
   },
   'student-online-test': {
     title: 'Student Online Tests',
@@ -1572,6 +1578,7 @@ const Quiz: React.FC = () => {
         {activeView === 'reports' && <ReportsDashboard institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} userId={session.user.id} onRefresh={refreshOrgData} />}
         {activeView === 'admin' && <AdminView appRole={appRole} userId={session.user.id} onRefreshOrg={refreshOrgData} />}
+        {activeView === 'question-bank-review' && <QuestionBankReviewWorkspace />}
         {activeView === 'student-online-test' && (
           <StudentOnlineTestDashboard
             availableTests={studentOnlineExamsOnly}

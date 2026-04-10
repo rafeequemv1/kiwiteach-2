@@ -4,9 +4,9 @@
  * Authorization for data and server routes must use Postgres (`public.is_developer()`, RLS, RPCs),
  * not the client-only allowlist below.
  */
-export type AppRole = 'developer' | 'teacher' | 'student' | 'school_admin';
+export type AppRole = 'developer' | 'teacher' | 'student' | 'school_admin' | 'reviewer';
 
-export const APP_ROLES: AppRole[] = ['developer', 'teacher', 'student', 'school_admin'];
+export const APP_ROLES: AppRole[] = ['developer', 'teacher', 'student', 'school_admin', 'reviewer'];
 
 /**
  * Optional convenience for dashboard routing / showing dev-only nav chrome.
@@ -48,6 +48,7 @@ export type DashboardView =
   | 'reports'
   | 'settings'
   | 'admin'
+  | 'question-bank-review'
   | 'student-online-test'
   | 'student-mock-test';
 
@@ -61,17 +62,22 @@ const TEACHER_VIEWS: DashboardView[] = [
   'admin',
 ];
 
+const QUESTION_BANK_REVIEW_VIEW: DashboardView = 'question-bank-review';
+
 const STUDENT_VIEWS: DashboardView[] = ['student-online-test', 'student-mock-test'];
 
 const SCHOOL_ADMIN_VIEWS: DashboardView[] = [...TEACHER_VIEWS];
 
 export function viewsAllowedForRole(role: AppRole): DashboardView[] {
   if (role === 'developer') {
-    return Array.from(new Set<DashboardView>([...TEACHER_VIEWS, ...STUDENT_VIEWS]));
+    return Array.from(
+      new Set<DashboardView>([...TEACHER_VIEWS, ...STUDENT_VIEWS, QUESTION_BANK_REVIEW_VIEW])
+    );
   }
-  if (role === 'teacher') return [...TEACHER_VIEWS];
+  if (role === 'teacher') return [...TEACHER_VIEWS, QUESTION_BANK_REVIEW_VIEW];
   if (role === 'student') return [...STUDENT_VIEWS];
-  if (role === 'school_admin') return [...SCHOOL_ADMIN_VIEWS];
+  if (role === 'school_admin') return [...SCHOOL_ADMIN_VIEWS, QUESTION_BANK_REVIEW_VIEW];
+  if (role === 'reviewer') return [QUESTION_BANK_REVIEW_VIEW];
   return STUDENT_VIEWS;
 }
 
@@ -80,6 +86,7 @@ export function canAccessView(role: AppRole, view: string): boolean {
 }
 
 export function defaultViewForRole(role: AppRole): DashboardView {
+  if (role === 'reviewer') return QUESTION_BANK_REVIEW_VIEW;
   if (role === 'student') return 'student-online-test';
   if (role === 'school_admin' || role === 'developer' || role === 'teacher') return 'overview';
   return 'student-online-test';

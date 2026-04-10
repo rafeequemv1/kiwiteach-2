@@ -32,7 +32,7 @@ type DetailTab = 'general' | 'permissions' | 'members';
 /** Matches `profiles.role` / auth — always presets, never deletable. */
 const PROFILE_ROLES = new Set<string>(APP_ROLES);
 
-const PRESET_SIDEBAR_ORDER = ['developer', 'school_admin', 'teacher', 'student'] as const;
+const PRESET_SIDEBAR_ORDER = ['developer', 'school_admin', 'teacher', 'student', 'reviewer'] as const;
 
 function isPresetRole(r: RoleRow): boolean {
   return r.is_system || PROFILE_ROLES.has(r.role_slug);
