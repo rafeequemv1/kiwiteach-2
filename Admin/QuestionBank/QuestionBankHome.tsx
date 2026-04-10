@@ -384,15 +384,34 @@ type ForgeDetailState = {
   figureUi: ForgeFigureUiState | null;
 };
 
+type NeetBankForgePersistOpts = {
+  /** KB reference strip length when saving figure-from-reference questions (0-based index into extract order). */
+  referenceSourceFigureCount?: number;
+};
+
+function resolvedSourceFigureIndexForBankRow(q: Question, referenceImageCount: number): number | null {
+  if (referenceImageCount <= 0) return null;
+  if (
+    typeof q.sourceImageIndex === 'number' &&
+    q.sourceImageIndex >= 0 &&
+    q.sourceImageIndex < referenceImageCount
+  ) {
+    return q.sourceImageIndex;
+  }
+  return 0;
+}
+
 function questionsToNeetBankRows(
   chapter: { id: string; name: string; subject_name: string; class_name: string },
   qs: Question[],
   promptSetId: string | null | undefined,
   promptGenerationSource: KbGenerationPromptSource,
   generationModelApiId: string,
-  promptSetDisplayName: string
+  promptSetDisplayName: string,
+  forgeOpts?: NeetBankForgePersistOpts
 ) {
   const modelLabel = bankLabelForTextGenerationModel(generationModelApiId);
+  const refN = forgeOpts?.referenceSourceFigureCount ?? 0;
   return qs.map((q) => ({
     chapter_id: chapter.id,
     chapter_name: chapter.name,
@@ -407,6 +426,8 @@ function questionsToNeetBankRows(
     topic_tag: q.topic_tag || 'General',
     figure_url: q.figureDataUrl,
     source_figure_url: q.sourceFigureDataUrl,
+    source_figure_index:
+      refN > 0 ? resolvedSourceFigureIndexForBankRow(q, refN) : null,
     column_a: q.columnA,
     column_b: q.columnB,
     prompt_set_id: promptSetId ?? null,
@@ -502,6 +523,11 @@ const QuestionBankHome: React.FC = () => {
   const [chapterConfigs, setChapterConfigs] = useState<Record<string, ChapterConfig>>({});
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
+  /** Hub question counts per reference figure index (from RPC; one aggregate query per chapter). */
+  const [refFigureHubCountsByIndex, setRefFigureHubCountsByIndex] = useState<Record<number, number>>({});
+  const [refFigureHubCountsLoading, setRefFigureHubCountsLoading] = useState(false);
+  const [refFigureHubCountsFailed, setRefFigureHubCountsFailed] = useState(false);
+  const [bankSourceFigureCountsTick, setBankSourceFigureCountsTick] = useState(0);
   const [forgeProgress, setForgeProgress] = useState('');
   const [forgeDetail, setForgeDetail] = useState<ForgeDetailState | null>(null);
   const forgeLogIdRef = useRef(0);
@@ -766,10 +792,9 @@ const QuestionBankHome: React.FC = () => {
 
   const activeChapterVisualMode = activeEditingChapterId ? chapterConfigs[activeEditingChapterId]?.visualMode : undefined;
 
+  /** Load KB reference bitmaps only when the active chapter uses reference-image mode (not on Figure forge + text source). */
   const shouldLoadStudioReferenceFigures =
-    mode === 'studio' &&
-    !!activeEditingChapterId &&
-    (activeChapterVisualMode === 'image' || studioWorkspaceTab === 'figure_forge');
+    mode === 'studio' && !!activeEditingChapterId && activeChapterVisualMode === 'image';
 
   useEffect(() => {
       if (mode !== 'studio') {
@@ -810,6 +835,49 @@ const QuestionBankHome: React.FC = () => {
           cancelled = true;
       };
   }, [mode, activeEditingChapterId, shouldLoadStudioReferenceFigures]);
+
+  useEffect(() => {
+    if (!activeEditingChapterId || !shouldLoadStudioReferenceFigures) {
+      setRefFigureHubCountsByIndex({});
+      setRefFigureHubCountsFailed(false);
+      setRefFigureHubCountsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setRefFigureHubCountsLoading(true);
+    setRefFigureHubCountsFailed(false);
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('qb_neet_source_figure_question_counts', {
+          p_chapter_id: activeEditingChapterId,
+        });
+        if (cancelled) return;
+        if (error) {
+          console.warn('qb_neet_source_figure_question_counts', error);
+          setRefFigureHubCountsByIndex({});
+          setRefFigureHubCountsFailed(true);
+          return;
+        }
+        const map: Record<number, number> = {};
+        const rows = (data ?? []) as { figure_index: number; question_count: number | string }[];
+        rows.forEach((row) => {
+          map[Number(row.figure_index)] = Number(row.question_count);
+        });
+        setRefFigureHubCountsByIndex(map);
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('qb_neet_source_figure_question_counts', e);
+          setRefFigureHubCountsByIndex({});
+          setRefFigureHubCountsFailed(true);
+        }
+      } finally {
+        if (!cancelled) setRefFigureHubCountsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeEditingChapterId, shouldLoadStudioReferenceFigures, bankSourceFigureCountsTick]);
 
   // ... (Syllabus and Extraction logic remains same) ...
   useEffect(() => {
@@ -1267,6 +1335,7 @@ const QuestionBankHome: React.FC = () => {
                   const pdfPath = contentRes.data?.pdf_path || chapter.pdf_path;
 
                   let chapterGeneratedQs: Question[] = [];
+                  let forgeReferenceSourceFigureCount = 0;
                   if (config.synthesisMode === 'syllabus') {
                       const enabledTopics = (Object.entries(config.topicCounts) as [string, { count: number; enabled: boolean }][]).filter(([_, tConf]) => tConf.enabled && tConf.count > 0);
                       const totalSyllabusQ = enabledTopics.reduce((acc, [, tConf]) => acc + tConf.count, 0);
@@ -1394,6 +1463,7 @@ const QuestionBankHome: React.FC = () => {
                           );
                           setForgeProgress(`${progressPrefix}: Scanning Visuals...`);
                           sourceImages = await extractChapterReferenceImages(docPath ?? null, pdfPath ?? null);
+                          forgeReferenceSourceFigureCount = sourceImages.length;
                         } else {
                           figureCount = config.syntheticFigureCount || 0;
                         }
@@ -1798,7 +1868,13 @@ const QuestionBankHome: React.FC = () => {
                       batchPromptSetId,
                       batchPromptGenerationSource,
                       selectedModel,
-                      batchPromptSetName
+                      batchPromptSetName,
+                      forgeVisualPhase === 'with_figures' &&
+                        config.synthesisMode === 'standard' &&
+                        config.visualMode === 'image' &&
+                        forgeReferenceSourceFigureCount > 0
+                        ? { referenceSourceFigureCount: forgeReferenceSourceFigureCount }
+                        : undefined
                     );
                     assertBankRowsPassLatexValidation(rows, { chapterName: String(chapter.name) });
                     const { error: insertErr } = await supabase.from('question_bank_neet').insert(rows);
@@ -1897,6 +1973,7 @@ const QuestionBankHome: React.FC = () => {
         }
         forgeRunSnapshotRef.current = [];
         if (savedToHubThisRun > 0) {
+          setBankSourceFigureCountsTick((t) => t + 1);
           void fetchQuestions();
           if (selectedChapterIds.size > 0) void fetchBulkStats(Array.from(selectedChapterIds));
           if (!suppressForgeSummaryAlert) {
@@ -2077,6 +2154,37 @@ const QuestionBankHome: React.FC = () => {
     else setActiveChapterSyllabus([]);
   };
   const handleUpdateFigureCount = (idx: number, count: number) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const nextSelected = { ...(cfg.selectedFigures || {}) }; if (count <= 0) delete nextSelected[idx]; else nextSelected[idx] = count; cfg.selectedFigures = nextSelected; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
+
+  /** Figure forge inline panel: keep MCQ-only + all Hard totals in sync with preset. */
+  const setFigureForgeActiveMcqHardTotal = useCallback((raw: number) => {
+    if (!activeEditingChapterId) return;
+    const next = Math.max(1, Math.min(500, Math.floor(Number.isFinite(raw) ? raw : 1) || 1));
+    setChapterConfigs((prev) => {
+      const base = prev[activeEditingChapterId] || {
+        total: 10,
+        diff: { easy: 0, medium: 8, hard: 2 },
+        types: { mcq: 6, reasoning: 2, matching: 1, statements: 1 },
+        visualMode: 'text' as const,
+        selectedFigures: {},
+        syntheticFigureCount: 0,
+        synthesisMode: 'standard' as const,
+        topicCounts: {},
+        syllabusDifficulty: 'Medium' as const,
+        isProportional: true,
+      };
+      return {
+        ...prev,
+        [activeEditingChapterId]: {
+          ...base,
+          synthesisMode: 'standard',
+          isProportional: false,
+          total: next,
+          diff: { easy: 0, medium: 0, hard: next },
+          types: { mcq: next, reasoning: 0, matching: 0, statements: 0 },
+        },
+      };
+    });
+  }, [activeEditingChapterId]);
   const handleTopicCountChange = (topic: string, count: number) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; cfg.topicCounts = { ...cfg.topicCounts, [topic]: { ...cfg.topicCounts[topic], count: Math.max(0, count) } }; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
   const handleTopicToggle = (topic: string) => { if (!activeEditingChapterId) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const current = cfg.topicCounts[topic]; cfg.topicCounts = { ...cfg.topicCounts, [topic]: { ...current, enabled: !current.enabled } }; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
   const handleBulkTopicsAction = (action: 'all' | 'none') => { if (!activeEditingChapterId || !activeChapterSyllabus.length) return; setChapterConfigs(prev => { const cfg = { ...prev[activeEditingChapterId!] }; const next = { ...cfg.topicCounts }; activeChapterSyllabus.forEach(t => { if (next[t]) next[t] = { ...next[t], enabled: action === 'all' }; }); cfg.topicCounts = next; return { ...prev, [activeEditingChapterId!]: cfg }; }); };
@@ -3314,7 +3422,7 @@ const QuestionBankHome: React.FC = () => {
                                       </div>
                                       <p className="mt-1.5 text-[8px] font-medium leading-snug text-zinc-500">
                                         {studioWorkspaceTab === 'figure_forge'
-                                          ? 'Left sidebar: tap a chapter to queue it (Hard MCQ + reference images). Order = forge order. Adjust per-image counts here.'
+                                          ? 'Sidebar: queue chapters (Hard MCQ defaults). Right panel: switch Reference figures vs Text as source and edit counts — no config modal.'
                                           : 'Configure chapters, models, and run text or figure batches.'}
                                       </p>
                                     </div>
@@ -3426,6 +3534,7 @@ const QuestionBankHome: React.FC = () => {
                                     </label>
                                     <div className="flex w-full min-w-0 flex-col gap-2 md:max-w-xl">
                                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-stretch">
+                                        {studioWorkspaceTab === 'overview' && (
                                         <button
                                           type="button"
                                           onClick={() => setStudioChapterConfigOpen(true)}
@@ -3433,7 +3542,8 @@ const QuestionBankHome: React.FC = () => {
                                           className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shrink-0 sm:flex-none disabled:opacity-40"
                                         >
                                           <iconify-icon icon="mdi:cog-outline" width="18" /> Config
-                                      </button>
+                                        </button>
+                                        )}
                                         {studioWorkspaceTab === 'overview' ? (
                                           <>
                                         <button
@@ -3476,7 +3586,7 @@ const QuestionBankHome: React.FC = () => {
                                               title={
                                                 figureForgeQueue.length === 0
                                                   ? 'Add chapters from the left list (Figure forge tab).'
-                                                  : 'Runs in queue order: Hard MCQ + reference figures per chapter.'
+                                                  : 'Queue order; each chapter uses its right-panel source mode (reference or text) and counts.'
                                               }
                                               className="bg-violet-700 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-violet-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 sm:flex-1 disabled:opacity-50"
                                             >
@@ -3504,9 +3614,9 @@ const QuestionBankHome: React.FC = () => {
                                           </>
                                         ) : (
                                           <>
-                                            Queue uses <strong className="text-zinc-700">Hard</strong> difficulty and{' '}
-                                            <strong className="text-zinc-700">MCQ</strong> only for newly added chapters. Edit totals
-                                            in Config if needed. Forge order follows the queue list below.
+                                            New queue chapters default to <strong className="text-zinc-700">Hard</strong> +{' '}
+                                            <strong className="text-zinc-700">MCQ</strong>. Edit source mode and totals in the right
+                                            panel. Forge order follows the list below.
                                           </>
                                         )}
                                       </p>
@@ -3583,8 +3693,8 @@ const QuestionBankHome: React.FC = () => {
                                     <div className="rounded-xl border border-violet-200 bg-white p-4 shadow-sm">
                                       <h3 className="text-[10px] font-black uppercase tracking-widest text-violet-800">Forge queue</h3>
                                       <p className="mt-1 text-[8px] font-medium text-zinc-500">
-                                        Order is preserved when you run. New chapters from the sidebar get <strong className="text-zinc-700">Hard</strong> +{' '}
-                                        <strong className="text-zinc-700">MCQ-only</strong> defaults (reference image mode).
+                                        Order is preserved when you run. New chapters default to <strong className="text-zinc-700">Hard</strong> +{' '}
+                                        <strong className="text-zinc-700">MCQ</strong> + <strong className="text-zinc-700">reference figures</strong>; use the right panel to switch to <strong className="text-zinc-700">text as source</strong>.
                                       </p>
                                       {figureForgeQueue.length === 0 ? (
                                         <p className="mt-4 py-8 text-center text-[10px] font-medium text-zinc-400">Tap chapters in the left sidebar to add.</p>
@@ -3643,79 +3753,250 @@ const QuestionBankHome: React.FC = () => {
                                       )}
                                     </div>
                                     <div className="min-h-[280px] rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-                                      <div className="flex flex-wrap items-center justify-between gap-2">
-                                        <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Reference figures</h3>
-                                        {activeEditingChapterId && (
-                                          <button
-                                            type="button"
-                                            onClick={() => setStudioChapterConfigOpen(true)}
-                                            className="text-[8px] font-black uppercase tracking-widest text-indigo-600 hover:underline"
-                                          >
-                                            Full config
-                                          </button>
-                                        )}
-                                      </div>
+                                      <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Chapter setup</h3>
                                       <p className="mt-1 truncate text-[8px] text-zinc-500">
                                         {activeEditingChapterId
                                           ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || '')
                                           : 'Select a queued chapter from the list or sidebar.'}
                                       </p>
-                                      <div className="mt-3 grid max-h-[min(56vh,520px)] grid-cols-2 gap-2 overflow-y-auto custom-scrollbar pr-1 sm:grid-cols-3">
-                                        {isExtracting ? (
-                                          <div className="col-span-full flex flex-col items-center gap-2 py-16 text-zinc-400">
-                                            <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-violet-500" />
-                                            <span className="text-[9px] font-semibold uppercase tracking-wider">Loading figures…</span>
+
+                                      {activeEditingChapterId && activeConfig ? (
+                                        <>
+                                          <div className="mt-3 flex rounded-xl border border-zinc-200 bg-zinc-100 p-1">
+                                            <button
+                                              type="button"
+                                              disabled={isForgingBatch}
+                                              onClick={() => updateActiveConfig('visualMode', null, 'image')}
+                                              className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-[8px] font-black uppercase tracking-widest transition-all sm:text-[9px] ${
+                                                activeConfig.visualMode === 'image'
+                                                  ? 'bg-white text-violet-800 shadow-sm ring-1 ring-violet-200/70'
+                                                  : 'text-zinc-500 hover:text-zinc-800'
+                                              } disabled:opacity-50`}
+                                            >
+                                              <iconify-icon icon="mdi:image-multiple-outline" width="15" />
+                                              Reference figures
+                                            </button>
+                                            <button
+                                              type="button"
+                                              disabled={isForgingBatch}
+                                              onClick={() => updateActiveConfig('visualMode', null, 'text')}
+                                              className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-[8px] font-black uppercase tracking-widest transition-all sm:text-[9px] ${
+                                                activeConfig.visualMode === 'text'
+                                                  ? 'bg-white text-emerald-800 shadow-sm ring-1 ring-emerald-200/70'
+                                                  : 'text-zinc-500 hover:text-zinc-800'
+                                              } disabled:opacity-50`}
+                                            >
+                                              <iconify-icon icon="mdi:text-box-outline" width="15" />
+                                              Text as source
+                                            </button>
                                           </div>
-                                        ) : extractedFigures.length > 0 && activeConfig ? (
-                                          extractedFigures.map((fig, idx) => {
-                                            const count = activeConfig.selectedFigures?.[idx] || 0;
-                                            return (
-                                              <div
-                                                key={idx}
-                                                className={`relative flex flex-col overflow-hidden rounded-xl border-2 bg-white ${
-                                                  count > 0 ? 'border-violet-500 shadow-sm' : 'border-zinc-100'
-                                                }`}
-                                              >
-                                                <div className="flex max-h-[140px] min-h-[100px] items-center justify-center bg-white">
-                                                  <img
-                                                    src={`data:${fig.mimeType};base64,${fig.data}`}
-                                                    alt=""
-                                                    className="max-h-[132px] w-full object-contain"
-                                                  />
-                                                </div>
-                                                <span className="border-t border-zinc-100 bg-zinc-50 py-0.5 text-center text-[7px] font-bold uppercase text-zinc-400">
-                                                  #{idx + 1}
-                                                </span>
-                                                <div className="flex items-center justify-center gap-1 border-t border-zinc-100 bg-white py-1">
+                                          <p className="mt-1.5 text-[7px] font-medium leading-snug text-zinc-500">
+                                            <strong className="text-zinc-700">Text as source</strong> — chapter text + synthetic diagrams.{' '}
+                                            <strong className="text-zinc-700">Reference figures</strong> — KB images and per-thumb counts below.
+                                          </p>
+
+                                          {activeConfig.visualMode === 'text' ? (
+                                            <div className="mt-3 space-y-3 rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                                              <div>
+                                                <label className="text-[8px] font-black uppercase tracking-wide text-zinc-600">
+                                                  Total questions (Hard MCQ)
+                                                </label>
+                                                <div className="mt-1 flex items-center rounded-lg border border-zinc-200 bg-white">
                                                   <button
                                                     type="button"
-                                                    onClick={() => handleUpdateFigureCount(idx, count - 1)}
-                                                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                                                    disabled={isForgingBatch}
+                                                    onClick={() => setFigureForgeActiveMcqHardTotal(activeConfig.total - 1)}
+                                                    className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
                                                   >
-                                                    <iconify-icon icon="mdi:minus" width="16" />
+                                                    <iconify-icon icon="mdi:minus" width="18" />
                                                   </button>
-                                                  <span className="min-w-[1.5rem] text-center text-[11px] font-black text-violet-700">
-                                                    {count}
-                                                  </span>
+                                                  <input
+                                                    type="number"
+                                                    min={1}
+                                                    max={500}
+                                                    disabled={isForgingBatch}
+                                                    value={activeConfig.total}
+                                                    onChange={(e) => setFigureForgeActiveMcqHardTotal(parseInt(e.target.value, 10))}
+                                                    className="min-w-0 flex-1 border-0 bg-transparent py-1 text-center text-sm font-black text-emerald-900 outline-none"
+                                                  />
                                                   <button
                                                     type="button"
-                                                    onClick={() => handleUpdateFigureCount(idx, count + 1)}
-                                                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                                                    disabled={isForgingBatch}
+                                                    onClick={() => setFigureForgeActiveMcqHardTotal(activeConfig.total + 1)}
+                                                    className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
                                                   >
-                                                    <iconify-icon icon="mdi:plus" width="16" />
+                                                    <iconify-icon icon="mdi:plus" width="18" />
                                                   </button>
                                                 </div>
                                               </div>
-                                            );
-                                          })
-                                        ) : (
-                                          <div className="col-span-full py-12 text-center text-[10px] font-medium text-zinc-400">
-                                            {activeEditingChapterId
-                                              ? 'No reference images for this chapter. Add DOCX/PDF figures in the knowledge base.'
-                                              : 'Choose a chapter from the queue or sidebar.'}
-                                          </div>
-                                        )}
-                                      </div>
+                                              <div>
+                                                <label className="text-[8px] font-black uppercase tracking-wide text-zinc-600">
+                                                  Synthetic figure slots
+                                                </label>
+                                                <p className="mb-1 text-[7px] font-medium text-zinc-500">
+                                                  Prompt-only diagrams (image model batch; no KB bitmap).
+                                                </p>
+                                                <div className="flex items-center rounded-lg border border-zinc-200 bg-white">
+                                                  <button
+                                                    type="button"
+                                                    disabled={isForgingBatch}
+                                                    onClick={() =>
+                                                      updateActiveConfig(
+                                                        'syntheticFigureCount',
+                                                        null,
+                                                        Math.max(0, (activeConfig.syntheticFigureCount || 0) - 1)
+                                                      )
+                                                    }
+                                                    className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
+                                                  >
+                                                    <iconify-icon icon="mdi:minus" width="18" />
+                                                  </button>
+                                                  <input
+                                                    type="number"
+                                                    min={0}
+                                                    max={100}
+                                                    disabled={isForgingBatch}
+                                                    value={activeConfig.syntheticFigureCount || 0}
+                                                    onChange={(e) =>
+                                                      updateActiveConfig(
+                                                        'syntheticFigureCount',
+                                                        null,
+                                                        Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0))
+                                                      )
+                                                    }
+                                                    className="min-w-0 flex-1 border-0 bg-transparent py-1 text-center text-sm font-black text-emerald-900 outline-none"
+                                                  />
+                                                  <button
+                                                    type="button"
+                                                    disabled={isForgingBatch}
+                                                    onClick={() =>
+                                                      updateActiveConfig(
+                                                        'syntheticFigureCount',
+                                                        null,
+                                                        Math.min(100, (activeConfig.syntheticFigureCount || 0) + 1)
+                                                      )
+                                                    }
+                                                    className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
+                                                  >
+                                                    <iconify-icon icon="mdi:plus" width="18" />
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <>
+                                              <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                                                <label className="text-[8px] font-black uppercase tracking-wide text-zinc-600">
+                                                  Total questions (Hard MCQ)
+                                                </label>
+                                                <div className="mt-1 flex items-center rounded-lg border border-zinc-200 bg-white">
+                                                  <button
+                                                    type="button"
+                                                    disabled={isForgingBatch}
+                                                    onClick={() => setFigureForgeActiveMcqHardTotal(activeConfig.total - 1)}
+                                                    className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
+                                                  >
+                                                    <iconify-icon icon="mdi:minus" width="18" />
+                                                  </button>
+                                                  <input
+                                                    type="number"
+                                                    min={1}
+                                                    max={500}
+                                                    disabled={isForgingBatch}
+                                                    value={activeConfig.total}
+                                                    onChange={(e) => setFigureForgeActiveMcqHardTotal(parseInt(e.target.value, 10))}
+                                                    className="min-w-0 flex-1 border-0 bg-transparent py-1 text-center text-sm font-black text-violet-900 outline-none"
+                                                  />
+                                                  <button
+                                                    type="button"
+                                                    disabled={isForgingBatch}
+                                                    onClick={() => setFigureForgeActiveMcqHardTotal(activeConfig.total + 1)}
+                                                    className="flex h-9 w-9 shrink-0 items-center justify-center text-zinc-500 hover:bg-zinc-50"
+                                                  >
+                                                    <iconify-icon icon="mdi:plus" width="18" />
+                                                  </button>
+                                                </div>
+                                                <p className="mt-1 text-[7px] font-medium text-zinc-500">
+                                                  Use +/- on each thumbnail for how many questions use that reference.
+                                                </p>
+                                              </div>
+                                              {refFigureHubCountsFailed && (
+                                                <p className="mt-2 text-[7px] font-medium leading-snug text-amber-700">
+                                                  Per-figure hub counts need the latest DB migration (or the request failed). Tags are hidden until counts load.
+                                                </p>
+                                              )}
+                                              <div className="mt-3 grid max-h-[min(56vh,520px)] grid-cols-2 gap-2 overflow-y-auto custom-scrollbar pr-1 sm:grid-cols-3">
+                                                {isExtracting ? (
+                                                  <div className="col-span-full flex flex-col items-center gap-2 py-16 text-zinc-400">
+                                                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-violet-500" />
+                                                    <span className="text-[9px] font-semibold uppercase tracking-wider">Loading figures…</span>
+                                                  </div>
+                                                ) : extractedFigures.length > 0 ? (
+                                                  extractedFigures.map((fig, idx) => {
+                                                    const count = activeConfig.selectedFigures?.[idx] || 0;
+                                                    const hubN = refFigureHubCountsByIndex[idx] ?? 0;
+                                                    return (
+                                                      <div
+                                                        key={idx}
+                                                        className={`relative flex flex-col overflow-hidden rounded-xl border-2 bg-white ${
+                                                          count > 0 ? 'border-violet-500 shadow-sm' : 'border-zinc-100'
+                                                        }`}
+                                                      >
+                                                        {!refFigureHubCountsFailed && (
+                                                          <span
+                                                            className="absolute left-1 top-1 z-10 rounded-md bg-violet-950/90 px-1.5 py-0.5 text-[6px] font-black uppercase tracking-wide text-violet-100 shadow-sm pointer-events-none"
+                                                            title="Questions in the hub generated from this reference figure"
+                                                          >
+                                                            {refFigureHubCountsLoading ? '…' : `${hubN} in hub`}
+                                                          </span>
+                                                        )}
+                                                        <div className="flex max-h-[140px] min-h-[100px] items-center justify-center bg-white">
+                                                          <img
+                                                            src={`data:${fig.mimeType};base64,${fig.data}`}
+                                                            alt=""
+                                                            className="max-h-[132px] w-full object-contain"
+                                                          />
+                                                        </div>
+                                                        <span className="border-t border-zinc-100 bg-zinc-50 py-0.5 text-center text-[7px] font-bold uppercase text-zinc-400">
+                                                          #{idx + 1}
+                                                        </span>
+                                                        <div className="flex items-center justify-center gap-1 border-t border-zinc-100 bg-white py-1">
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => handleUpdateFigureCount(idx, count - 1)}
+                                                            className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                                                          >
+                                                            <iconify-icon icon="mdi:minus" width="16" />
+                                                          </button>
+                                                          <span className="min-w-[1.5rem] text-center text-[11px] font-black text-violet-700">
+                                                            {count}
+                                                          </span>
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => handleUpdateFigureCount(idx, count + 1)}
+                                                            className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                                                          >
+                                                            <iconify-icon icon="mdi:plus" width="16" />
+                                                          </button>
+                                                        </div>
+                                                      </div>
+                                                    );
+                                                  })
+                                                ) : (
+                                                  <div className="col-span-full py-12 text-center text-[10px] font-medium text-zinc-400">
+                                                    No reference images for this chapter. Add DOCX/PDF figures in the knowledge base, or switch to{' '}
+                                                    <strong className="text-zinc-600">Text as source</strong>.
+                                                  </div>
+                                                )}
+                                              </div>
+                                            </>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <div className="mt-6 py-10 text-center text-[10px] font-medium text-zinc-400">
+                                          Choose a chapter from the queue or sidebar to set source mode and counts.
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                   </>
@@ -4196,6 +4477,11 @@ const QuestionBankHome: React.FC = () => {
                                                             <p className="text-[8px] font-medium text-zinc-500 px-0.5 leading-relaxed">
                                                               From DOCX embeds, or PDF pages if the chapter has no DOCX images. Toggle Reference Image again to reload.
                                                             </p>
+                                                            {refFigureHubCountsFailed && (
+                                                              <p className="text-[7px] font-medium text-amber-700 px-0.5 leading-snug">
+                                                                Per-figure hub counts unavailable (apply DB migration or retry). Tags hidden until counts load.
+                                                              </p>
+                                                            )}
                                                             <div className="grid grid-cols-2 gap-3 max-h-[min(420px,55vh)] overflow-y-auto custom-scrollbar pr-2 p-2 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
                                                               {isExtracting ? (
                                                                 <div className="col-span-2 flex flex-col items-center justify-center py-14 gap-3 text-zinc-400">
@@ -4205,11 +4491,20 @@ const QuestionBankHome: React.FC = () => {
                                                               ) : extractedFigures.length > 0 ? (
                                                                 extractedFigures.map((fig, idx) => {
                                                                   const count = activeConfig.selectedFigures?.[idx] || 0;
+                                                                  const hubN = refFigureHubCountsByIndex[idx] ?? 0;
                                                                   return (
                                                                     <div
                                                                       key={idx}
                                                                       className={`relative group flex flex-col bg-white border-2 rounded-2xl overflow-hidden transition-all min-h-0 ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-zinc-100'}`}
                                                                     >
+                                                                      {!refFigureHubCountsFailed && (
+                                                                        <span
+                                                                          className="absolute left-1.5 top-1.5 z-30 rounded-md bg-zinc-900/90 px-1.5 py-0.5 text-[6px] font-black uppercase tracking-wide text-white shadow-sm pointer-events-none"
+                                                                          title="Questions in the hub generated from this reference figure"
+                                                                        >
+                                                                          {refFigureHubCountsLoading ? '…' : `${hubN} in hub`}
+                                                                        </span>
+                                                                      )}
                                                                       <div className="relative w-full bg-white flex items-center justify-center min-h-[140px] max-h-[220px]">
                                                                         <img
                                                                           src={`data:${fig.mimeType};base64,${fig.data}`}
@@ -4220,7 +4515,7 @@ const QuestionBankHome: React.FC = () => {
                                                                       <span className="text-[7px] font-bold text-zinc-400 uppercase tracking-wider text-center py-1 border-t border-zinc-100 bg-zinc-50/80">
                                                                         #{idx + 1}
                                                                       </span>
-                                                                      <div className="absolute inset-0 bg-zinc-900/0 group-hover:bg-zinc-900/30 transition-all flex items-center justify-center gap-2 pointer-events-none group-hover:pointer-events-auto">
+                                                                      <div className="absolute inset-0 z-10 bg-zinc-900/0 group-hover:bg-zinc-900/30 transition-all flex items-center justify-center gap-2 pointer-events-none group-hover:pointer-events-auto">
                                                                         <button
                                                                           type="button"
                                                                           onClick={() => handleUpdateFigureCount(idx, count - 1)}
