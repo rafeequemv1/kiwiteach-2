@@ -36,6 +36,8 @@ export default defineConfig(({ mode }) => {
   },
   build: {
     outDir: 'dist',
+    /** Default 500 kB; app bundles KaTeX, PDF.js, charts, etc. — avoids noisy Vercel/Vite chunk warnings. */
+    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       input: {
         main: './index.html'
