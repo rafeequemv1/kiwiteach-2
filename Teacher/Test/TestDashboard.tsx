@@ -147,14 +147,36 @@ function computeTestStatus(t: Test): TestStatus {
   return 'generated';
 }
 
+/** Local calendar day as YYYY-MM-DD (avoids UTC-only drift from toISOString for “today”). */
+function ymdLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * When dropping a card on “Scheduled”, use an existing future/today date if any;
+ * if the test was completed (past date) or has no date, schedule for today so it leaves Completed.
+ */
+function resolveScheduleYmdForKanbanScheduledColumn(test: Test): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (!test.scheduledAt) return ymdLocal(new Date());
+  const d = new Date(test.scheduledAt);
+  if (Number.isNaN(d.getTime())) return ymdLocal(new Date());
+  d.setHours(0, 0, 0, 0);
+  if (d < today) return ymdLocal(new Date());
+  return ymdLocal(d);
+}
+
 type BoardOptimisticEntry = { patch: Partial<Test>; targetColumn: TestStatus };
 
 function buildKanbanPatch(test: Test, target: TestStatus): Partial<Test> {
   if (target === 'draft') return { status: 'draft', scheduledAt: null, evaluationPending: false };
   if (target === 'pending_evaluation') return { evaluationPending: true };
   if (target === 'scheduled') {
-    const date = test.scheduledAt ? new Date(test.scheduledAt) : new Date();
-    const iso = date.toISOString().split('T')[0];
+    const iso = resolveScheduleYmdForKanbanScheduledColumn(test);
     return { status: 'scheduled', scheduledAt: new Date(iso).toISOString(), evaluationPending: false };
   }
   if (target === 'completed') {
@@ -291,6 +313,12 @@ const TestsCalendarDemo: React.FC<{
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
   const [dragOverDayKey, setDragOverDayKey] = useState<string | null>(null);
 
+  useEffect(() => {
+    const onEnd = () => setDragOverDayKey(null);
+    window.addEventListener('dragend', onEnd);
+    return () => window.removeEventListener('dragend', onEnd);
+  }, []);
+
   const toYmd = (date: Date) => {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -386,6 +414,31 @@ const TestsCalendarDemo: React.FC<{
               }
               const list = testsByDay.get(dayKey(cell.date)) || [];
               const key = dayKey(cell.date);
+              /** Children must call preventDefault on dragover or the browser won’t drop on that target (highlight vs actual drop day diverged). */
+              const innerDayDragHandlers: Pick<
+                React.HTMLAttributes<HTMLElement>,
+                'onDragEnter' | 'onDragOver' | 'onDrop'
+              > = {
+                onDragEnter: (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setDragOverDayKey(key);
+                },
+                onDragOver: (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'move';
+                  setDragOverDayKey(key);
+                },
+                onDrop: (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const payload = parseTestDragPayload(e);
+                  setDragOverDayKey(null);
+                  if (!payload) return;
+                  onDropToDate(payload.id, key);
+                },
+              };
               return (
                 <div
                   key={ci}
@@ -411,7 +464,7 @@ const TestsCalendarDemo: React.FC<{
                     const payload = parseTestDragPayload(e);
                     setDragOverDayKey(null);
                     if (!payload) return;
-                    onDropToDate(payload.id, dayKey(cell.date!));
+                    onDropToDate(payload.id, key);
                   }}
                   className={`min-h-[88px] border-r border-zinc-100 p-1 last:border-r-0 ${
                     dragOverDayKey === key ? 'bg-sky-50 ring-1 ring-inset ring-sky-300' : 'bg-white'
@@ -420,6 +473,7 @@ const TestsCalendarDemo: React.FC<{
                   <div className="flex items-center justify-between gap-2">
                     <button
                       type="button"
+                      {...innerDayDragHandlers}
                       onClick={(e) => {
                         e.stopPropagation();
                         onAddAtDate(dayKey(cell.date!));
@@ -430,7 +484,12 @@ const TestsCalendarDemo: React.FC<{
                     >
                       +
                     </button>
-                    <div className="text-right text-xs font-medium text-zinc-600">{cell.day}</div>
+                    <div
+                      className="text-right text-xs font-medium text-zinc-600"
+                      {...innerDayDragHandlers}
+                    >
+                      {cell.day}
+                    </div>
                   </div>
                   <div className="mt-1 space-y-0.5">
                     {list.slice(0, 3).map(({ test: t, kind }) => {
@@ -445,6 +504,7 @@ const TestsCalendarDemo: React.FC<{
                           type="button"
                           draggable
                           onDragStart={(e) => setTestDragPayload(e, t.id)}
+                          {...innerDayDragHandlers}
                           onClick={(e) => {
                             e.stopPropagation();
                             onTestClick(t);
@@ -461,7 +521,9 @@ const TestsCalendarDemo: React.FC<{
                       );
                     })}
                     {list.length > 3 && (
-                      <p className="text-[9px] text-zinc-400">+{list.length - 3} more</p>
+                      <p className="text-[9px] text-zinc-400" {...innerDayDragHandlers}>
+                        +{list.length - 3} more
+                      </p>
                     )}
                   </div>
                 </div>
@@ -705,8 +767,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
       }
 
       if (target === 'scheduled') {
-        const date = test.scheduledAt ? new Date(test.scheduledAt) : new Date();
-        const iso = date.toISOString().split('T')[0];
+        const iso = resolveScheduleYmdForKanbanScheduledColumn(test);
         setOptimisticOverrides((o) => ({ ...o, [test.id]: new Date(iso).toISOString() }));
         onScheduleTest(test.id, iso);
         return;
@@ -745,8 +806,7 @@ const TestDashboard: React.FC<TestDashboardProps> = ({
         return n;
       });
     } else if (target === 'scheduled') {
-      const date = display.scheduledAt ? new Date(display.scheduledAt) : new Date();
-      const iso = date.toISOString().split('T')[0];
+      const iso = resolveScheduleYmdForKanbanScheduledColumn(display);
       setOptimisticOverrides((o) => ({ ...o, [testId]: new Date(iso).toISOString() }));
     } else if (target === 'completed') {
       const d = new Date();

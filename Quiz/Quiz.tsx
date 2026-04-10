@@ -246,6 +246,8 @@ const Quiz: React.FC = () => {
   const [isLoadingTest, setIsLoadingTest] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(''); // New state for loading text
   const fetchingRef = useRef(false);
+  /** If true, run another forced workspace fetch right after the in-flight one finishes (avoids skipping refresh after save). */
+  const workspaceForceAfterCurrentRef = useRef(false);
   /** Org class id → bank question UUIDs already used this tab session (enforces no-repeat before/without sync). */
   const classScopedSessionUsedRef = useRef<Map<string, Set<string>>>(new Map());
   const lastFetchTime = useRef<number>(0);
@@ -550,7 +552,11 @@ const Quiz: React.FC = () => {
 
   const fetchWorkspace = async (currentUser?: any, force?: boolean) => {
     const now = Date.now();
-    if (fetchingRef.current || (!force && now - lastFetchTime.current < 2000)) return;
+    if (fetchingRef.current) {
+      if (force) workspaceForceAfterCurrentRef.current = true;
+      return;
+    }
+    if (!force && now - lastFetchTime.current < 2000) return;
 
     fetchingRef.current = true;
     lastFetchTime.current = now;
@@ -660,9 +666,13 @@ const Quiz: React.FC = () => {
         const rootFolders: Folder[] = [];
         folderMap.forEach(f => { if (f.parent_id && folderMap.has(f.parent_id)) { folderMap.get(f.parent_id).children.push(f); } else rootFolders.push(f); });
         setFolders(rootFolders);
-    } finally { 
-        setIsLoadingWorkspace(false); 
-        fetchingRef.current = false; 
+    } finally {
+      setIsLoadingWorkspace(false);
+      fetchingRef.current = false;
+      if (workspaceForceAfterCurrentRef.current) {
+        workspaceForceAfterCurrentRef.current = false;
+        void fetchWorkspace(currentUser ?? session?.user, true);
+      }
     }
   };
 
