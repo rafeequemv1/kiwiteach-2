@@ -1761,7 +1761,7 @@ const QuestionBankHome: React.FC = () => {
                                     }
                                   : p
                               );
-                              const prompts = groupQs.map((q) => q.figurePrompt!).filter(Boolean);
+                              const prompts = groupQs.map((q) => (q.figurePrompt || '').trim());
                               const images = await generateCompositeStyleVariants(
                                 sourceImg.data,
                                 sourceImg.mimeType,

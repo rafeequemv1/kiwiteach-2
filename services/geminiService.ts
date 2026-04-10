@@ -12,6 +12,7 @@ import {
   scaleTypeWeightsToTotal,
 } from "./forgeSourceChunking";
 import { getReferenceLayerBlock } from "./neetReferenceLayer";
+import { splitBase64ImageTo4x4Grid } from "../utils/splitImageGrid4x4";
 import * as pdfjs from "pdfjs-dist";
 
 declare const mammoth: any;
@@ -979,6 +980,164 @@ ${figureCount > 0 ? '- For diagram items: vary what is being tested (different s
 /** Default for Neural Studio figure pipeline; override via Admin image-model selector. */
 export const COMPOSITE_IMAGE_MODEL_DEFAULT = 'gemini-3-pro-image-preview' as const;
 
+/** One image API call per up to 16 figures; client splits a uniform 4×4 grid (square canvas → square cells). */
+const FIGURE_GRID_CELLS = 16;
+
+const GRID_LAYOUT_PREAMBLE = `LAYOUT (MANDATORY — UNIFORM 4×4 BATCHING):
+- Output exactly **one** raster image.
+- Canvas must be **square** (image width = image height) so each grid cell is **square** and identical in aspect ratio across all batches.
+- Divide the canvas into exactly **4 columns × 4 rows** = **16 cells** of **equal** size (same pixel width and height for every cell).
+- **Row-major cell index**: cell 1 = top-left corner, 2 = immediately to the right, … 4 = top-right, 5 = start of second row (left), … **16 = bottom-right**.
+- Leave a thin white gutter between adjacent cells. **No diagram, line, or label may cross** from one cell into another.
+- For any cell marked "unused" below: fill with solid **#FFFFFF** only — no strokes, no text, no marks.`;
+
+const SYNTHETIC_FIGURE_RULES = `NEET EXAM STYLE — applies to every non-empty cell:
+0. **NO COLOR**: **Monochrome only** — black linework on pure white. **Never** use color, tinted fills, colored arrows, gradients, heatmaps, or photorealistic color.
+1. **STYLE**: Pure black ink on white. No shading, no grey. Professional textbook quality.
+2. **CLEANING**: Cell background 100% white. No artifacts, no watermarks.
+3. **LABELS**:
+   - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested.
+   - **UNLABELED DIAGRAMS**: If the prompt requires no on-image text, draw ZERO letters and ZERO structure names in that cell.
+   - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part.
+   - Use HUGE, BOLD, BLACK letters (A, B, C…) or numbers when labels are required.
+   - **NO DUPLICATES** within a cell: do not label two parts with the same letter.
+   - **LEADER / POINTER LINES** for every on-diagram marker the prompt names.
+4. **CLARITY**: Lines distinct; parts easily distinguishable within the cell.`;
+
+const REFERENCE_TRACE_RULES = `CRITICAL — NO COLOR: Output **only** monochrome line art: **black strokes on pure white**. If the source is in color, **discard all chroma**.
+
+EXECUTION RULES (STRICT FIDELITY — per cell that uses the SOURCE):
+0. **NO LAYOUT / TOPOLOGY EDITS**: Match the source diagram’s **geometry** in that cell — same arrangement and proportions. **Forbidden**: rearranging the scene or merging panels. **Allowed**: clean black-on-white line art, remove watermarks/noise, erase old printed words, apply the cell prompt’s labels with **leader lines ending at the same loci** as the source.
+1. **TRACING / POINTERS**: Keep leader lines in the **same position and angle** as the original where applicable; **text swap only** for new markers.
+2. **CLEANING**: Pure white (#FFFFFF) background; remove watermarks; remove original printed labels before adding prompt-specified markers.
+3. **LABELING**: Same exclusivity, no dual labeling, pointers required, huge bold black markers, no duplicates within the cell.
+4. **STYLE**: Black on white only; no shading or grey fills.`;
+
+function padFigureChunk(chunk: string[]): string[] {
+  const padded = chunk.slice(0, FIGURE_GRID_CELLS);
+  while (padded.length < FIGURE_GRID_CELLS) padded.push('');
+  return padded;
+}
+
+function buildSyntheticGridCellSpecs(padded: string[]): string {
+  return padded
+    .map((raw, i) => {
+      const n = i + 1;
+      const p = (raw || '').trim();
+      if (!p) {
+        return `CELL ${n} (UNUSED): Solid #FFFFFF only. No lines, no text, no marks.`;
+      }
+      return `CELL ${n} (ACTIVE — draw ONLY inside this cell; content must not spill past the cell boundary):\n${p}`;
+    })
+    .join('\n\n');
+}
+
+function buildReferenceGridCellSpecs(padded: string[]): string {
+  return padded
+    .map((raw, i) => {
+      const n = i + 1;
+      const p = (raw || '').trim();
+      if (!p) {
+        return `CELL ${n} (UNUSED): Solid #FFFFFF only. No lines, no text, no marks.`;
+      }
+      return `CELL ${n} (ACTIVE — use the attached SOURCE image as geometric reference; produce one independent NEET-style diagram in this cell only, following):\n${p}`;
+    })
+    .join('\n\n');
+}
+
+async function generateOneSyntheticFigure(prompt: string, imageModelId: string): Promise<string> {
+  const instruction = `TASK: Generate a high-precision "NEET Exam Style" black-and-white line diagram.
+
+PROMPT: ${prompt}
+
+${SYNTHETIC_FIGURE_RULES}`;
+  const response = await adminGeminiGenerateContent({
+    model: imageModelId,
+    contents: { parts: [{ text: instruction }] },
+  });
+  const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (!outputPart?.inlineData?.data) return '';
+  return cleanBase64(outputPart.inlineData.data);
+}
+
+async function runSyntheticGridBatch(
+  chunk: string[],
+  imageModelId: string
+): Promise<string[]> {
+  const padded = padFigureChunk(chunk);
+  const instruction = `${GRID_LAYOUT_PREAMBLE}
+
+TASK: Produce one batched sheet: each ACTIVE cell below contains its own separate diagram. Follow the rules for every active cell.
+
+${SYNTHETIC_FIGURE_RULES}
+
+${buildSyntheticGridCellSpecs(padded)}`;
+
+  const response = await adminGeminiGenerateContent({
+    model: imageModelId,
+    contents: { parts: [{ text: instruction }] },
+  });
+  const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (!outputPart?.inlineData?.data) {
+    throw new Error('Gemini did not return an image for synthetic 4×4 batch');
+  }
+  const mime = outputPart.inlineData.mimeType || 'image/png';
+  const data = cleanBase64(outputPart.inlineData.data);
+  const cells = await splitBase64ImageTo4x4Grid(data, mime);
+  return chunk.map((raw, i) => ((raw || '').trim() ? cells[i] || '' : ''));
+}
+
+async function generateOneReferenceVariant(
+  prompt: string,
+  cleanedSource: string,
+  sourceMimeType: string,
+  imageModelId: string
+): Promise<string> {
+  const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
+  const instruction = `TASK: Create a professional "NEET Exam Style" black-and-white line diagram based on the source image.
+
+${REFERENCE_TRACE_RULES}
+
+Prompt: ${prompt}`;
+  const response = await adminGeminiGenerateContent({
+    model: imageModelId,
+    contents: { parts: [imagePart, { text: instruction }] },
+  });
+  const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (!outputPart?.inlineData?.data) return '';
+  return cleanBase64(outputPart.inlineData.data);
+}
+
+async function runReferenceGridBatch(
+  chunk: string[],
+  cleanedSource: string,
+  sourceMimeType: string,
+  imageModelId: string
+): Promise<string[]> {
+  const padded = padFigureChunk(chunk);
+  const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
+  const instruction = `${GRID_LAYOUT_PREAMBLE}
+
+TASK: The first attachment is the SOURCE reference. Output **one** square image with a 4×4 grid. For each ACTIVE cell, produce **one** independent diagram derived from the source geometry and that cell’s instructions. Unused cells stay pure white.
+
+${REFERENCE_TRACE_RULES}
+
+${buildReferenceGridCellSpecs(padded)}`;
+
+  const response = await adminGeminiGenerateContent({
+    model: imageModelId,
+    contents: { parts: [imagePart, { text: instruction }] },
+  });
+  const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (!outputPart?.inlineData?.data) {
+    throw new Error('Gemini did not return an image for reference 4×4 batch');
+  }
+  const mime = outputPart.inlineData.mimeType || 'image/png';
+  const data = cleanBase64(outputPart.inlineData.data);
+  const cells = await splitBase64ImageTo4x4Grid(data, mime);
+  return chunk.map((raw, i) => ((raw || '').trim() ? cells[i] || '' : ''));
+}
+
 export const generateCompositeStyleVariants = async (
   sourceBase64: string,
   sourceMimeType: string,
@@ -986,60 +1145,44 @@ export const generateCompositeStyleVariants = async (
   useAsIs: boolean = false,
   imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
 ): Promise<string[]> => {
-    const results: string[] = [];
-    const cleanedSource = cleanBase64(sourceBase64);
-    if (!cleanedSource) return [];
+  const cleanedSource = cleanBase64(sourceBase64);
+  if (!cleanedSource) return prompts.map(() => '');
 
-    for (const prompt of prompts) {
-        if (!prompt) {
-            results.push("");
-            continue;
+  if (useAsIs) {
+    return prompts.map((p) => ((p || '').trim() ? cleanedSource : ''));
+  }
+
+  const results: string[] = [];
+
+  for (let start = 0; start < prompts.length; start += FIGURE_GRID_CELLS) {
+    const chunk = prompts.slice(start, start + FIGURE_GRID_CELLS);
+    const hasWork = chunk.some((p) => (p || '').trim());
+    if (!hasWork) {
+      results.push(...chunk.map(() => ''));
+      continue;
+    }
+    try {
+      const batch = await runReferenceGridBatch(chunk, cleanedSource, sourceMimeType, imageModelId);
+      results.push(...batch);
+    } catch (e) {
+      console.warn('[figures] 4×4 reference batch failed, using single-image fallback:', e);
+      for (const p of chunk) {
+        const t = (p || '').trim();
+        if (!t) {
+          results.push('');
+          continue;
         }
         try {
-            const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
-            const instruction = `TASK: Create a professional "NEET Exam Style" black-and-white line diagram based on the source image.
-
-CRITICAL — NO COLOR: Output **only** monochrome line art: **black strokes on pure white**. **Forbidden**: any color, colored lines or arrows, filled color regions, gradients, pastel tints, false-color styling, or photorealistic color. If the source image is in color, **discard all chroma** and redraw as black linework only.
-
-EXECUTION RULES (STRICT FIDELITY — REPRODUCE, DO NOT RE-INVENT):
-0. **NO LAYOUT / TOPOLOGY EDITS**: Match the source diagram’s **geometry** — same structures, bonds, cells, organs, axes, and panels in the **same arrangement and proportions**. **Forbidden**: adding or removing drawn elements, rearranging the scene, simplifying pathways, merging panels, or “artistic” redrawing that changes shape. **Allowed**: converting to clean black-on-white line art, removing watermarks/scan noise, erasing old printed words, and applying the prompt’s exam labels while **each leader line still terminates at the same target** as in the source.
-1. **TRACING MODE — POINTER PRESERVATION**: 
-   - Trace structures exactly as they appear in the source. 
-   - **CRITICAL**: Keep leader lines (pointing lines) in the **same position and angle** as the original; they must terminate at the **same loci**.
-   - **TEXT SWAP ONLY**: Where the prompt supplies new markers, replace text at line ends — do not move the lines to “improve” the layout.
-2. **CLEANING PHASE**: 
-   - **REMOVE WATERMARKS**: Erase faint logos or overlay text. Background must be pure white (#FFFFFF).
-   - **REMOVE ORIGINAL TEXT**: Erase ALL pre-existing printed labels from the source before adding prompt-specified markers.
-   - **AGGRESSIVE WHITENING**: Treat light grey noise as white where appropriate.
-3. **LABELING PHASE**:
-   - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested. Ignore unrelated labels from the source.
-   - **CONTEXT-ONLY / UNLABELED**: If the prompt says "unlabeled", "no labels", "no text on the diagram", or equivalent, draw ZERO text on the image.
-   - **NO DUAL LABELING**: Never place both a marker (P, Q, A–D) and a full structure name on the same pointer. **Never** print combined captions like "Vegetative cell P" or "Nucleus Q" — **only** the single letter/number at the line end.
-   - **POINTER LINES REQUIRED FOR MARKERS**: For every letter/number the prompt places on the diagram, include a **clear leader line** from the marker to the correct part (NEET-style).
-   - **STRICT MINIMALISM**: Only add labels the prompt names. Do NOT add extras.
-   - **NO DUPLICATES**: Each label letter (P, Q, A, B…) EXACTLY ONCE.
-   - **TYPOGRAPHY**: HUGE, BOLD, BLACK sans-serif (40px+). Letters horizontal and legible.
-4. **STYLE**: High-contrast **black** ink on **white** only. No shading, gradients, grey fills, or **any color**.
-
-Prompt: ${prompt}`;
-            
-            const response = await adminGeminiGenerateContent({
-                model: imageModelId,
-                contents: { parts: [imagePart, { text: instruction }] },
-            });
-            const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
-            if (outputPart?.inlineData?.data) {
-                results.push(cleanBase64(outputPart.inlineData.data));
-            } else {
-                console.warn("Gemini did not return an image for redraw prompt:", prompt);
-                results.push("");
-            }
-        } catch (e: any) { 
-            console.error("Visual Synthesis Error:", e);
-            results.push("");
+          results.push(
+            await generateOneReferenceVariant(t, cleanedSource, sourceMimeType, imageModelId)
+          );
+        } catch {
+          results.push('');
         }
+      }
     }
-    return results;
+  }
+  return results;
 };
 
 /**
@@ -1083,48 +1226,36 @@ export const generateCompositeFigures = async (
   prompts: string[],
   imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT
 ): Promise<string[]> => {
-    const results: string[] = [];
-    for (const prompt of prompts) {
-        if (!prompt) {
-            results.push("");
-            continue;
+  const results: string[] = [];
+
+  for (let start = 0; start < prompts.length; start += FIGURE_GRID_CELLS) {
+    const chunk = prompts.slice(start, start + FIGURE_GRID_CELLS);
+    const hasWork = chunk.some((p) => (p || '').trim());
+    if (!hasWork) {
+      results.push(...chunk.map(() => ''));
+      continue;
+    }
+    try {
+      const batch = await runSyntheticGridBatch(chunk, imageModelId);
+      results.push(...batch);
+    } catch (e) {
+      console.warn('[figures] 4×4 synthetic batch failed, using single-image fallback:', e);
+      for (const p of chunk) {
+        const t = (p || '').trim();
+        if (!t) {
+          results.push('');
+          continue;
         }
         try {
-            const instruction = `TASK: Generate a high-precision "NEET Exam Style" black-and-white line diagram.
-            
-PROMPT: ${prompt}
-
-RULES:
-0. **NO COLOR**: **Monochrome only** — black linework on pure white. **Never** use color, tinted fills, colored arrows, gradients, heatmaps, or photorealistic color. The entire figure must read as a single-hue technical line drawing.
-1. **STYLE**: Pure black ink on white. No shading, no grey. Professional textbook quality.
-2. **CLEANING**: Ensure background is 100% white. No artifacts, no watermarks.
-3. **LABELS**:
-   - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested.
-   - **UNLABELED DIAGRAMS**: If the prompt requires no on-image text (unlabeled / context-only), output a diagram with ZERO letters and ZERO structure names on the drawing.
-   - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part. **Forbidden**: adjacent or inline prose + marker text such as "Vegetative cell P", "Generative cell Q" — output **only** "P", "Q", etc. with leader lines. Names belong in the question JSON text fields, not on the bitmap.
-   - Use HUGE, BOLD, BLACK letters (A, B, C...) or numbers when labels are required.
-   - **NO DUPLICATES**: Ensure every label is unique. Do not label two parts with 'A'.
-   - **LEADER / POINTER LINES (MANDATORY FOR LABEL ITEMS)**: For every on-diagram marker the prompt names, draw a **clear pointing line** from the marker text to the correct locus — NEET-style. No floating letters.
-   - **CENSORSHIP**: Do NOT write anatomical or chemical names on the image unless the prompt explicitly asks for names only (rare). Prefer single-letter or single-number markers only when the question uses them.
-4. **CLARITY**: Ensure lines are distinct and parts are easily distinguishable.`;
-            
-            const response = await adminGeminiGenerateContent({
-                model: imageModelId,
-                contents: { parts: [{ text: instruction }] },
-            });
-            const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
-            if (outputPart?.inlineData?.data) {
-                results.push(cleanBase64(outputPart.inlineData.data));
-            } else {
-                console.warn("Gemini did not return an image for synthetic prompt:", prompt);
-                results.push("");
-            }
-        } catch (e: any) { 
-            console.error("Pure Synthetic Synthesis Error:", e);
-            results.push("");
+          const b = await generateOneSyntheticFigure(t, imageModelId);
+          results.push(b);
+        } catch {
+          results.push('');
         }
+      }
     }
-    return results;
+  }
+  return results;
 };
 
 export const refineSystemPrompt = async (currentPrompt: string, instruction: string): Promise<string> => {

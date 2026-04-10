@@ -1,0 +1,50 @@
+/**
+ * Split a raster image into 16 equal cells (4×4, row-major: top-left → bottom-right).
+ * Used after batched figure generation so every batch uses the same geometry.
+ */
+
+export async function splitBase64ImageTo4x4Grid(
+  base64: string,
+  mimeType: string = 'image/png'
+): Promise<string[]> {
+  if (typeof document === 'undefined') {
+    throw new Error('splitBase64ImageTo4x4Grid requires a browser environment');
+  }
+  const cleaned = base64.replace(/^data:image\/\w+;base64,/, '');
+  const url = `data:${mimeType};base64,${cleaned}`;
+
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('Failed to load image for 4×4 split'));
+    img.src = url;
+  });
+
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (w < 16 || h < 16) {
+    throw new Error(`Image too small for 4×4 split (${w}×${h})`);
+  }
+
+  const cw = Math.floor(w / 4);
+  const ch = Math.floor(h / 4);
+  const canvas = document.createElement('canvas');
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D not available');
+
+  const cells: string[] = [];
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 4; col++) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.drawImage(img, col * cw, row * ch, cw, ch, 0, 0, cw, ch);
+      const dataUrl = canvas.toDataURL('image/png');
+      const b64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+      cells.push(b64);
+    }
+  }
+  return cells;
+}
