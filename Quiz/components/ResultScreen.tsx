@@ -812,13 +812,20 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
         brandConfig,
         includeExplanations: answerSheetWithExplanations,
         filename: `${safeName}${suffix}`,
+        paperStyle: {
+          fontFamily: paperConfig.fontFamily,
+          fontSize: paperConfig.fontSize,
+          lineHeight: paperConfig.lineHeight,
+          marginX: paperConfig.marginX,
+          marginY: paperConfig.marginY,
+        },
       });
     } catch (e: any) {
       alert('Answer sheet download failed: ' + (e?.message ? String(e.message) : String(e)));
     } finally {
       setIsDownloadingAnswerSheet(false);
     }
-  }, [editableTopic, questionsOrderedForAnswerKey, brandConfig, answerSheetWithExplanations]);
+  }, [editableTopic, questionsOrderedForAnswerKey, brandConfig, answerSheetWithExplanations, paperConfig]);
 
   const clearPendingPrint = useCallback(() => setPendingPrint(false), []);
 
@@ -2639,7 +2646,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
        </header>
 
        <div className="print-content-shell flex min-h-0 flex-1 overflow-hidden">
-            <div className="no-print flex w-9 shrink-0 flex-col items-stretch justify-center border-r border-zinc-200 bg-zinc-50/95 py-3 shadow-[2px_0_12px_rgba(0,0,0,0.04)] sm:w-10 sm:py-4 lg:w-11">
+            <div className="no-print flex w-9 shrink-0 flex-col items-stretch justify-start border-r border-zinc-200 bg-zinc-50/95 py-2 pt-3 shadow-[2px_0_12px_rgba(0,0,0,0.04)] sm:w-10 sm:pt-4 lg:w-11">
               <button
                 type="button"
                 onClick={toggleInsightsPanel}
