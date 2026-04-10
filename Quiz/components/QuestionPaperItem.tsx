@@ -55,6 +55,8 @@ interface QuestionPaperItemProps {
    * (independent of the global “Source fig” toolbar toggle).
    */
   sourceFigureIconToggle?: boolean;
+  /** Question DB browse/review: opens parent confirmation before delete/remove. */
+  onRequestDelete?: (id: string) => void;
 }
 
 const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({ 
@@ -78,6 +80,7 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   isFlaggedOutOfSyllabus = false,
   flagReason = null,
   sourceFigureIconToggle = false,
+  onRequestDelete,
 }) => {
   const [sourcePeekOpen, setSourcePeekOpen] = useState(false);
   const isMatching = (question.type as any) === 'matching';
@@ -170,7 +173,27 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
                   </span>
               )}
           </div>
-          {isSelected && <div className="flex h-5 w-5 animate-fade-in items-center justify-center rounded-full bg-zinc-900 text-white shadow-sm"><iconify-icon icon="mdi:check-bold" width="12" /></div>}
+          <div className="flex shrink-0 items-center gap-1">
+            {onRequestDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRequestDelete(String(question.id));
+                }}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                title="Delete question"
+                aria-label="Delete question"
+              >
+                <iconify-icon icon="mdi:trash-can-outline" width="16" />
+              </button>
+            )}
+            {isSelected && (
+              <div className="flex h-5 w-5 animate-fade-in items-center justify-center rounded-full bg-zinc-900 text-white shadow-sm">
+                <iconify-icon icon="mdi:check-bold" width="12" />
+              </div>
+            )}
+          </div>
       </div>
       {onFlagOutOfSyllabus && (
         <div className="mb-2 flex justify-end gap-1.5">

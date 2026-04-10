@@ -683,14 +683,15 @@ export const generateQuizQuestions = async (
        - For these ${figureCount} questions, you MUST specify a "sourceImageIndex" (integer) mapping to the diagrams provided.
        ${figureBreakdown ? `- FREQUENCY PER IMAGE (SourceIndex: Q_Count): ${figureBreakdown}` : ''}
        - **FIGURE PROMPT RULES**: 
-         - The 'figurePrompt' must be a direct command to the image generator to TRACE the source image.
-         - **SYNC RULE**: The labels in the figurePrompt must MATCH EXACTLY the labels in the question text.
-            - Question asks "Identify P"? -> Prompt: "Label P only."
-            - Question asks "Identify A, B, C"? -> Prompt: "Label A, B, C."
-            - **DO NOT** generate extra labels in the figure that are ignored by the question.
-         - Look at the text labels in the source image. Your prompt should be: "Trace the image EXACTLY. Replace label '[Original Text]' with '[New Label]'. Remove all other text."
-         - **ANTI-DUPLICATION**: Explicitly instruct: "Use each label (P, Q, R...) EXACTLY ONCE. Do not label the same part twice."
-       - **QUESTION SYNERGY**: The question text MUST reference these new labels.`
+         - The 'figurePrompt' must be a direct command to the image generator to TRACE the source image (or synthesize when no source).
+         - **LABEL-TYPE vs CONTEXT-ONLY**:
+           - **Label-type** (stem or options require identifying specific lettered/numbered parts: e.g. "Identify P", "structures marked P–S", "which arrow shows"): figurePrompt must name ONLY those exact markers (P, Q, … or A–D on the diagram). Strip every other label from the source; never copy the full textbook figure’s labels.
+           - **Context-only** (diagram is setup only—pathway, graph, apparatus—and the stem does NOT ask to choose among marked parts): figurePrompt MUST say explicitly: "Unlabeled diagram only: NO letters, NO Roman numerals, NO words naming structures on the drawing—clean line art only."
+         - **NO DUAL LABELING**: Never label the same structure twice. Forbidden: both a marker (P, Q, A, B) and a written structure name (e.g. mitochondria, nucleus) on the figure for the same pointer. The image uses only the minimal exam markers the question needs, OR no on-image text for context-only items.
+         - **SYNC RULE**: Any letter/number drawn on the image must appear in the stem or options; do not add extra letters.
+         - For trace-from-source: "Trace the structure EXACTLY. Remove ALL original text. Add ONLY the labels listed below: …"
+         - **ANTI-DUPLICATION**: Use each label (P, Q, R…) EXACTLY ONCE on the image.
+       - **QUESTION SYNERGY**: The question text MUST match what is (or is not) labeled on the figure.`
     : `[VISUAL_CONSTRAINT]: Do NOT include any figurePrompts. Generate text-only questions.`;
 
   const effectiveSyllabusList: string[] =
@@ -890,7 +891,9 @@ EXECUTION RULES (STRICT FIDELITY & CLEANING):
    - **AGGRESSIVE WHITENING**: Treat any light grey pixels as white to remove background noise/scans.
 3. **LABELING PHASE**:
    - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested. If the original image had multiple labels, IGNORE them.
-   - **STRICT MINIMALISM**: Only add the labels explicitly requested in the prompt (e.g., "Label 'Nucleus' as 'P'"). Do NOT add extra labels.
+   - **CONTEXT-ONLY / UNLABELED**: If the prompt says "unlabeled", "no labels", "no text on the diagram", or equivalent, draw ZERO text on the image (no letters, no names).
+   - **NO DUAL LABELING**: Never place both a marker (P, Q, A–D) and a word name (e.g. mitochondria) for the same leader line—letters only when the exam uses letters.
+   - **STRICT MINIMALISM**: Only add the labels explicitly requested in the prompt. Do NOT add extra labels.
    - **NO DUPLICATES**: Use each label variable (P, Q, A, B) EXACTLY ONCE. Never label two different parts with the same letter.
    - **TYPOGRAPHY**: Use HUGE, BOLD, BLACK sans-serif font (size 40px+). Ensure letters are perfectly formed and horizontal.
 4. **STYLE**: High-contrast black ink on white. No shading, gradients, or grey areas.
@@ -936,10 +939,12 @@ RULES:
 2. **CLEANING**: Ensure background is 100% white. No artifacts, no watermarks.
 3. **LABELS**:
    - **EXCLUSIVE LABELING**: If the prompt asks for 'P', ONLY draw 'P'. Do NOT include 'Q', 'R', or any other label unless explicitly requested.
-   - Use HUGE, BOLD, BLACK letters (A, B, C...) or numbers.
+   - **UNLABELED DIAGRAMS**: If the prompt requires no on-image text (unlabeled / context-only), output a diagram with ZERO letters and ZERO structure names on the drawing.
+   - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part (e.g. not "P" and "Nucleus" together). Use only the exam-style marker the prompt specifies.
+   - Use HUGE, BOLD, BLACK letters (A, B, C...) or numbers when labels are required.
    - **NO DUPLICATES**: Ensure every label is unique. Do not label two parts with 'A'.
-   - Draw precise leader lines pointing to the anatomical structures mentioned in the prompt.
-   - **CENSORSHIP**: Do NOT write the name of the structure (e.g. "Mitochondria") in the image. Use the Label (e.g. "A") only.
+   - Draw precise leader lines only for parts that must be labeled per the prompt.
+   - **CENSORSHIP**: Do NOT write anatomical or chemical names on the image unless the prompt explicitly asks for names only (rare). Prefer single-letter or single-number markers only when the question uses them.
 4. **CLARITY**: Ensure lines are distinct and parts are easily distinguishable.`;
             
             const response = await adminGeminiGenerateContent({

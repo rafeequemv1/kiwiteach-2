@@ -81,7 +81,9 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
     - **MONOCHROME ONLY**: 0% Color. Use #000000 (Pure Black) and #FFFFFF (Pure White) only. 
     - **NO GREYSCALE**: No shading, no grey, no gradients. Use stippling (dots) for density if needed.
     - **LABEL STYLE**: Labels must be BOLD and SOLID BLACK. Cushion each label with a small solid white mask.
-    - **TARGETED LABELING**: ONLY draw labels referenced in the question stem. Remove all original source text.
+    - **TARGETED LABELING**: ONLY draw labels referenced in the question stem or options. Remove all original source text; never copy an entire labeled textbook figure if the question only needs one or two markers.
+    - **LABEL-TYPE vs CONTEXT-ONLY**: If the question does not ask to identify specific marked parts (no "P, Q, R", no "structures labeled"), the figurePrompt must request an unlabeled line diagram—no letters and no structure names printed on the image.
+    - **NO DUAL LABELING**: Never show both a part marker (P, Q, A–D) and the written name of that part on the figure; use only the markers the question uses.
     - **STYLE**: Clean, high-resolution 2D technical line-art suitable for laser printing.`,
 
   Chemistry: `EXPERT CHEMISTRY EXAM PROTOCOL (NEET/AIIMS STANDARD):

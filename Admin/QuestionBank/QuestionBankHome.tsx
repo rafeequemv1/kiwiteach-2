@@ -244,6 +244,78 @@ const STUDIO_MODEL_META: Record<
   },
 };
 
+function sumGrandTotalsForChapters(
+  chapterIds: Iterable<string>,
+  chapterConfigs: Record<string, ChapterConfig>
+): { questions: number; figures: number } {
+  let q = 0;
+  let f = 0;
+  for (const id of chapterIds) {
+    const cfg = chapterConfigs[id];
+    if (!cfg) continue;
+    if (cfg.synthesisMode === 'syllabus') {
+      const topics = Object.values(cfg.topicCounts || {}) as { count: number; enabled: boolean }[];
+      q += topics.reduce((sum, topic) => sum + (topic.enabled ? topic.count : 0), 0);
+    } else {
+      q += cfg.total;
+      if (cfg.visualMode === 'image') {
+        f += (Object.values(cfg.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0);
+      } else {
+        f += cfg.syntheticFigureCount || 0;
+      }
+    }
+  }
+  return { questions: q, figures: f };
+}
+
+function buildForgeCostPreview(
+  chapterIds: string[],
+  chapterConfigs: Record<string, ChapterConfig>,
+  selectedModel: string,
+  selectedImageModel: StudioImageModelId
+) {
+  const gt = sumGrandTotalsForChapters(chapterIds, chapterConfigs);
+  const modelKey = selectedModel as keyof typeof COST_ESTIMATES;
+  const rate = COST_ESTIMATES[modelKey] || 0;
+  const overhead = STUDIO_TEXT_CALL_OVERHEAD_INR[modelKey] ?? 0;
+  const imgKey = selectedImageModel as StudioImageModelId;
+  const imageRate = STUDIO_IMAGE_CALL_INR[imgKey] ?? STUDIO_IMAGE_CALL_INR['gemini-3-pro-image-preview'];
+  let textCalls = 0;
+  let imageCalls = 0;
+  chapterIds.forEach((id) => {
+    const cfg = chapterConfigs[id];
+    if (!cfg) return;
+    textCalls += countForgeTextCallsForChapter(cfg);
+    imageCalls += countForgeImageCallsForChapter(cfg);
+  });
+  const variableInr = gt.questions * rate;
+  const textOverheadInr = textCalls * overhead;
+  const textSubtotalInr = variableInr + textOverheadInr;
+  const imageInr = imageCalls * imageRate;
+  const totalInr = textSubtotalInr + imageInr;
+  const textMeta = STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META];
+  const imgMeta = STUDIO_IMAGE_MODEL_META[imgKey];
+  return {
+    inrTotal: totalInr.toFixed(2),
+    textSubtotalInr: textSubtotalInr.toFixed(2),
+    rate,
+    questions: gt.questions,
+    figures: gt.figures,
+    textCalls,
+    imageCalls,
+    variableInr: variableInr.toFixed(2),
+    textOverheadInr: textOverheadInr.toFixed(2),
+    imageInr: imageInr.toFixed(2),
+    imageRate,
+    textModelLabel: textMeta?.label ?? selectedModel,
+    textModelApiId: selectedModel,
+    textModelVersionLine: textMeta?.versionLine ?? '',
+    imageModelLabel: imgMeta?.label ?? selectedImageModel,
+    imageModelApiId: selectedImageModel,
+    imageModelVersionLine: imgMeta?.versionLine ?? '',
+  };
+}
+
 const FORGE_STYLE_LABELS: Record<QuestionType, string> = {
   mcq: 'MCQ',
   reasoning: 'Assertion–Reason',
@@ -357,7 +429,7 @@ const QuestionBankHome: React.FC = () => {
   const [selectedKbId, setSelectedKbId] = useState<string | null>(null);
   const [selectedChapterIds, setSelectedChapterIds] = useState<Set<string>>(new Set());
   const [activeEditingChapterId, setActiveEditingChapterId] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>('gemini-3-pro-preview');
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-3-flash-preview');
   const [selectedImageModel, setSelectedImageModel] = useState<StudioImageModelId>('gemini-3-pro-image-preview');
   
   const [mode, setMode] = useState<'browse' | 'studio' | 'review' | 'graph'>('browse');
@@ -421,6 +493,11 @@ const QuestionBankHome: React.FC = () => {
   });
   const [flaggedQuestionIds, setFlaggedQuestionIds] = useState<Set<string>>(new Set());
   const [flagReasonsByQuestionId, setFlagReasonsByQuestionId] = useState<Record<string, string>>({});
+  const [deleteQuestionConfirm, setDeleteQuestionConfirm] = useState<{
+    id: string;
+    preview: string;
+    fromReview: boolean;
+  } | null>(null);
 
   const [chapterConfigs, setChapterConfigs] = useState<Record<string, ChapterConfig>>({});
   const [extractedFigures, setExtractedFigures] = useState<{data: string, mimeType: string}[]>([]);
@@ -463,6 +540,11 @@ const QuestionBankHome: React.FC = () => {
   const [docViewer, setDocViewer] = useState<{ html: string; name: string } | null>(null);
   const [graphPositions, setGraphPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+
+  /** Neural Studio sub-workspace: full controls vs figure-focused queue + live thumbnails. */
+  const [studioWorkspaceTab, setStudioWorkspaceTab] = useState<'overview' | 'figure_forge'>('overview');
+  /** Ordered forge batch for Figure forge tab (subset of selectedChapterIds; pruned when selection changes). */
+  const [figureForgeQueue, setFigureForgeQueue] = useState<string[]>([]);
 
   /** Syllabus chapters never run the figure leg — hide/disable “figure” forge when every selected chapter is syllabus. */
   const studioForgeSelectionAllSyllabus = useMemo(() => {
@@ -585,70 +667,28 @@ const QuestionBankHome: React.FC = () => {
       }
   }, [selectedChapterIds]);
 
+  useEffect(() => {
+    setFigureForgeQueue((q) => q.filter((id) => selectedChapterIds.has(id)));
+  }, [selectedChapterIds]);
+
   // ... (Chat logic remains same) ...
 
-  const grandTotals = useMemo(() => {
-      let q = 0; let f = 0;
-      Array.from(selectedChapterIds).forEach(id => {
-          const cfg = chapterConfigs[id];
-          if (!cfg) return;
-          if (cfg.synthesisMode === 'syllabus') {
-            const topics = Object.values(cfg.topicCounts || {}) as { count: number; enabled: boolean }[];
-            q += topics.reduce((sum, topic) => sum + (topic.enabled ? topic.count : 0), 0);
-          } else {
-            q += cfg.total;
-            if (cfg.visualMode === 'image') {
-              f += (Object.values(cfg.selectedFigures || {}) as number[]).reduce((a: number, b: number) => a + b, 0);
-            } else {
-              f += cfg.syntheticFigureCount || 0;
-            }
-          }
-      });
-      return { questions: q, figures: f };
-  }, [selectedChapterIds, chapterConfigs]);
+  const grandTotals = useMemo(
+    () => sumGrandTotalsForChapters(selectedChapterIds, chapterConfigs),
+    [selectedChapterIds, chapterConfigs]
+  );
 
   /** Live forge estimate: text (per-Q + per text API) + image (per figure API) shown separately and summed. */
-  const forgeCostPreview = useMemo(() => {
-    const modelKey = selectedModel as keyof typeof COST_ESTIMATES;
-    const rate = COST_ESTIMATES[modelKey] || 0;
-    const overhead = STUDIO_TEXT_CALL_OVERHEAD_INR[modelKey] ?? 0;
-    const imgKey = selectedImageModel as StudioImageModelId;
-    const imageRate = STUDIO_IMAGE_CALL_INR[imgKey] ?? STUDIO_IMAGE_CALL_INR['gemini-3-pro-image-preview'];
-    const q = grandTotals.questions;
-    let textCalls = 0;
-    let imageCalls = 0;
-    Array.from(selectedChapterIds).forEach((id) => {
-      const cfg = chapterConfigs[id];
-      if (!cfg) return;
-      textCalls += countForgeTextCallsForChapter(cfg);
-      imageCalls += countForgeImageCallsForChapter(cfg);
-    });
-    const variableInr = q * rate;
-    const textOverheadInr = textCalls * overhead;
-    const textSubtotalInr = variableInr + textOverheadInr;
-    const imageInr = imageCalls * imageRate;
-    const totalInr = textSubtotalInr + imageInr;
-    const textMeta = STUDIO_MODEL_META[selectedModel as keyof typeof STUDIO_MODEL_META];
-    const imgMeta = STUDIO_IMAGE_MODEL_META[imgKey];
-    return {
-      inrTotal: totalInr.toFixed(2),
-      textSubtotalInr: textSubtotalInr.toFixed(2),
-      rate,
-      questions: q,
-      textCalls,
-      imageCalls,
-      variableInr: variableInr.toFixed(2),
-      textOverheadInr: textOverheadInr.toFixed(2),
-      imageInr: imageInr.toFixed(2),
-      imageRate,
-      textModelLabel: textMeta?.label ?? selectedModel,
-      textModelApiId: selectedModel,
-      textModelVersionLine: textMeta?.versionLine ?? '',
-      imageModelLabel: imgMeta?.label ?? selectedImageModel,
-      imageModelApiId: selectedImageModel,
-      imageModelVersionLine: imgMeta?.versionLine ?? '',
-    };
-  }, [grandTotals.questions, selectedChapterIds, chapterConfigs, selectedModel, selectedImageModel]);
+  const forgeCostPreview = useMemo(
+    () => buildForgeCostPreview(Array.from(selectedChapterIds), chapterConfigs, selectedModel, selectedImageModel),
+    [selectedChapterIds, chapterConfigs, selectedModel, selectedImageModel]
+  );
+
+  /** Figure forge tab: cost for queued chapters only (matches Run figure queue). */
+  const figureForgeCostPreview = useMemo(
+    () => buildForgeCostPreview(figureForgeQueue, chapterConfigs, selectedModel, selectedImageModel),
+    [figureForgeQueue, chapterConfigs, selectedModel, selectedImageModel]
+  );
 
   const selectedChapterIdsKey = useMemo(
     () => Array.from(selectedChapterIds).sort().join(','),
@@ -726,6 +766,11 @@ const QuestionBankHome: React.FC = () => {
 
   const activeChapterVisualMode = activeEditingChapterId ? chapterConfigs[activeEditingChapterId]?.visualMode : undefined;
 
+  const shouldLoadStudioReferenceFigures =
+    mode === 'studio' &&
+    !!activeEditingChapterId &&
+    (activeChapterVisualMode === 'image' || studioWorkspaceTab === 'figure_forge');
+
   useEffect(() => {
       if (mode !== 'studio') {
           setExtractedFigures([]);
@@ -737,7 +782,7 @@ const QuestionBankHome: React.FC = () => {
           setIsExtracting(false);
           return;
       }
-      if (activeChapterVisualMode !== 'image') {
+      if (!shouldLoadStudioReferenceFigures) {
           setExtractedFigures([]);
           setIsExtracting(false);
           return;
@@ -764,7 +809,7 @@ const QuestionBankHome: React.FC = () => {
       return () => {
           cancelled = true;
       };
-  }, [mode, activeEditingChapterId, activeChapterVisualMode]);
+  }, [mode, activeEditingChapterId, shouldLoadStudioReferenceFigures]);
 
   // ... (Syllabus and Extraction logic remains same) ...
   useEffect(() => {
@@ -911,6 +956,56 @@ const QuestionBankHome: React.FC = () => {
       } finally { setIsSaving(false); setForgeProgress(''); }
   };
 
+  const openDeleteQuestionConfirm = useCallback(
+    (id: string) => {
+      const list = mode === 'review' ? reviewQueue : questions;
+      const row = list.find((x: { id?: string }) => String(x.id) === id);
+      const raw = String(row?.question_text || row?.text || '');
+      const stripped = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      const maxLen = 160;
+      const preview =
+        stripped.length > maxLen ? `${stripped.slice(0, maxLen)}…` : stripped || 'this question';
+      setDeleteQuestionConfirm({ id, preview, fromReview: mode === 'review' });
+    },
+    [mode, questions, reviewQueue]
+  );
+
+  const handleConfirmDeleteSingleQuestion = async () => {
+    if (!deleteQuestionConfirm) return;
+    const { id, fromReview } = deleteQuestionConfirm;
+    if (fromReview) {
+      setReviewQueue((prev) => prev.filter((q) => String(q.id) !== id));
+      setSelectedIds((prev) => {
+        const n = new Set(prev);
+        n.delete(id);
+        return n;
+      });
+      setDeleteQuestionConfirm(null);
+      return;
+    }
+    setIsSaving(true);
+    setForgeProgress('Deleting…');
+    try {
+      const { error } = await supabase.from('question_bank_neet').delete().eq('id', id);
+      if (error) throw error;
+      setQuestions((prev) => prev.filter((q) => String(q.id) !== id));
+      setSelectedIds((prev) => {
+        const n = new Set(prev);
+        n.delete(id);
+        return n;
+      });
+      setTotalCount((c) => Math.max(0, c - 1));
+      if (selectedChapterIds.size > 0) fetchBulkStats(Array.from(selectedChapterIds));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Delete failed';
+      alert(msg);
+    } finally {
+      setIsSaving(false);
+      setForgeProgress('');
+      setDeleteQuestionConfirm(null);
+    }
+  };
+
   const handleToggleChapter = (id: string) => {
     const next = new Set(selectedChapterIds);
     if(next.has(id)) { next.delete(id); if (activeEditingChapterId === id) setActiveEditingChapterId(next.size > 0 ? Array.from(next)[0] : null); } 
@@ -932,9 +1027,94 @@ const QuestionBankHome: React.FC = () => {
     if (typeof patch.line === 'string') setForgeProgress(patch.line);
   }, []);
 
-  const handleRunForge = async (forgeVisualPhase: ForgeVisualPhase) => {
-      const chapterIds = Array.from(selectedChapterIds);
-      if (chapterIds.length === 0) return alert("Select chapters.");
+  /** Figure forge tab: standard + reference image + all Hard + MCQ-only for `total` questions. */
+  const applyFigureForgePresetForChapter = useCallback((chapterId: string) => {
+    setChapterConfigs((prev) => {
+      const base =
+        prev[chapterId] || {
+          total: 10,
+          diff: { easy: 0, medium: 8, hard: 2 },
+          types: { mcq: 6, reasoning: 2, matching: 1, statements: 1 },
+          visualMode: 'text',
+          selectedFigures: {},
+          syntheticFigureCount: 0,
+          synthesisMode: 'standard',
+          topicCounts: {},
+          syllabusDifficulty: 'Medium',
+          isProportional: true,
+        };
+      const total = Math.max(1, base.total);
+      return {
+        ...prev,
+        [chapterId]: {
+          ...base,
+          synthesisMode: 'standard',
+          visualMode: 'image',
+          isProportional: false,
+          total,
+          diff: { easy: 0, medium: 0, hard: total },
+          types: { mcq: total, reasoning: 0, matching: 0, statements: 0 },
+        },
+      };
+    });
+  }, []);
+
+  const handleFigureForgeChapterClick = useCallback(
+    (chapterId: string) => {
+      setSelectedChapterIds((prev) => new Set(prev).add(chapterId));
+      setFigureForgeQueue((prev) => {
+        if (prev.includes(chapterId)) {
+          setActiveEditingChapterId(chapterId);
+          return prev;
+        }
+        applyFigureForgePresetForChapter(chapterId);
+        setActiveEditingChapterId(chapterId);
+        return [...prev, chapterId];
+      });
+    },
+    [applyFigureForgePresetForChapter]
+  );
+
+  const moveFigureForgeQueueItem = useCallback((chapterId: string, delta: number) => {
+    setFigureForgeQueue((q) => {
+      const i = q.indexOf(chapterId);
+      if (i < 0) return q;
+      const j = i + delta;
+      if (j < 0 || j >= q.length) return q;
+      const next = [...q];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }, []);
+
+  const removeFigureForgeQueueItem = useCallback((chapterId: string) => {
+    setFigureForgeQueue((q) => {
+      const next = q.filter((id) => id !== chapterId);
+      queueMicrotask(() => {
+        setActiveEditingChapterId((cur) => {
+          if (cur !== chapterId) return cur;
+          return next[0] ?? null;
+        });
+      });
+      return next;
+    });
+    setSelectedChapterIds((prev) => {
+      const n = new Set(prev);
+      n.delete(chapterId);
+      return n;
+    });
+  }, []);
+
+  const handleRunForge = async (
+    forgeVisualPhase: ForgeVisualPhase,
+    orderedChapterIds?: string[] | null
+  ) => {
+      const fromQueue =
+        orderedChapterIds && orderedChapterIds.length > 0
+          ? orderedChapterIds.filter((id) => selectedChapterIds.has(id))
+          : [];
+      const chapterIds = fromQueue.length > 0 ? fromQueue : Array.from(selectedChapterIds);
+      if (chapterIds.length === 0) return alert('Select chapters or add at least one chapter to the figure forge queue.');
       setMode('browse');
       setReviewQueue([]); 
       setIsForgingBatch(true); 
@@ -2706,15 +2886,29 @@ const QuestionBankHome: React.FC = () => {
                         </div>
                     ) : (
                         filteredSidebarChapters.map((c) => {
-                            const active = selectedChapterIds.has(String(c.id));
-                            const stats = chapterStats[String(c.id)];
+                            const cid = String(c.id);
+                            const active = selectedChapterIds.has(cid);
+                            const stats = chapterStats[cid];
+                            const queuePos =
+                              mode === 'studio' && studioWorkspaceTab === 'figure_forge'
+                                ? figureForgeQueue.indexOf(cid)
+                                : -1;
                             return (
                                 <div
                                     key={c.id}
                                     role="button"
                                     tabIndex={0}
-                                    onClick={() => handleToggleChapter(String(c.id))}
-                                    onKeyDown={(e) => e.key === 'Enter' && handleToggleChapter(String(c.id))}
+                                    onClick={() =>
+                                      mode === 'studio' && studioWorkspaceTab === 'figure_forge'
+                                        ? handleFigureForgeChapterClick(cid)
+                                        : handleToggleChapter(cid)
+                                    }
+                                    onKeyDown={(e) =>
+                                      e.key === 'Enter' &&
+                                      (mode === 'studio' && studioWorkspaceTab === 'figure_forge'
+                                        ? handleFigureForgeChapterClick(cid)
+                                        : handleToggleChapter(cid))
+                                    }
                                     className={`cursor-pointer rounded-[1.5rem] border-2 p-3 sm:p-4 transition-all min-w-0 overflow-hidden ${
                                         active ? 'border-indigo-200 bg-indigo-50 shadow-sm' : 'border-zinc-50 bg-white hover:bg-zinc-50/50'
                                     }`}
@@ -2726,6 +2920,11 @@ const QuestionBankHome: React.FC = () => {
                                                 active ? 'text-indigo-700' : 'text-zinc-700'
                                             }`}
                                         >
+                                            {queuePos >= 0 && (
+                                              <span className="mr-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded bg-violet-600 px-1 text-[7px] font-black text-white">
+                                                {queuePos + 1}
+                                              </span>
+                                            )}
                                             {c.name}
                                         </h4>
                                         <button
@@ -3029,16 +3228,97 @@ const QuestionBankHome: React.FC = () => {
             </Dialog.Portal>
         </Dialog.Root>
 
+        <Dialog.Root
+          open={!!deleteQuestionConfirm}
+          onOpenChange={(open) => {
+            if (!open) setDeleteQuestionConfirm(null);
+          }}
+        >
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-[186] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-[196] w-[calc(100vw-1.5rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-zinc-200 bg-white p-5 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+              <Dialog.Title className="text-sm font-black tracking-tight text-zinc-900">
+                {deleteQuestionConfirm?.fromReview ? 'Remove from review queue?' : 'Delete this question?'}
+              </Dialog.Title>
+              <Dialog.Description className="mt-2 text-[12px] leading-relaxed text-zinc-600">
+                {deleteQuestionConfirm?.fromReview
+                  ? 'This only removes the item from the local review list. Nothing is deleted from the database.'
+                  : 'This permanently removes the row from the question bank. This cannot be undone.'}
+              </Dialog.Description>
+              {deleteQuestionConfirm?.preview && (
+                <p className="mt-3 max-h-24 overflow-y-auto rounded-lg border border-zinc-100 bg-zinc-50 p-2.5 text-[11px] leading-snug text-zinc-700 [overflow-wrap:anywhere]">
+                  {deleteQuestionConfirm.preview}
+                </p>
+              )}
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <Dialog.Close asChild>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-zinc-200 bg-white px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                  >
+                    Cancel
+                  </button>
+                </Dialog.Close>
+                <button
+                  type="button"
+                  disabled={isSaving}
+                  onClick={() => void handleConfirmDeleteSingleQuestion()}
+                  className="rounded-lg bg-rose-600 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-white shadow-sm hover:bg-rose-700 disabled:opacity-50"
+                >
+                  {isSaving ? 'Working…' : deleteQuestionConfirm?.fromReview ? 'Remove' : 'Delete'}
+                </button>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+
             <main className="flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar bg-zinc-100/40 p-3 sm:p-6 lg:p-10">
                 {mode === 'studio' ? (
-                    <div className="max-w-5xl mx-auto space-y-4 animate-fade-in pb-20">
+                    <div
+                      className={`mx-auto space-y-4 animate-fade-in pb-20 ${
+                        studioWorkspaceTab === 'figure_forge' ? 'max-w-6xl' : 'max-w-5xl'
+                      }`}
+                    >
                          {/* Studio — compact layout */}
                          {selectedChapterIds.size === 0 ? <div className="py-24 text-center opacity-30 flex flex-col items-center justify-center"><iconify-icon icon="mdi:arrow-left-bold" width="48" className="mb-3 animate-bounce-subtle text-zinc-300" /><p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Select chapters</p></div> : (
                             <>
                                 <header className="flex flex-col gap-3">
-                                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                                    <h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight shrink-0">Neural Studio</h2>
+                                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div className="min-w-0">
+                                      <h2 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight">Neural Studio</h2>
+                                      <div className="mt-2 inline-flex rounded-xl border border-zinc-200 bg-zinc-100 p-1 shadow-inner">
+                                        <button
+                                          type="button"
+                                          disabled={isForgingBatch}
+                                          onClick={() => setStudioWorkspaceTab('overview')}
+                                          className={`rounded-lg px-3 py-1.5 text-[9px] font-black uppercase tracking-widest transition-all ${
+                                            studioWorkspaceTab === 'overview'
+                                              ? 'bg-white text-indigo-700 shadow-sm'
+                                              : 'text-zinc-500 hover:text-zinc-800'
+                                          } disabled:opacity-50`}
+                                        >
+                                          Overview
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isForgingBatch}
+                                          onClick={() => setStudioWorkspaceTab('figure_forge')}
+                                          className={`rounded-lg px-3 py-1.5 text-[9px] font-black uppercase tracking-widest transition-all ${
+                                            studioWorkspaceTab === 'figure_forge'
+                                              ? 'bg-white text-violet-800 shadow-sm ring-1 ring-violet-200/80'
+                                              : 'text-zinc-500 hover:text-zinc-800'
+                                          } disabled:opacity-50`}
+                                        >
+                                          Figure forge
+                                        </button>
+                                      </div>
+                                      <p className="mt-1.5 text-[8px] font-medium leading-snug text-zinc-500">
+                                        {studioWorkspaceTab === 'figure_forge'
+                                          ? 'Left sidebar: tap a chapter to queue it (Hard MCQ + reference images). Order = forge order. Adjust per-image counts here.'
+                                          : 'Configure chapters, models, and run text or figure batches.'}
+                                      </p>
                                     </div>
+                                  </div>
                                   <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
                                     <div className="flex min-w-0 w-full flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm md:max-w-xl">
                                       <div>
@@ -3154,6 +3434,8 @@ const QuestionBankHome: React.FC = () => {
                                         >
                                           <iconify-icon icon="mdi:cog-outline" width="18" /> Config
                                       </button>
+                                        {studioWorkspaceTab === 'overview' ? (
+                                          <>
                                         <button
                                           type="button"
                                           onClick={() => void handleRunForge('text_only')}
@@ -3175,17 +3457,272 @@ const QuestionBankHome: React.FC = () => {
                                         >
                                           <iconify-icon icon="mdi:image-plus-outline" width="18" /> Fill figure questions
                                         </button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                void handleRunForge(
+                                                  'with_figures',
+                                                  figureForgeQueue.length > 0 ? figureForgeQueue : null
+                                                )
+                                              }
+                                              disabled={
+                                                isForgingBatch ||
+                                                studioForgeSelectionAllSyllabus ||
+                                                figureForgeQueue.length === 0
+                                              }
+                                              title={
+                                                figureForgeQueue.length === 0
+                                                  ? 'Add chapters from the left list (Figure forge tab).'
+                                                  : 'Runs in queue order: Hard MCQ + reference figures per chapter.'
+                                              }
+                                              className="bg-violet-700 text-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide shadow-md hover:bg-violet-800 transition-all flex items-center justify-center gap-2 active:scale-[0.99] shrink-0 sm:flex-1 disabled:opacity-50"
+                                            >
+                                              <iconify-icon icon="mdi:image-sync-outline" width="18" /> Run figure queue
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => void handleRunForge('text_only', figureForgeQueue.length > 0 ? figureForgeQueue : null)}
+                                              disabled={isForgingBatch || figureForgeQueue.length === 0}
+                                              className="border border-zinc-200 bg-white px-4 py-2.5 rounded-lg font-semibold text-[10px] uppercase tracking-wide text-zinc-800 shadow-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shrink-0 sm:flex-1 disabled:opacity-50"
+                                            >
+                                              <iconify-icon icon="mdi:text-box-outline" width="18" /> Text only (queue)
+                                            </button>
+                                          </>
+                                        )}
                                   </div>
                                       <p className="text-[9px] font-medium leading-snug text-zinc-500">
+                                        {studioWorkspaceTab === 'overview' ? (
+                                          <>
                                         Same models and prompts. <strong className="text-zinc-600">Text</strong> skips figure
                                         mandates and image rendering. <strong className="text-zinc-600">Figures</strong> uses
                                         chapter Config → Visual mode on each <strong className="text-zinc-600">standard</strong>{' '}
                                         chapter. Syllabus chapters stay text-only; if every selected chapter is syllabus, use
                                         Fill text questions.
+                                          </>
+                                        ) : (
+                                          <>
+                                            Queue uses <strong className="text-zinc-700">Hard</strong> difficulty and{' '}
+                                            <strong className="text-zinc-700">MCQ</strong> only for newly added chapters. Edit totals
+                                            in Config if needed. Forge order follows the queue list below.
+                                          </>
+                                        )}
                                       </p>
                                                   </div>
                                                 </div>
                                 </header>
+
+                                {studioWorkspaceTab === 'figure_forge' && (
+                                  <>
+                                    <div className="rounded-xl border border-violet-500/30 bg-zinc-900 p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3">
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-600 text-white shadow-md">
+                                          <iconify-icon icon="mdi:currency-inr" width="22" />
+                                        </div>
+                                        <div>
+                                          <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">
+                                            Est. cost (queue, INR)
+                                          </span>
+                                          <div className="flex items-baseline gap-1.5 tabular-nums">
+                                            <span className="text-2xl font-bold tracking-tight">₹{figureForgeCostPreview.inrTotal}</span>
+                                            <span className="text-[10px] font-medium uppercase text-violet-300">INR total</span>
+                                          </div>
+                                          <div className="mt-2 space-y-1.5 text-[8px] font-medium leading-snug text-zinc-300">
+                                            <p>
+                                              <span className="font-black uppercase tracking-wide text-emerald-300/90">Text</span>{' '}
+                                              <span className="font-mono text-zinc-400">{figureForgeCostPreview.textModelApiId}</span>
+                                              <span className="text-zinc-500"> · {figureForgeCostPreview.textModelVersionLine}</span>
+                                              <br />
+                                              <span className="tabular-nums text-zinc-400">
+                                                ₹{figureForgeCostPreview.textSubtotalInr} = {figureForgeCostPreview.questions} Q × ₹
+                                                {figureForgeCostPreview.rate.toFixed(2)} + {figureForgeCostPreview.textCalls} call
+                                                {figureForgeCostPreview.textCalls === 1 ? '' : 's'} × ₹
+                                                {(
+                                                  STUDIO_TEXT_CALL_OVERHEAD_INR[
+                                                    selectedModel as keyof typeof STUDIO_TEXT_CALL_OVERHEAD_INR
+                                                  ] ?? 0
+                                                ).toFixed(2)}{' '}
+                                                (≈ ₹{figureForgeCostPreview.variableInr} + ₹{figureForgeCostPreview.textOverheadInr})
+                                              </span>
+                                            </p>
+                                            <p>
+                                              <span className="font-black uppercase tracking-wide text-violet-300/90">Image</span>{' '}
+                                              <span className="font-mono text-zinc-400">{figureForgeCostPreview.imageModelApiId}</span>
+                                              <span className="text-zinc-500"> · {figureForgeCostPreview.imageModelVersionLine}</span>
+                                              <br />
+                                              <span className="tabular-nums text-zinc-400">
+                                                ₹{figureForgeCostPreview.imageInr} = {figureForgeCostPreview.imageCalls} figure
+                                                {figureForgeCostPreview.imageCalls === 1 ? '' : 's'} × ₹
+                                                {figureForgeCostPreview.imageRate.toFixed(2)}
+                                              </span>
+                                            </p>
+                                          </div>
+                                          <p className="mt-1 text-[8px] text-zinc-500">
+                                            Approximate only; matches <strong className="text-zinc-400">Run figure queue</strong> order.
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <div className="text-right text-[10px]">
+                                        <span className="font-semibold text-zinc-400 uppercase tracking-wide block">Queue batch</span>
+                                        <span className="font-bold text-lg tabular-nums">
+                                          {figureForgeCostPreview.questions}{' '}
+                                          <span className="text-zinc-500 font-normal text-xs">items</span>
+                                        </span>
+                                        <div className="mt-0.5 text-zinc-400">
+                                          <span className="text-rose-300">{figureForgeCostPreview.figures} fig</span>
+                                          <span className="mx-1">·</span>
+                                          <span className="text-indigo-300">
+                                            {Math.max(0, figureForgeCostPreview.questions - figureForgeCostPreview.figures)} text
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-6">
+                                    <div className="rounded-xl border border-violet-200 bg-white p-4 shadow-sm">
+                                      <h3 className="text-[10px] font-black uppercase tracking-widest text-violet-800">Forge queue</h3>
+                                      <p className="mt-1 text-[8px] font-medium text-zinc-500">
+                                        Order is preserved when you run. New chapters from the sidebar get <strong className="text-zinc-700">Hard</strong> +{' '}
+                                        <strong className="text-zinc-700">MCQ-only</strong> defaults (reference image mode).
+                                      </p>
+                                      {figureForgeQueue.length === 0 ? (
+                                        <p className="mt-4 py-8 text-center text-[10px] font-medium text-zinc-400">Tap chapters in the left sidebar to add.</p>
+                                      ) : (
+                                        <ul className="mt-3 max-h-[min(52vh,420px)] space-y-2 overflow-y-auto custom-scrollbar">
+                                          {figureForgeQueue.map((id, qi) => {
+                                            const ch = chapters.find((c) => c.id === id);
+                                            const name = ch?.name || id;
+                                            return (
+                                              <li
+                                                key={id}
+                                                className={`flex items-center gap-2 rounded-xl border px-2 py-2 ${
+                                                  activeEditingChapterId === id ? 'border-violet-400 bg-violet-50/80' : 'border-zinc-100 bg-zinc-50/80'
+                                                }`}
+                                              >
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setActiveEditingChapterId(id)}
+                                                  className="min-w-0 flex-1 text-left"
+                                                >
+                                                  <span className="text-[9px] font-black text-violet-700">{qi + 1}.</span>{' '}
+                                                  <span className="text-[11px] font-bold text-zinc-800 line-clamp-2 [overflow-wrap:anywhere]">
+                                                    {name}
+                                                  </span>
+                                                </button>
+                                                <div className="flex shrink-0 items-center gap-0.5">
+                                                  <button
+                                                    type="button"
+                                                    aria-label="Move up"
+                                                    onClick={() => moveFigureForgeQueueItem(id, -1)}
+                                                    className="rounded-md p-1 text-zinc-400 hover:bg-white hover:text-zinc-800"
+                                                  >
+                                                    <iconify-icon icon="mdi:chevron-up" width="18" />
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    aria-label="Move down"
+                                                    onClick={() => moveFigureForgeQueueItem(id, 1)}
+                                                    className="rounded-md p-1 text-zinc-400 hover:bg-white hover:text-zinc-800"
+                                                  >
+                                                    <iconify-icon icon="mdi:chevron-down" width="18" />
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    aria-label="Remove from queue"
+                                                    onClick={() => removeFigureForgeQueueItem(id)}
+                                                    className="rounded-md p-1 text-rose-400 hover:bg-rose-50 hover:text-rose-700"
+                                                  >
+                                                    <iconify-icon icon="mdi:close" width="18" />
+                                                  </button>
+                                                </div>
+                                              </li>
+                                            );
+                                          })}
+                                        </ul>
+                                      )}
+                                    </div>
+                                    <div className="min-h-[280px] rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Reference figures</h3>
+                                        {activeEditingChapterId && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setStudioChapterConfigOpen(true)}
+                                            className="text-[8px] font-black uppercase tracking-widest text-indigo-600 hover:underline"
+                                          >
+                                            Full config
+                                          </button>
+                                        )}
+                                      </div>
+                                      <p className="mt-1 truncate text-[8px] text-zinc-500">
+                                        {activeEditingChapterId
+                                          ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || '')
+                                          : 'Select a queued chapter from the list or sidebar.'}
+                                      </p>
+                                      <div className="mt-3 grid max-h-[min(56vh,520px)] grid-cols-2 gap-2 overflow-y-auto custom-scrollbar pr-1 sm:grid-cols-3">
+                                        {isExtracting ? (
+                                          <div className="col-span-full flex flex-col items-center gap-2 py-16 text-zinc-400">
+                                            <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-violet-500" />
+                                            <span className="text-[9px] font-semibold uppercase tracking-wider">Loading figures…</span>
+                                          </div>
+                                        ) : extractedFigures.length > 0 && activeConfig ? (
+                                          extractedFigures.map((fig, idx) => {
+                                            const count = activeConfig.selectedFigures?.[idx] || 0;
+                                            return (
+                                              <div
+                                                key={idx}
+                                                className={`relative flex flex-col overflow-hidden rounded-xl border-2 bg-white ${
+                                                  count > 0 ? 'border-violet-500 shadow-sm' : 'border-zinc-100'
+                                                }`}
+                                              >
+                                                <div className="flex max-h-[140px] min-h-[100px] items-center justify-center bg-white">
+                                                  <img
+                                                    src={`data:${fig.mimeType};base64,${fig.data}`}
+                                                    alt=""
+                                                    className="max-h-[132px] w-full object-contain"
+                                                  />
+                                                </div>
+                                                <span className="border-t border-zinc-100 bg-zinc-50 py-0.5 text-center text-[7px] font-bold uppercase text-zinc-400">
+                                                  #{idx + 1}
+                                                </span>
+                                                <div className="flex items-center justify-center gap-1 border-t border-zinc-100 bg-white py-1">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleUpdateFigureCount(idx, count - 1)}
+                                                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                                                  >
+                                                    <iconify-icon icon="mdi:minus" width="16" />
+                                                  </button>
+                                                  <span className="min-w-[1.5rem] text-center text-[11px] font-black text-violet-700">
+                                                    {count}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleUpdateFigureCount(idx, count + 1)}
+                                                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                                                  >
+                                                    <iconify-icon icon="mdi:plus" width="16" />
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            );
+                                          })
+                                        ) : (
+                                          <div className="col-span-full py-12 text-center text-[10px] font-medium text-zinc-400">
+                                            {activeEditingChapterId
+                                              ? 'No reference images for this chapter. Add DOCX/PDF figures in the knowledge base.'
+                                              : 'Choose a chapter from the queue or sidebar.'}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  </>
+                                )}
+
+                                {studioWorkspaceTab === 'overview' && (
+                                <>
                                 <div className="rounded-xl border border-indigo-200 bg-white px-4 py-3 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                   <div className="min-w-0">
                                     <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">Active chapter</p>
@@ -3204,225 +3741,6 @@ const QuestionBankHome: React.FC = () => {
                                     <iconify-icon icon="mdi:open-in-new" width="16" /> Open chapter config
                                   </button>
                                 </div>
-                                <Dialog.Root open={studioChapterConfigOpen} onOpenChange={setStudioChapterConfigOpen}>
-                                  <Dialog.Portal>
-                                    <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-                                    <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(92vh,760px)] w-[calc(100vw-1.25rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
-                                      <div className="shrink-0 flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
-                                        <div className="min-w-0 pr-2">
-                                          <Dialog.Title className="text-sm font-bold text-zinc-900">Chapter config</Dialog.Title>
-                                          <Dialog.Description className="sr-only">
-                                            Synthesis mode, visuals, difficulty counts, and question style counts for forge.
-                                          </Dialog.Description>
-                                          <p className="mt-0.5 truncate text-xs text-zinc-500">
-                                            {activeEditingChapterId
-                                              ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || '')
-                                              : ''}
-                                                </p>
-                                            </div>
-                                        <Dialog.Close asChild>
-                                          <button
-                                            type="button"
-                                            className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 shrink-0"
-                                            aria-label="Close"
-                                          >
-                                            <iconify-icon icon="mdi:close" width="22" />
-                                          </button>
-                                        </Dialog.Close>
-                                      </div>
-                                      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 custom-scrollbar">
-                                        {activeConfig ? (
-                                            <div className="space-y-4 min-w-0 max-w-full overflow-hidden">
-                                                <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Synthesis Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => handleSynthesisModeChange('standard')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'standard' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Standard</button><button onClick={() => handleSynthesisModeChange('syllabus')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'syllabus' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Syllabus Focused</button></div></div>
-                                                {/* (Rest of Studio Config as per original...) */}
-                                                {activeConfig.synthesisMode === 'syllabus' ? (
-                                                    <div className="space-y-4">
-                                                        <div className="flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-zinc-100 shadow-sm"><div className="flex justify-between items-center px-1"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Difficulty</label><button onClick={() => fetchActiveSyllabus(true)} className="text-[8px] font-black uppercase text-indigo-400 hover:text-indigo-600 flex items-center gap-1 transition-colors" title="Force Fetch Topics"><iconify-icon icon="mdi:refresh" /> Refresh Topics</button></div><select value={activeConfig.syllabusDifficulty} onChange={(e) => updateActiveConfig('syllabusDifficulty', null, e.target.value)} className="w-full p-2 bg-zinc-50 border border-zinc-200 rounded-lg text-xs font-bold outline-none"><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select></div>
-                                                        <div className="space-y-3">
-                                                          <div className="flex flex-wrap justify-between items-center gap-2 px-1">
-                                                            <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Syllabus topics</label>
-                                                            <div className="flex gap-2 shrink-0">
-                                                              <button type="button" onClick={() => handleBulkTopicsAction('all')} className="text-[7px] font-black uppercase text-indigo-500 hover:text-indigo-700">All</button>
-                                                              <button type="button" onClick={() => handleBulkTopicsAction('none')} className="text-[7px] font-black uppercase text-zinc-400 hover:text-rose-500">None</button>
-                                                            </div>
-                                                          </div>
-                                                          <p className="text-[8px] font-medium text-zinc-500 px-1 -mt-1">Tap a card to include/exclude and set question counts.</p>
-                                                          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-2.5 space-y-2">
-                                                            <p className="text-[9px] font-semibold text-indigo-950">Uniform counts (enabled topics only)</p>
-                                                            <div className="flex flex-wrap items-center gap-2">
-                                                              <span className="text-[8px] font-medium text-zinc-600">Add</span>
-                                                              <input
-                                                                type="number"
-                                                                min={0}
-                                                                max={50}
-                                                                value={syllabusUniformDelta}
-                                                                onChange={(e) =>
-                                                                  setSyllabusUniformDelta(Math.max(0, parseInt(e.target.value, 10) || 0))
-                                                                }
-                                                                className="w-12 rounded border border-zinc-200 bg-white px-1 py-0.5 text-center text-[11px] font-bold text-indigo-700 outline-none focus:border-indigo-400"
-                                                              />
-                                                              <span className="text-[8px] text-zinc-500">to each</span>
-                                                              <button
-                                                                type="button"
-                                                                onClick={() => handleAddUniformToEnabledSyllabusTopics(syllabusUniformDelta)}
-                                                                className="rounded-md bg-indigo-600 px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-white hover:bg-indigo-700"
-                                                              >
-                                                                Apply
-                                                              </button>
-                                                              <button
-                                                                type="button"
-                                                                onClick={() => handleAddUniformToEnabledSyllabusTopics(-syllabusUniformDelta)}
-                                                                className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-[8px] font-semibold text-zinc-600 hover:bg-zinc-50"
-                                                                title="Subtract this amount from each enabled topic"
-                                                              >
-                                                                −
-                                                              </button>
-                                                            </div>
-                                                            <div className="flex flex-wrap items-center gap-2 border-t border-indigo-100/80 pt-2">
-                                                              <span className="text-[8px] font-medium text-zinc-600">Set all enabled to</span>
-                                                              <input
-                                                                type="number"
-                                                                min={0}
-                                                                max={100}
-                                                                value={syllabusUniformTarget}
-                                                                onChange={(e) =>
-                                                                  setSyllabusUniformTarget(Math.max(0, parseInt(e.target.value, 10) || 0))
-                                                                }
-                                                                className="w-12 rounded border border-zinc-200 bg-white px-1 py-0.5 text-center text-[11px] font-bold text-indigo-700 outline-none focus:border-indigo-400"
-                                                              />
-                                                              <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                  handleSetUniformCountForEnabledSyllabusTopics(syllabusUniformTarget)
-                                                                }
-                                                                className="rounded-md bg-white px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50"
-                                                              >
-                                                                Set
-                                                              </button>
-                                                            </div>
-                                                          </div>
-                                                          <div className="max-h-[min(420px,50vh)] overflow-y-auto custom-scrollbar p-2 sm:p-3 bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
-                                                            {isFetchingSyllabus && <p className="text-xs text-center p-4 text-zinc-400 animate-pulse">Fetching syllabus…</p>}
-                                                            {activeChapterSyllabus.length === 0 && !isFetchingSyllabus && (
-                                                              <div className="text-center p-6 flex flex-col items-center justify-center opacity-50">
-                                                                <iconify-icon icon="mdi:file-search-outline" width="32" className="mb-2" />
-                                                                <p className="text-[10px] font-black uppercase tracking-widest">No syllabus found</p>
-                                                                <p className="text-[8px] font-medium mt-1">Map this chapter in Syllabus Manager.</p>
-                                                                <button type="button" onClick={() => fetchActiveSyllabus(true)} className="mt-3 text-[9px] font-black uppercase text-indigo-600 bg-white border border-indigo-100 px-3 py-1.5 rounded-lg shadow-sm">Refetch</button>
-                                                              </div>
-                                                            )}
-                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                              {activeChapterSyllabus.map((topic) => {
-                                                                const topicConf = activeConfig.topicCounts[topic] || { count: 0, enabled: false };
-                                                                return (
-                                                                  <button
-                                                                    key={topic}
-                                                                    type="button"
-                                                                    onClick={() => setSyllabusDetailTopic(topic)}
-                                                                    className={`rounded-2xl border-2 p-3 text-left transition-all min-w-0 max-w-full ${
-                                                                      topicConf.enabled ? 'border-indigo-200 bg-indigo-50/90 shadow-sm' : 'border-zinc-100 bg-white hover:border-zinc-200'
-                                                                    }`}
-                                                                  >
-                                                                    <p className="text-[10px] font-bold text-zinc-800 line-clamp-3 break-words [overflow-wrap:anywhere] text-left">{topic}</p>
-                                                                    <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-                                                                      <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded ${topicConf.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-100 text-zinc-500'}`}>
-                                                                        {topicConf.enabled ? 'Included' : 'Off'}
-                                                                      </span>
-                                                                      {topicConf.enabled && topicConf.count > 0 && (
-                                                                        <span className="text-[7px] font-black text-indigo-600">{topicConf.count} Q</span>
-                                                                      )}
-                                                                    </div>
-                                                                    <span className="mt-2 inline-block text-[7px] font-black uppercase tracking-widest text-indigo-500">Open details →</span>
-                                                                  </button>
-                                                                );
-                                                              })}
-                                                            </div>
-                                                          </div>
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <>
-                                                        <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Visual Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => updateActiveConfig('visualMode', null, 'text')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'text' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Text Only</button><button onClick={() => updateActiveConfig('visualMode', null, 'image')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'image' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Reference Image</button></div></div>
-                                                        {activeConfig.visualMode === 'text' && <div className="bg-indigo-50/50 p-5 rounded-[2rem] border border-indigo-100 animate-slide-up"><div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><iconify-icon icon="mdi:auto-fix" className="text-indigo-600" /><span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Proportional Rigor Scalar</span></div><span className="bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-[10px] font-black text-indigo-700 shadow-sm">{activeConfig.total} Items</span></div><input type="range" min="1" max="100" value={activeConfig.total} onChange={(e) => handleUpdateProportionalTotal(parseInt(e.target.value))} className="w-full h-1.5 bg-indigo-200 rounded-full appearance-none cursor-pointer accent-indigo-600 mb-3" /><button onClick={() => updateActiveConfig('isProportional', null, !activeConfig.isProportional)} className="mt-4 w-full py-1.5 bg-white border border-indigo-100 rounded-xl text-[8px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600 transition-colors">{activeConfig.isProportional ? 'Switch to Manual Distribution' : 'Lock Proportional Mode'}</button></div>}
-                                                        {activeConfig.visualMode === 'image' ? (
-                                                          <div className="space-y-2">
-                                                            <p className="text-[8px] font-medium text-zinc-500 px-0.5 leading-relaxed">
-                                                              From DOCX embeds, or PDF pages if the chapter has no DOCX images. Toggle Reference Image again to reload.
-                                                            </p>
-                                                            <div className="grid grid-cols-2 gap-3 max-h-[min(420px,55vh)] overflow-y-auto custom-scrollbar pr-2 p-2 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
-                                                              {isExtracting ? (
-                                                                <div className="col-span-2 flex flex-col items-center justify-center py-14 gap-3 text-zinc-400">
-                                                                  <div className="w-10 h-10 border-2 border-zinc-200 border-t-indigo-500 rounded-full animate-spin" />
-                                                                  <span className="text-[10px] font-semibold uppercase tracking-wider">Loading reference images…</span>
-                                                                </div>
-                                                              ) : extractedFigures.length > 0 ? (
-                                                                extractedFigures.map((fig, idx) => {
-                                                                  const count = activeConfig.selectedFigures?.[idx] || 0;
-                                                                  return (
-                                                                    <div
-                                                                      key={idx}
-                                                                      className={`relative group flex flex-col bg-white border-2 rounded-2xl overflow-hidden transition-all min-h-0 ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-zinc-100'}`}
-                                                                    >
-                                                                      <div className="relative w-full bg-white flex items-center justify-center min-h-[140px] max-h-[220px]">
-                                                                        <img
-                                                                          src={`data:${fig.mimeType};base64,${fig.data}`}
-                                                                          alt=""
-                                                                          className="w-full h-full max-h-[220px] object-contain"
-                                                                        />
-                                                                      </div>
-                                                                      <span className="text-[7px] font-bold text-zinc-400 uppercase tracking-wider text-center py-1 border-t border-zinc-100 bg-zinc-50/80">
-                                                                        #{idx + 1}
-                                                                      </span>
-                                                                      <div className="absolute inset-0 bg-zinc-900/0 group-hover:bg-zinc-900/30 transition-all flex items-center justify-center gap-2 pointer-events-none group-hover:pointer-events-auto">
-                                                                        <button
-                                                                          type="button"
-                                                                          onClick={() => handleUpdateFigureCount(idx, count - 1)}
-                                                                          className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"
-                                                                        >
-                                                                          <iconify-icon icon="mdi:minus" />
-                                                                        </button>
-                                                                        <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-md">
-                                                                          {count}
-                                                                        </div>
-                                                                        <button
-                                                                          type="button"
-                                                                          onClick={() => handleUpdateFigureCount(idx, count + 1)}
-                                                                          className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"
-                                                                        >
-                                                                          <iconify-icon icon="mdi:plus" />
-                                                                        </button>
-                                                                      </div>
-                                                                    </div>
-                                                                  );
-                                                                })
-                                                              ) : (
-                                                                <div className="col-span-2 text-center py-10 px-3 space-y-2">
-                                                                  <p className="text-[10px] font-bold text-zinc-500">No reference images found</p>
-                                                                  <p className="text-[8px] text-zinc-400 leading-relaxed">
-                                                                    Upload a PDF or DOCX with figures on this chapter in Knowledge Base. PDFs load as page thumbnails (first 48 pages).
-                                                                  </p>
-                                                                </div>
-                                                              )}
-                                                            </div>
-                                                          </div>
-                                                        ) : !activeConfig.isProportional ? (
-                                                          <StepNumberInput icon="mdi:molecule" label="Synthetic Visuals" subText="Circuits, Structures, Graphs" color="text-rose-600" value={activeConfig.syntheticFigureCount || 0} onChange={(v:number) => updateActiveConfig('syntheticFigureCount', null, v)} />
-                                                        ) : null}
-                                                        <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
-                                                        <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
-                                                        <p className="rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-[8px] font-medium leading-snug text-zinc-600">
-                                                          To use one shared total and mix for every standard chapter, turn on the toggle under <strong className="font-semibold text-zinc-800">Selected batch</strong> and edit the uniform preset there.
-                                                        </p>
-                                                    </>
-                                                )}
-                                            </div>
-                                        ) : (
-                                          <p className="py-10 text-center text-sm text-zinc-500">Select a chapter in the batch list, then configure.</p>
-                                        )}
-                                    </div>
-                                    </Dialog.Content>
-                                  </Dialog.Portal>
-                                </Dialog.Root>
                                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                                     <div className="flex flex-col gap-3">
                                       <div className="rounded-xl border border-indigo-500/30 bg-zinc-900 p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3 transition-[box-shadow] duration-200">
@@ -3730,6 +4048,229 @@ const QuestionBankHome: React.FC = () => {
                                       </div>
                                     </div>
                                 </div>
+                                </>
+                                )}
+
+                                <Dialog.Root open={studioChapterConfigOpen} onOpenChange={setStudioChapterConfigOpen}>
+                                  <Dialog.Portal>
+                                    <Dialog.Overlay className="fixed inset-0 z-[180] bg-black/45 backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+                                    <Dialog.Content className="fixed left-1/2 top-1/2 z-[190] flex max-h-[min(92vh,760px)] w-[calc(100vw-1.25rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-0 text-zinc-900 shadow-xl [color-scheme:light] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+                                      <div className="shrink-0 flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:px-5">
+                                        <div className="min-w-0 pr-2">
+                                          <Dialog.Title className="text-sm font-bold text-zinc-900">Chapter config</Dialog.Title>
+                                          <Dialog.Description className="sr-only">
+                                            Synthesis mode, visuals, difficulty counts, and question style counts for forge.
+                                          </Dialog.Description>
+                                          <p className="mt-0.5 truncate text-xs text-zinc-500">
+                                            {activeEditingChapterId
+                                              ? String(chapters.find((c) => c.id === activeEditingChapterId)?.name || '')
+                                              : ''}
+                                                </p>
+                                            </div>
+                                        <Dialog.Close asChild>
+                                          <button
+                                            type="button"
+                                            className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 shrink-0"
+                                            aria-label="Close"
+                                          >
+                                            <iconify-icon icon="mdi:close" width="22" />
+                                          </button>
+                                        </Dialog.Close>
+                                      </div>
+                                      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 custom-scrollbar">
+                                        {activeConfig ? (
+                                            <div className="space-y-4 min-w-0 max-w-full overflow-hidden">
+                                                <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Synthesis Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => handleSynthesisModeChange('standard')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'standard' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Standard</button><button onClick={() => handleSynthesisModeChange('syllabus')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.synthesisMode === 'syllabus' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Syllabus Focused</button></div></div>
+                                                {/* (Rest of Studio Config as per original...) */}
+                                                {activeConfig.synthesisMode === 'syllabus' ? (
+                                                    <div className="space-y-4">
+                                                        <div className="flex flex-col gap-2 w-full bg-white p-3.5 rounded-2xl border border-zinc-100 shadow-sm"><div className="flex justify-between items-center px-1"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Difficulty</label><button onClick={() => fetchActiveSyllabus(true)} className="text-[8px] font-black uppercase text-indigo-400 hover:text-indigo-600 flex items-center gap-1 transition-colors" title="Force Fetch Topics"><iconify-icon icon="mdi:refresh" /> Refresh Topics</button></div><select value={activeConfig.syllabusDifficulty} onChange={(e) => updateActiveConfig('syllabusDifficulty', null, e.target.value)} className="w-full p-2 bg-zinc-50 border border-zinc-200 rounded-lg text-xs font-bold outline-none"><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select></div>
+                                                        <div className="space-y-3">
+                                                          <div className="flex flex-wrap justify-between items-center gap-2 px-1">
+                                                            <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Syllabus topics</label>
+                                                            <div className="flex gap-2 shrink-0">
+                                                              <button type="button" onClick={() => handleBulkTopicsAction('all')} className="text-[7px] font-black uppercase text-indigo-500 hover:text-indigo-700">All</button>
+                                                              <button type="button" onClick={() => handleBulkTopicsAction('none')} className="text-[7px] font-black uppercase text-zinc-400 hover:text-rose-500">None</button>
+                                                            </div>
+                                                          </div>
+                                                          <p className="text-[8px] font-medium text-zinc-500 px-1 -mt-1">Tap a card to include/exclude and set question counts.</p>
+                                                          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-2.5 space-y-2">
+                                                            <p className="text-[9px] font-semibold text-indigo-950">Uniform counts (enabled topics only)</p>
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                              <span className="text-[8px] font-medium text-zinc-600">Add</span>
+                                                              <input
+                                                                type="number"
+                                                                min={0}
+                                                                max={50}
+                                                                value={syllabusUniformDelta}
+                                                                onChange={(e) =>
+                                                                  setSyllabusUniformDelta(Math.max(0, parseInt(e.target.value, 10) || 0))
+                                                                }
+                                                                className="w-12 rounded border border-zinc-200 bg-white px-1 py-0.5 text-center text-[11px] font-bold text-indigo-700 outline-none focus:border-indigo-400"
+                                                              />
+                                                              <span className="text-[8px] text-zinc-500">to each</span>
+                                                              <button
+                                                                type="button"
+                                                                onClick={() => handleAddUniformToEnabledSyllabusTopics(syllabusUniformDelta)}
+                                                                className="rounded-md bg-indigo-600 px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-white hover:bg-indigo-700"
+                                                              >
+                                                                Apply
+                                                              </button>
+                                                              <button
+                                                                type="button"
+                                                                onClick={() => handleAddUniformToEnabledSyllabusTopics(-syllabusUniformDelta)}
+                                                                className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-[8px] font-semibold text-zinc-600 hover:bg-zinc-50"
+                                                                title="Subtract this amount from each enabled topic"
+                                                              >
+                                                                −
+                                                              </button>
+                                                            </div>
+                                                            <div className="flex flex-wrap items-center gap-2 border-t border-indigo-100/80 pt-2">
+                                                              <span className="text-[8px] font-medium text-zinc-600">Set all enabled to</span>
+                                                              <input
+                                                                type="number"
+                                                                min={0}
+                                                                max={100}
+                                                                value={syllabusUniformTarget}
+                                                                onChange={(e) =>
+                                                                  setSyllabusUniformTarget(Math.max(0, parseInt(e.target.value, 10) || 0))
+                                                                }
+                                                                className="w-12 rounded border border-zinc-200 bg-white px-1 py-0.5 text-center text-[11px] font-bold text-indigo-700 outline-none focus:border-indigo-400"
+                                                              />
+                                                              <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                  handleSetUniformCountForEnabledSyllabusTopics(syllabusUniformTarget)
+                                                                }
+                                                                className="rounded-md bg-white px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50"
+                                                              >
+                                                                Set
+                                                              </button>
+                                                            </div>
+                                                          </div>
+                                                          <div className="max-h-[min(420px,50vh)] overflow-y-auto custom-scrollbar p-2 sm:p-3 bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
+                                                            {isFetchingSyllabus && <p className="text-xs text-center p-4 text-zinc-400 animate-pulse">Fetching syllabus…</p>}
+                                                            {activeChapterSyllabus.length === 0 && !isFetchingSyllabus && (
+                                                              <div className="text-center p-6 flex flex-col items-center justify-center opacity-50">
+                                                                <iconify-icon icon="mdi:file-search-outline" width="32" className="mb-2" />
+                                                                <p className="text-[10px] font-black uppercase tracking-widest">No syllabus found</p>
+                                                                <p className="text-[8px] font-medium mt-1">Map this chapter in Syllabus Manager.</p>
+                                                                <button type="button" onClick={() => fetchActiveSyllabus(true)} className="mt-3 text-[9px] font-black uppercase text-indigo-600 bg-white border border-indigo-100 px-3 py-1.5 rounded-lg shadow-sm">Refetch</button>
+                                                              </div>
+                                                            )}
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                              {activeChapterSyllabus.map((topic) => {
+                                                                const topicConf = activeConfig.topicCounts[topic] || { count: 0, enabled: false };
+                                                                return (
+                                                                  <button
+                                                                    key={topic}
+                                                                    type="button"
+                                                                    onClick={() => setSyllabusDetailTopic(topic)}
+                                                                    className={`rounded-2xl border-2 p-3 text-left transition-all min-w-0 max-w-full ${
+                                                                      topicConf.enabled ? 'border-indigo-200 bg-indigo-50/90 shadow-sm' : 'border-zinc-100 bg-white hover:border-zinc-200'
+                                                                    }`}
+                                                                  >
+                                                                    <p className="text-[10px] font-bold text-zinc-800 line-clamp-3 break-words [overflow-wrap:anywhere] text-left">{topic}</p>
+                                                                    <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                                                                      <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded ${topicConf.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-100 text-zinc-500'}`}>
+                                                                        {topicConf.enabled ? 'Included' : 'Off'}
+                                                                      </span>
+                                                                      {topicConf.enabled && topicConf.count > 0 && (
+                                                                        <span className="text-[7px] font-black text-indigo-600">{topicConf.count} Q</span>
+                                                                      )}
+                                                                    </div>
+                                                                    <span className="mt-2 inline-block text-[7px] font-black uppercase tracking-widest text-indigo-500">Open details →</span>
+                                                                  </button>
+                                                                );
+                                                              })}
+                                                            </div>
+                                                          </div>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <div className="space-y-4"><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Visual Mode</label><div className="flex bg-zinc-100 p-1 rounded-2xl border border-zinc-200"><button onClick={() => updateActiveConfig('visualMode', null, 'text')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'text' ? 'bg-white text-rose-600 shadow-sm' : 'text-zinc-400'}`}>Text Only</button><button onClick={() => updateActiveConfig('visualMode', null, 'image')} className={`flex-1 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${activeConfig.visualMode === 'image' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400'}`}>Reference Image</button></div></div>
+                                                        {activeConfig.visualMode === 'text' && <div className="bg-indigo-50/50 p-5 rounded-[2rem] border border-indigo-100 animate-slide-up"><div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><iconify-icon icon="mdi:auto-fix" className="text-indigo-600" /><span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Proportional Rigor Scalar</span></div><span className="bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-[10px] font-black text-indigo-700 shadow-sm">{activeConfig.total} Items</span></div><input type="range" min="1" max="100" value={activeConfig.total} onChange={(e) => handleUpdateProportionalTotal(parseInt(e.target.value))} className="w-full h-1.5 bg-indigo-200 rounded-full appearance-none cursor-pointer accent-indigo-600 mb-3" /><button onClick={() => updateActiveConfig('isProportional', null, !activeConfig.isProportional)} className="mt-4 w-full py-1.5 bg-white border border-indigo-100 rounded-xl text-[8px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600 transition-colors">{activeConfig.isProportional ? 'Switch to Manual Distribution' : 'Lock Proportional Mode'}</button></div>}
+                                                        {activeConfig.visualMode === 'image' ? (
+                                                          <div className="space-y-2">
+                                                            <p className="text-[8px] font-medium text-zinc-500 px-0.5 leading-relaxed">
+                                                              From DOCX embeds, or PDF pages if the chapter has no DOCX images. Toggle Reference Image again to reload.
+                                                            </p>
+                                                            <div className="grid grid-cols-2 gap-3 max-h-[min(420px,55vh)] overflow-y-auto custom-scrollbar pr-2 p-2 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
+                                                              {isExtracting ? (
+                                                                <div className="col-span-2 flex flex-col items-center justify-center py-14 gap-3 text-zinc-400">
+                                                                  <div className="w-10 h-10 border-2 border-zinc-200 border-t-indigo-500 rounded-full animate-spin" />
+                                                                  <span className="text-[10px] font-semibold uppercase tracking-wider">Loading reference images…</span>
+                                                                </div>
+                                                              ) : extractedFigures.length > 0 ? (
+                                                                extractedFigures.map((fig, idx) => {
+                                                                  const count = activeConfig.selectedFigures?.[idx] || 0;
+                                                                  return (
+                                                                    <div
+                                                                      key={idx}
+                                                                      className={`relative group flex flex-col bg-white border-2 rounded-2xl overflow-hidden transition-all min-h-0 ${count > 0 ? 'border-indigo-500 shadow-md' : 'border-zinc-100'}`}
+                                                                    >
+                                                                      <div className="relative w-full bg-white flex items-center justify-center min-h-[140px] max-h-[220px]">
+                                                                        <img
+                                                                          src={`data:${fig.mimeType};base64,${fig.data}`}
+                                                                          alt=""
+                                                                          className="w-full h-full max-h-[220px] object-contain"
+                                                                        />
+                                                                      </div>
+                                                                      <span className="text-[7px] font-bold text-zinc-400 uppercase tracking-wider text-center py-1 border-t border-zinc-100 bg-zinc-50/80">
+                                                                        #{idx + 1}
+                                                                      </span>
+                                                                      <div className="absolute inset-0 bg-zinc-900/0 group-hover:bg-zinc-900/30 transition-all flex items-center justify-center gap-2 pointer-events-none group-hover:pointer-events-auto">
+                                                                        <button
+                                                                          type="button"
+                                                                          onClick={() => handleUpdateFigureCount(idx, count - 1)}
+                                                                          className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"
+                                                                        >
+                                                                          <iconify-icon icon="mdi:minus" />
+                                                                        </button>
+                                                                        <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-md">
+                                                                          {count}
+                                                                        </div>
+                                                                        <button
+                                                                          type="button"
+                                                                          onClick={() => handleUpdateFigureCount(idx, count + 1)}
+                                                                          className="w-8 h-8 rounded-full bg-white text-zinc-900 shadow-lg opacity-0 group-hover:opacity-100 hover:scale-110 transition-all flex items-center justify-center"
+                                                                        >
+                                                                          <iconify-icon icon="mdi:plus" />
+                                                                        </button>
+                                                                      </div>
+                                                                    </div>
+                                                                  );
+                                                                })
+                                                              ) : (
+                                                                <div className="col-span-2 text-center py-10 px-3 space-y-2">
+                                                                  <p className="text-[10px] font-bold text-zinc-500">No reference images found</p>
+                                                                  <p className="text-[8px] text-zinc-400 leading-relaxed">
+                                                                    Upload a PDF or DOCX with figures on this chapter in Knowledge Base. PDFs load as page thumbnails (first 48 pages).
+                                                                  </p>
+                                                                </div>
+                                                              )}
+                                                            </div>
+                                                          </div>
+                                                        ) : !activeConfig.isProportional ? (
+                                                          <StepNumberInput icon="mdi:molecule" label="Synthetic Visuals" subText="Circuits, Structures, Graphs" color="text-rose-600" value={activeConfig.syntheticFigureCount || 0} onChange={(v:number) => updateActiveConfig('syntheticFigureCount', null, v)} />
+                                                        ) : null}
+                                                        <div className={`grid grid-cols-1 gap-3 ${activeConfig.isProportional ? 'opacity-40 pointer-events-none' : ''}`}><StepNumberInput disabled={activeConfig.isProportional} label="Easy" color="text-emerald-500" value={activeConfig.diff.easy} onChange={(v:number) => updateActiveConfig('diff', 'easy', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Medium" color="text-amber-500" value={activeConfig.diff.medium} onChange={(v:number) => updateActiveConfig('diff', 'medium', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Hard" color="text-rose-500" value={activeConfig.diff.hard} onChange={(v:number) => updateActiveConfig('diff', 'hard', v)} /></div>
+                                                        <div className="border-t border-zinc-100 pt-6 mt-6"><h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1 mb-4">Question Styles</h4><div className="grid grid-cols-2 gap-3"><StepNumberInput disabled={activeConfig.isProportional} label="MCQ" color="text-indigo-500" value={activeConfig.types.mcq} onChange={(v:number) => updateActiveConfig('types', 'mcq', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Assertion" color="text-indigo-500" value={activeConfig.types.reasoning} onChange={(v:number) => updateActiveConfig('types', 'reasoning', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Matching" color="text-indigo-500" value={activeConfig.types.matching} onChange={(v:number) => updateActiveConfig('types', 'matching', v)} /><StepNumberInput disabled={activeConfig.isProportional} label="Statements" color="text-indigo-500" value={activeConfig.types.statements} onChange={(v:number) => updateActiveConfig('types', 'statements', v)} /></div></div>
+                                                        <p className="rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-[8px] font-medium leading-snug text-zinc-600">
+                                                          To use one shared total and mix for every standard chapter, turn on the toggle under <strong className="font-semibold text-zinc-800">Selected batch</strong> and edit the uniform preset there.
+                                                        </p>
+                                                    </>
+                                                )}
+                                            </div>
+                                        ) : (
+                                          <p className="py-10 text-center text-sm text-zinc-500">Select a chapter in the batch list, then configure.</p>
+                                        )}
+                                    </div>
+                                    </Dialog.Content>
+                                  </Dialog.Portal>
+                                </Dialog.Root>
+
 
                             {syllabusDetailTopic && activeConfig && (
                               <div
@@ -3858,6 +4399,11 @@ const QuestionBankHome: React.FC = () => {
                                     onFlagOutOfSyllabus={mode === 'browse' ? handleFlagOutOfSyllabus : undefined}
                                     isFlaggedOutOfSyllabus={flaggedQuestionIds.has(String(q.id))}
                                     flagReason={flagReasonsByQuestionId[String(q.id)] ?? null}
+                                    onRequestDelete={
+                                      mode === 'browse' || mode === 'review'
+                                        ? openDeleteQuestionConfirm
+                                        : undefined
+                                    }
                                 />
                             ))
                          )}
