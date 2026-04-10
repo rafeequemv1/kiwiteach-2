@@ -50,6 +50,20 @@ interface BusinessKnowledgeBaseAccessRow {
 
 const COLORS = ['indigo', 'rose', 'emerald', 'amber', 'violet'] as const;
 
+function formatOrgDeleteError(raw: string): string {
+  const m = raw || '';
+  if (/Student must have business_id, institute_id, and class_id/i.test(m)) {
+    return 'This class still has students on the roster. The roster cannot leave a student without a class. Reassign or remove those students in Students, then delete the class.';
+  }
+  if (/students_institute_id_fkey|violates foreign key.*institute/i.test(m)) {
+    return 'This institute still has students on the roster linked to it. Reassign or remove those students in Students, then try again.';
+  }
+  if (/students_class_id|violates foreign key.*class/i.test(m)) {
+    return 'This class still has students on the roster. Reassign or remove them in Students, then try again.';
+  }
+  return m;
+}
+
 /**
  * Businesses → institutes → classes. Institutes may be unassigned (legacy).
  */
@@ -223,9 +237,14 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
 
   const handleDeleteBusiness = async (id: string) => {
     if (!confirm('Remove this business? Institutes under it become unassigned.')) return;
-    const { error } = await supabase.from('businesses').delete().eq('id', id).eq('user_id', userId);
+    // Do not filter by user_id: same-business teachers may delete; RLS enforces access.
+    const { data, error } = await supabase.from('businesses').delete().eq('id', id).select('id');
     if (error) {
       alert(error.message);
+      return;
+    }
+    if (!data?.length) {
+      alert('Could not remove this business. You may not have permission, or it no longer exists.');
       return;
     }
     await load();
@@ -270,9 +289,13 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
       user_id: userId,
     };
     if (businessId) row.business_id = businessId;
-    let { error } = await supabase.from('institutes').insert(row);
+    let { error } = await supabase.from('institutes').insert(row).select('id').maybeSingle();
     if (error && /business_id|does not exist|42703/i.test(`${error.message} ${error.code || ''}`)) {
-      const { error: e2 } = await supabase.from('institutes').insert({ name: newInstituteName.trim(), user_id: userId });
+      const { error: e2 } = await supabase
+        .from('institutes')
+        .insert({ name: newInstituteName.trim(), user_id: userId })
+        .select('id')
+        .maybeSingle();
       error = e2;
     }
     if (error) {
@@ -286,9 +309,25 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
 
   const handleDeleteInstitute = async (id: string) => {
     if (!confirm('Delete this institute and all linked classes?')) return;
-    const { error } = await supabase.from('institutes').delete().eq('id', id).eq('user_id', userId);
+    const { count: rosterN, error: countErr } = await supabase
+      .from('students')
+      .select('id', { count: 'exact', head: true })
+      .eq('institute_id', id);
+    if (!countErr && rosterN && rosterN > 0) {
+      alert(
+        `This institute has ${rosterN} student(s) on the roster. Reassign or remove them in Students before deleting the institute.`,
+      );
+      return;
+    }
+    const { data, error } = await supabase.from('institutes').delete().eq('id', id).select('id');
     if (error) {
-      alert(error.message);
+      alert(formatOrgDeleteError(error.message));
+      return;
+    }
+    if (!data?.length) {
+      alert(
+        'Could not delete this institute. You may not have permission, or linked data (e.g. students) still references it.',
+      );
       return;
     }
     await load();
@@ -311,11 +350,15 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
   const handleAddClass = async (e: React.FormEvent, instituteId: string) => {
     e.preventDefault();
     if (!newClassName.trim()) return;
-    const { error } = await supabase.from('classes').insert({
-      name: newClassName.trim(),
-      institute_id: instituteId,
-      user_id: userId,
-    });
+    const { error } = await supabase
+      .from('classes')
+      .insert({
+        name: newClassName.trim(),
+        institute_id: instituteId,
+        user_id: userId,
+      })
+      .select('id')
+      .maybeSingle();
     if (error) {
       alert(error.message);
       return;
@@ -326,9 +369,24 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
   };
 
   const handleDeleteClass = async (id: string) => {
-    const { error } = await supabase.from('classes').delete().eq('id', id).eq('user_id', userId);
+    if (!confirm('Remove this class / batch?')) return;
+    const { count: rosterN, error: countErr } = await supabase
+      .from('students')
+      .select('id', { count: 'exact', head: true })
+      .eq('class_id', id);
+    if (!countErr && rosterN && rosterN > 0) {
+      alert(
+        `This class has ${rosterN} student(s) on the roster. Reassign or remove them in Students, then try again.`,
+      );
+      return;
+    }
+    const { data, error } = await supabase.from('classes').delete().eq('id', id).select('id');
     if (error) {
-      alert(error.message);
+      alert(formatOrgDeleteError(error.message));
+      return;
+    }
+    if (!data?.length) {
+      alert('Could not remove this class. You may not have permission, or it no longer exists.');
       return;
     }
     await load();
@@ -382,8 +440,9 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => handleDeleteInstitute(inst.id)}
-            className="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-400 hover:border-rose-200 hover:text-rose-600"
+            disabled={loading}
+            onClick={() => void handleDeleteInstitute(inst.id)}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-400 hover:border-rose-200 hover:text-rose-600 disabled:opacity-50"
           >
             <iconify-icon icon="mdi:trash-can-outline" width="16" />
           </button>
@@ -406,8 +465,9 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => handleDeleteClass(cls.id)}
-                    className="text-zinc-400 hover:text-rose-600"
+                    disabled={loading}
+                    onClick={() => void handleDeleteClass(cls.id)}
+                    className="text-zinc-400 hover:text-rose-600 disabled:opacity-50"
                     aria-label={`Remove ${cls.name}`}
                   >
                     <iconify-icon icon="mdi:close" width="14" />
@@ -428,7 +488,8 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
             />
             <button
               type="submit"
-              className="shrink-0 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-zinc-800 hover:bg-zinc-50"
+              disabled={loading}
+              className="shrink-0 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-zinc-800 hover:bg-zinc-50 disabled:opacity-50"
             >
               Add class
             </button>
@@ -467,7 +528,8 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
           />
           <button
             type="submit"
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-white shadow-sm transition-colors hover:bg-zinc-800"
+            disabled={loading}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-white shadow-sm transition-colors hover:bg-zinc-800 disabled:opacity-50"
           >
             <iconify-icon icon="mdi:plus" width="16" /> Add business
           </button>
@@ -505,7 +567,8 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
           />
           <button
             type="submit"
-            className="inline-flex shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-medium text-zinc-800 hover:bg-zinc-50"
+            disabled={loading}
+            className="inline-flex shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 py-2 text-[11px] font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-50"
           >
             Add institute
           </button>
@@ -576,8 +639,9 @@ const BusinessOrgPanel: React.FC<BusinessOrgPanelProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleDeleteBusiness(biz.id)}
-                    className="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-400 hover:border-rose-200 hover:text-rose-600"
+                    disabled={loading}
+                    onClick={() => void handleDeleteBusiness(biz.id)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-400 hover:border-rose-200 hover:text-rose-600 disabled:opacity-50"
                   >
                     <iconify-icon icon="mdi:trash-can-outline" width="16" />
                   </button>

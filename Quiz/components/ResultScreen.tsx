@@ -429,15 +429,19 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
     savedFingerprint !== null && paperContentFingerprint(currentQuestions, editableTopic) === savedFingerprint;
   const [isOmrOpen, setIsOmrOpen] = useState(false);
   const [isDownloadingOmrPdf, setIsDownloadingOmrPdf] = useState(false);
+  const [isDownloadingAnswerSheet, setIsDownloadingAnswerSheet] = useState(false);
+  /** Answer sheet PDF: off = compact one-page key; on = two-column key + explanations (matches paper order). */
+  const [answerSheetWithExplanations, setAnswerSheetWithExplanations] = useState(false);
   /** Left rail: paper matrix, breakdown, page navigator (lg+). */
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
-  /** Right rail: layout & formatting controls (lg+). */
-  const [isControlsOpen, setIsControlsOpen] = useState(false);
   const [pendingPrint, setPendingPrint] = useState(false);
 
-  type ResultMobileSheet = null | 'insights' | 'layout';
+  type ResultMobileSheet = null | 'insights';
   const [resultMobileSheet, setResultMobileSheet] = useState<ResultMobileSheet>(null);
-  const [topicSummaryOpen, setTopicSummaryOpen] = useState(false);
+  /** Topics breakdown + layout controls (tabbed modal). */
+  const [paperToolsModalOpen, setPaperToolsModalOpen] = useState(false);
+  const [paperToolsTab, setPaperToolsTab] = useState<'topics' | 'layout'>('topics');
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false);
   /** null = all classes; otherwise filter topic list to questions from that class (from test `chapters` metadata). */
   const [topicModalClassFilter, setTopicModalClassFilter] = useState<string | null>(null);
   /** null = all paper sections; otherwise Botany / Zoology / Chemistry / Physics (matches `resolveQuestionPaperSection`). */
@@ -513,30 +517,39 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
   }, [resultMobileSheet, isLgLayout]);
 
   useEffect(() => {
-    if (!topicSummaryOpen) return;
+    if (!paperToolsModalOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setTopicSummaryOpen(false);
+      if (e.key === 'Escape') setPaperToolsModalOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [topicSummaryOpen]);
+  }, [paperToolsModalOpen]);
 
   useEffect(() => {
-    if (topicSummaryOpen) {
+    if (!downloadModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDownloadModalOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [downloadModalOpen]);
+
+  useEffect(() => {
+    if (paperToolsModalOpen) {
       setTopicModalClassFilter(null);
       setTopicModalSubjectFilter(null);
     }
-  }, [topicSummaryOpen]);
+  }, [paperToolsModalOpen]);
 
   const toggleInsightsPanel = useCallback(() => {
     if (isLgLayout) setIsInsightsOpen((o) => !o);
     else setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'));
   }, [isLgLayout]);
 
-  const toggleLayoutPanel = useCallback(() => {
-    if (isLgLayout) setIsControlsOpen((o) => !o);
-    else setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'));
-  }, [isLgLayout]);
+  const openPaperTools = useCallback((tab: 'topics' | 'layout') => {
+    setPaperToolsTab(tab);
+    setPaperToolsModalOpen(true);
+  }, []);
   
   const [layoutBaseline] = useState(() => mergePaperLayout(initialLayoutConfig));
   const [viewMode, setViewMode] = useState<'scroll' | 'grid'>(layoutBaseline.viewMode || 'scroll');
@@ -788,20 +801,24 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
       } catch (e: any) { alert("Save failed: " + e.message); } finally { setIsSaving(false); }
   };
 
-  const handleDownloadKeys = async () => {
-    setIsSaving(true);
+  const handleDownloadAnswerSheet = useCallback(async () => {
+    setIsDownloadingAnswerSheet(true);
     try {
-        await generateAnswerKeyPDF({
-            topic: editableTopic,
-            questions: currentQuestions,
-            brandConfig: brandConfig,
-        });
+      const safeName = editableTopic.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, '_') || 'Test';
+      const suffix = answerSheetWithExplanations ? '_Answer_Key_Explained.pdf' : '_Answer_Sheet.pdf';
+      await generateAnswerKeyPDF({
+        topic: editableTopic,
+        questions: questionsOrderedForAnswerKey,
+        brandConfig,
+        includeExplanations: answerSheetWithExplanations,
+        filename: `${safeName}${suffix}`,
+      });
     } catch (e: any) {
-        alert("Key PDF generation failed: " + e.message);
+      alert('Answer sheet download failed: ' + (e?.message ? String(e.message) : String(e)));
     } finally {
-        setIsSaving(false);
+      setIsDownloadingAnswerSheet(false);
     }
-  };
+  }, [editableTopic, questionsOrderedForAnswerKey, brandConfig, answerSheetWithExplanations]);
 
   const clearPendingPrint = useCallback(() => setPendingPrint(false), []);
 
@@ -2259,7 +2276,6 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
   };
 
   const insightsPanelActive = isLgLayout ? isInsightsOpen : resultMobileSheet === 'insights';
-  const layoutControlsActive = isLgLayout ? isControlsOpen : resultMobileSheet === 'layout';
   const scrollPageScaled = viewMode === 'scroll' && scrollPreviewScale < 0.998;
   const previewScale = scrollPageScaled ? scrollPreviewScale : 1;
 
@@ -2375,13 +2391,10 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
     </div>
   );
 
-  const layoutControlsPanel = (
-    <>
-      <div className="border-b border-zinc-200 bg-zinc-50/90 p-6">
-        <h3 className="text-sm font-semibold tracking-tight text-zinc-900">Layout controls</h3>
-        <p className="text-[10px] font-medium text-zinc-500">Paper &amp; content</p>
-      </div>
-      <div className="flex-1 space-y-8 overflow-y-auto custom-scrollbar p-6">
+  /** Layout tab body (also used inside the paper tools modal). */
+  const layoutControlsBody = (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex-1 space-y-8 overflow-y-auto custom-scrollbar p-4 sm:p-6">
         <div>
           <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">View mode</h4>
           <div className="flex rounded-md border border-zinc-200 bg-zinc-100 p-0.5 shadow-inner">
@@ -2444,16 +2457,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
             Question spacing (~20px) is chosen automatically from a small range so pages pack tightly with minimal bottom gap. Typography changes reflow on the next animation frame.
           </p>
         </div>
-
-        <div>
-          <h4 className="mb-4 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">Utilities</h4>
-          <button type="button" onClick={handleDownloadKeys} disabled={isPaginating || isSaving} className="flex w-full items-center justify-center gap-2 rounded-md border border-cyan-200 bg-cyan-50 px-4 py-3 text-[10px] font-medium uppercase tracking-widest text-cyan-800 shadow-sm transition-all hover:bg-cyan-100 disabled:opacity-50">
-            {isSaving ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-200 border-t-cyan-700"></div> : <iconify-icon icon="mdi:key-download-outline" width="16" />}
-            Download Answer Key
-          </button>
-        </div>
       </div>
-    </>
+      </div>
   );
 
   return (
@@ -2541,72 +2546,86 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                 <iconify-icon icon="mdi:camera-metering-spot" width="16" />
                 <span className="max-[340px]:sr-only sm:inline">Evaluate</span>
               </button>
+
+              <div
+                className="flex shrink-0 rounded-md border border-zinc-200 bg-zinc-100 p-0.5 shadow-inner"
+                role="group"
+                aria-label="Paper preview layout"
+              >
+                <button
+                  type="button"
+                  onClick={() => setViewMode('scroll')}
+                  aria-pressed={viewMode === 'scroll'}
+                  title="Scroll view — full pages"
+                  className={`flex h-8 w-8 items-center justify-center rounded sm:h-9 sm:w-9 ${viewMode === 'scroll' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'}`}
+                >
+                  <iconify-icon icon="mdi:view-day-outline" width="18" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('grid')}
+                  aria-pressed={viewMode === 'grid'}
+                  title="Grid view — page thumbnails"
+                  className={`flex h-8 w-8 items-center justify-center rounded sm:h-9 sm:w-9 ${viewMode === 'grid' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800'}`}
+                >
+                  <iconify-icon icon="mdi:view-grid-outline" width="18" />
+                </button>
+              </div>
+
               <button
                 type="button"
-                onClick={handleDownloadOmrSheet}
-                disabled={isDownloadingOmrPdf}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-rose-100 bg-rose-50 text-rose-700 shadow-sm transition-all hover:bg-rose-100 disabled:opacity-50 sm:h-10 sm:w-10"
-                title="Download OMR sheet"
-                aria-label="Download OMR sheet"
+                onClick={() => openPaperTools('topics')}
+                className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5 ${
+                  paperToolsModalOpen && paperToolsTab === 'topics'
+                    ? 'border-violet-200 bg-violet-50 text-violet-900'
+                    : 'border-violet-200/80 bg-white text-violet-800 hover:bg-violet-50'
+                }`}
+                title="Topic breakdown & layout"
+                aria-pressed={paperToolsModalOpen && paperToolsTab === 'topics'}
               >
-                {isDownloadingOmrPdf ? (
-                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200 border-t-rose-700" />
-                ) : (
-                  <iconify-icon icon="mdi:file-download-outline" width="18" />
-                )}
+                <iconify-icon icon="mdi:text-box-search-outline" width="16" />
+                <span className="max-[360px]:sr-only">Details</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setDownloadModalOpen(true)}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-900 bg-zinc-900 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
+                title="Download OMR sheet or answer sheet"
+              >
+                <iconify-icon icon="mdi:file-download-outline" width="16" />
+                <span>Download</span>
+              </button>
+
               <button
                 type="button"
                 onClick={handleSaveToCloud}
                 disabled={isSaving || saveComplete}
-                className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-all sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5 ${saveComplete ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'bg-zinc-900 text-white hover:bg-zinc-800'}`}
-                title="Sync to hub"
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border shadow-sm transition-all sm:h-10 sm:w-10 ${
+                  saveComplete
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50'
+                } disabled:opacity-50`}
+                title={saveComplete ? 'Saved to hub' : 'Sync to hub'}
+                aria-label={saveComplete ? 'Saved to hub' : 'Sync to hub'}
               >
-                {isSaving ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <iconify-icon icon="mdi:cloud-upload" width="16" />}
-                <span className="max-[380px]:sr-only sm:inline">{saveComplete ? 'Saved' : 'Sync'}</span>
+                {isSaving ? (
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-700" />
+                ) : (
+                  <iconify-icon icon="mdi:cloud-upload-outline" width="20" />
+                )}
               </button>
               <button
                 type="button"
                 onClick={handlePrint}
                 disabled={isPaginating}
-                className="flex shrink-0 items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-white shadow-sm transition-all hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-6 lg:py-2.5"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-zinc-700 shadow-sm transition-all hover:border-zinc-300 hover:bg-zinc-50 active:scale-[0.99] disabled:opacity-50 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
                 title="Print"
               >
                 <iconify-icon icon="mdi:printer" width="16" />
-                Print
+                <span className="max-[380px]:sr-only">Print</span>
               </button>
 
-              <div className="mx-0.5 hidden h-6 w-px shrink-0 bg-zinc-200 sm:block" />
-
-              <button
-                type="button"
-                onClick={() => setTopicSummaryOpen(true)}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-[9px] font-medium uppercase tracking-widest text-violet-800 shadow-sm transition-colors hover:bg-violet-100 sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5"
-                title="Question count by topic (print order)"
-              >
-                <iconify-icon icon="mdi:tag-multiple-outline" width="16" />
-                <span className="max-[380px]:sr-only">Topics</span>
-              </button>
-              <button
-                type="button"
-                onClick={toggleInsightsPanel}
-                className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${insightsPanelActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'} sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5`}
-                title="Paper matrix, breakdown & page navigator"
-                aria-pressed={insightsPanelActive}
-              >
-                <iconify-icon icon="mdi:chart-box-outline" width="18" />
-                Insights
-              </button>
-              <button
-                type="button"
-                onClick={toggleLayoutPanel}
-                className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-[9px] font-medium uppercase tracking-widest shadow-sm transition-colors ${layoutControlsActive ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900'} sm:px-4 sm:text-[10px] lg:px-5 lg:py-2.5`}
-                title="View mode, content toggles & paper formatting"
-                aria-pressed={layoutControlsActive}
-              >
-                <iconify-icon icon="mdi:tune-variant" width="18" />
-                Layout
-              </button>
               <button
                 type="button"
                 onClick={onRestart}
@@ -2619,14 +2638,30 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
           </div>
        </header>
 
-       <div className="print-content-shell flex-1 flex min-h-0 overflow-hidden">
+       <div className="print-content-shell flex min-h-0 flex-1 overflow-hidden">
+            <div className="no-print flex w-9 shrink-0 flex-col items-stretch justify-center border-r border-zinc-200 bg-zinc-50/95 py-3 shadow-[2px_0_12px_rgba(0,0,0,0.04)] sm:w-10 sm:py-4 lg:w-11">
+              <button
+                type="button"
+                onClick={toggleInsightsPanel}
+                title="Page list, matrix & breakdown"
+                aria-pressed={insightsPanelActive}
+                className={`mx-0 flex h-[5.5rem] items-center justify-center rounded-r-md border border-l-0 border-zinc-200/90 px-1 py-2 text-[8px] font-bold uppercase tracking-[0.2em] shadow-sm transition-colors sm:h-24 sm:text-[9px] ${
+                  insightsPanelActive ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-white text-zinc-600 hover:bg-zinc-100'
+                }`}
+                style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' } as React.CSSProperties}
+              >
+                Pages
+              </button>
+            </div>
+
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             {isInsightsOpen && (
             <aside className="no-print hidden h-full min-h-0 w-[min(100vw-2rem,288px)] shrink-0 flex-col overflow-hidden border-r border-zinc-200 bg-white shadow-[4px_0_24px_rgba(0,0,0,0.04)] animate-fade-in lg:flex">
                 {insightsPanelScroll}
             </aside>
             )}
 
-            <main ref={mainHostRef} className="print-main-host min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-zinc-100 p-3 pb-24 custom-scrollbar sm:p-4 sm:pb-24 lg:p-8 lg:pb-8">
+            <main ref={mainHostRef} className="print-main-host min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-zinc-100 p-3 pb-8 custom-scrollbar sm:p-4 lg:p-8">
                 <div
                     id="printable-paper-area"
                     className={`${
@@ -2721,38 +2756,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                     })}
                 </div>
             </main>
-
-            {isControlsOpen && (
-                <aside className="no-print hidden w-72 shrink-0 flex-col border-l border-zinc-200 bg-white animate-fade-in lg:flex">
-                    {layoutControlsPanel}
-                </aside>
-            )}
+            </div>
        </div>
-
-            {!isLgLayout && (
-                <div className="no-print flex shrink-0 gap-2 border-t border-zinc-200 bg-white/95 px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm">
-                    <button
-                        type="button"
-                        onClick={() => setResultMobileSheet((s) => (s === 'insights' ? null : 'insights'))}
-                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-md text-[10px] font-medium uppercase tracking-widest transition-all ${
-                            resultMobileSheet === 'insights' ? 'bg-zinc-900 text-white shadow-sm' : 'border border-zinc-200 bg-zinc-50 text-zinc-600'
-                        }`}
-                    >
-                        <iconify-icon icon="mdi:chart-box-outline" width="20" />
-                        Insights
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setResultMobileSheet((s) => (s === 'layout' ? null : 'layout'))}
-                        className={`flex min-h-12 flex-1 items-center justify-center gap-2 rounded-md text-[10px] font-medium uppercase tracking-widest transition-all ${
-                            resultMobileSheet === 'layout' ? 'bg-zinc-900 text-white shadow-sm' : 'border border-zinc-200 bg-zinc-50 text-zinc-600'
-                        }`}
-                    >
-                        <iconify-icon icon="mdi:tune-variant" width="20" />
-                        Layout
-                    </button>
-                </div>
-            )}
 
             {!isLgLayout && resultMobileSheet && (
                 <>
@@ -2773,7 +2778,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                         </div>
                         <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 bg-zinc-50/80 px-4 py-2.5">
                             <span id="result-sheet-title" className="text-xs font-semibold uppercase tracking-widest text-zinc-800">
-                                {resultMobileSheet === 'insights' ? 'Paper insights' : 'Layout controls'}
+                                Pages
                             </span>
                             <button
                                 type="button"
@@ -2785,51 +2790,78 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                             </button>
                         </div>
                         <div className="flex max-h-[min(72vh,calc(90vh-5.5rem))] min-h-[36vh] flex-1 flex-col overflow-hidden">
-                            {resultMobileSheet === 'insights' ? (
-                                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{insightsPanelScroll}</div>
-                            ) : (
-                                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{layoutControlsPanel}</div>
-                            )}
+                            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{insightsPanelScroll}</div>
                         </div>
                     </div>
                 </>
             )}
 
        {typeof document !== 'undefined' &&
-         topicSummaryOpen &&
+         paperToolsModalOpen &&
          createPortal(
            <>
              <button
                type="button"
                className="fixed inset-0 z-[300] animate-in fade-in-0 bg-black/45 backdrop-blur-[1px] duration-150"
-               aria-label="Close topic breakdown"
-               onClick={() => setTopicSummaryOpen(false)}
+               aria-label="Close"
+               onClick={() => setPaperToolsModalOpen(false)}
              />
              <div
                role="dialog"
                aria-modal="true"
-               aria-labelledby="paper-topic-breakdown-title"
-               className={`fixed left-1/2 top-1/2 z-[310] flex max-h-[min(85vh,640px)] w-[calc(100vw-1.25rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white text-zinc-900 shadow-xl animate-in fade-in-0 zoom-in-95 duration-150 [color-scheme:light]`}
+               aria-labelledby="paper-tools-modal-title"
+               className={`fixed left-1/2 top-1/2 z-[310] flex max-h-[min(88vh,720px)] w-[calc(100vw-1.25rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white text-zinc-900 shadow-xl animate-in fade-in-0 zoom-in-95 duration-150 [color-scheme:light]`}
              >
-               <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3">
-                 <div>
-                   <h2 id="paper-topic-breakdown-title" className="text-sm font-black tracking-tight text-zinc-900">
-                     Topics in this paper
+               <div className="flex shrink-0 flex-col gap-2 border-b border-zinc-100 bg-zinc-50/90 px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                 <div className="min-w-0 flex-1">
+                   <h2 id="paper-tools-modal-title" className="text-sm font-black tracking-tight text-zinc-900">
+                     Details & layout
                    </h2>
                    <p className="mt-0.5 text-[10px] font-medium text-zinc-500">
-                     Counts follow print reading order. Each row shows the chapter line first, then the topic tag (or chapter if untagged).
-                     Filter by subject (Zoology, Botany, Chemistry, Physics) and optionally by class.
+                     Details: topic counts follow print order. Layout: content toggles and paper formatting.
                    </p>
                  </div>
                  <button
                    type="button"
-                   className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
+                   className="self-end rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 sm:self-start"
                    aria-label="Close"
-                   onClick={() => setTopicSummaryOpen(false)}
+                   onClick={() => setPaperToolsModalOpen(false)}
                  >
                    <iconify-icon icon="mdi:close" width="20" />
                  </button>
                </div>
+               <div className="flex shrink-0 gap-0 border-b border-zinc-200 bg-zinc-100/80 px-2 pt-2" role="tablist" aria-label="Paper tools">
+                 <button
+                   type="button"
+                   role="tab"
+                   aria-selected={paperToolsTab === 'topics'}
+                   onClick={() => setPaperToolsTab('topics')}
+                   className={`rounded-t-md px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition-colors sm:px-4 ${
+                     paperToolsTab === 'topics'
+                       ? 'bg-white text-violet-900 shadow-sm ring-1 ring-zinc-200 ring-b-0'
+                       : 'text-zinc-500 hover:text-zinc-800'
+                   }`}
+                 >
+                   Details
+                 </button>
+                 <button
+                   type="button"
+                   role="tab"
+                   aria-selected={paperToolsTab === 'layout'}
+                   onClick={() => setPaperToolsTab('layout')}
+                   className={`rounded-t-md px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition-colors sm:px-4 ${
+                     paperToolsTab === 'layout'
+                       ? 'bg-white text-indigo-900 shadow-sm ring-1 ring-zinc-200 ring-b-0'
+                       : 'text-zinc-500 hover:text-zinc-800'
+                   }`}
+                 >
+                   Layout
+                 </button>
+               </div>
+               {paperToolsTab === 'layout' ? (
+                 <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">{layoutControlsBody}</div>
+               ) : (
+               <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                <div
                  className="shrink-0 border-b border-zinc-100 bg-teal-50/40 px-4 py-2.5"
                  role="navigation"
@@ -2971,6 +3003,90 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                      </ul>
                    )}
                  </div>
+               </div>
+               </div>
+               )}
+             </div>
+           </>,
+           document.body
+         )}
+
+       {typeof document !== 'undefined' &&
+         downloadModalOpen &&
+         createPortal(
+           <>
+             <button
+               type="button"
+               className="fixed inset-0 z-[300] animate-in fade-in-0 bg-black/45 backdrop-blur-[1px] duration-150"
+               aria-label="Close download options"
+               onClick={() => setDownloadModalOpen(false)}
+             />
+             <div
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="download-modal-title"
+               className="fixed left-1/2 top-1/2 z-[310] w-[calc(100vw-1.5rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-xl animate-in fade-in-0 zoom-in-95 duration-150 [color-scheme:light] sm:p-5"
+             >
+               <div className="mb-4 flex items-start justify-between gap-3">
+                 <div>
+                   <h2 id="download-modal-title" className="text-sm font-black tracking-tight text-zinc-900">
+                     Download
+                   </h2>
+                   <p className="mt-1 text-[10px] font-medium text-zinc-500">
+                     OMR bubble sheet or answer key PDF (paper question order).
+                   </p>
+                 </div>
+                 <button
+                   type="button"
+                   className="rounded-md p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
+                   aria-label="Close"
+                   onClick={() => setDownloadModalOpen(false)}
+                 >
+                   <iconify-icon icon="mdi:close" width="20" />
+                 </button>
+               </div>
+               <div className="space-y-3">
+                 <button
+                   type="button"
+                   onClick={() => {
+                     void handleDownloadOmrSheet();
+                     setDownloadModalOpen(false);
+                   }}
+                   disabled={isDownloadingOmrPdf}
+                   className="flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-rose-800 shadow-sm transition-colors hover:bg-rose-100 disabled:opacity-50"
+                 >
+                   {isDownloadingOmrPdf ? (
+                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-rose-200 border-t-rose-700" />
+                   ) : (
+                     <iconify-icon icon="mdi:camera-metering-spot" width="18" />
+                   )}
+                   OMR sheet (PDF)
+                 </button>
+                 <label className="flex cursor-pointer select-none items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800">
+                   <input
+                     type="checkbox"
+                     checked={answerSheetWithExplanations}
+                     onChange={(e) => setAnswerSheetWithExplanations(e.target.checked)}
+                     className="h-4 w-4 rounded border-zinc-400 text-cyan-700 focus:ring-cyan-500"
+                   />
+                   Include explanations on answer sheet
+                 </label>
+                 <button
+                   type="button"
+                   onClick={() => {
+                     void handleDownloadAnswerSheet();
+                     setDownloadModalOpen(false);
+                   }}
+                   disabled={isPaginating || isDownloadingAnswerSheet}
+                   className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-cyan-900 shadow-sm transition-colors hover:bg-cyan-100 disabled:opacity-50"
+                 >
+                   {isDownloadingAnswerSheet ? (
+                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-200 border-t-cyan-700" />
+                   ) : (
+                     <iconify-icon icon="mdi:file-document-outline" width="18" />
+                   )}
+                   Answer sheet (PDF)
+                 </button>
                </div>
              </div>
            </>,

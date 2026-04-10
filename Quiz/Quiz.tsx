@@ -48,8 +48,11 @@ import { mergePaperLayout } from './utils/paperLayoutMerge';
 import {
   allocateFigureSlotsByChapter,
   eligibleOversampleLimit,
+  figureEligibleOversampleLimit,
   questionHasFigure,
+  remainingStylePlanAfterFigures,
   selectQuestionsMaxTopicSpread,
+  type BankStyleKey,
 } from './services/topicSpreadPick';
 import { fetchUserExcludedTopicLabels } from '../services/syllabusService';
 import { isOnlineExamAssignment, sanitizeQuestionsForStudentExam } from './services/studentTestService';
@@ -853,6 +856,16 @@ const Quiz: React.FC = () => {
         setEditInitialChapters(options.chapters);
         setEditInitialTopic(options.topic);
         setEditInitialManualQuestions(questions);
+        setEditInitialTotalTarget(
+            typeof options.totalQuestions === 'number' ? options.totalQuestions : questions.length
+        );
+        setEditInitialDistributionMode(
+            Array.isArray(options.chapters) && options.chapters[0]?.selectionMode === 'percent' ? 'percent' : 'count'
+        );
+        setEditInitialGlobalTypes(options.globalTypeMix);
+        setEditInitialGlobalFigureCount(
+            typeof options.globalFigureCount === 'number' ? options.globalFigureCount : 0
+        );
         setEditInitialSettings({
             totalQuestions: questions.length, globalDiff: options.globalDifficultyMix, globalTypes: options.globalTypeMix,
             useGlobalDifficulty: options.useGlobalDifficulty, globalFigureCount: options.globalFigureCount,
@@ -1022,89 +1035,95 @@ const Quiz: React.FC = () => {
                 excludedTopicLabelsNormalized: excludedTopicLabelsNormalized,
               } as const;
 
+              const attachChap = (bq: Question) => ({
+                ...bq,
+                sourceChapterName: bq.sourceChapterName || chap.name,
+              });
+
+              const figureSlotRaw = figureSlotsByChapter.get(chap.id) ?? 0;
+              const manualFigN = manualForThisChap.filter(questionHasFigure).length;
+              const figCap = Math.max(0, Math.min(neededFromBank, figureSlotRaw - manualFigN));
+
+              const excludeBase = [...sessionUsedExclude, ...currentIds];
+
+              const pickFigureSlice = async (): Promise<Question[]> => {
+                if (figCap <= 0) return [];
+                const pool = await fetchEligibleQuestions({
+                  ...baseEligibleArgs,
+                  excludeIds: excludeBase,
+                  limit: figureEligibleOversampleLimit(figCap),
+                  requireFigure: true,
+                  questionType: null,
+                });
+                const picked = selectQuestionsMaxTopicSpread(pool, figCap);
+                if (picked.length < figCap) {
+                  throw new Error(
+                    `Only ${picked.length} figure question(s) are available in the bank for “${chap.name}” with the current filters; this chapter needs ${figCap} from the bank after applying your Figure Qs target and any manual figures in this chapter. Add figure-based items to the bank, relax difficulty or topic filters, allow past questions, or lower Figure Qs.`
+                  );
+                }
+                return picked.map(attachChap);
+              };
+
+              const figSlice = await pickFigureSlice();
+
               if (usePerStyle) {
-                const plan = normalizeStylePlan(chap.styleCounts, neededFromBank);
-                const collected: Question[] = [];
+                const planFull = normalizeStylePlan(chap.styleCounts, neededFromBank) as Record<BankStyleKey, number>;
+                const rem = neededFromBank - figSlice.length;
+                const planRem = remainingStylePlanAfterFigures(planFull, figSlice, rem);
+                const collected: Question[] = [...figSlice];
+
                 for (const qt of styleKeys) {
-                  const want = plan[qt];
+                  const want = planRem[qt];
                   if (want <= 0) continue;
-                  const exclude = [...sessionUsedExclude, ...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const exclude = [...excludeBase, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
                   const pool = await fetchEligibleQuestions({
                     ...baseEligibleArgs,
                     questionType: qt,
                     excludeIds: exclude,
                     limit: eligibleOversampleLimit(want),
                   });
-                  const picked = selectQuestionsMaxTopicSpread(pool, want);
-                  collected.push(
-                    ...picked.map((bq) => ({
-                      ...bq,
-                      sourceChapterName: bq.sourceChapterName || chap.name,
-                    }))
-                  );
+                  const nonFig = pool.filter((q) => !questionHasFigure(q));
+                  const picked = selectQuestionsMaxTopicSpread(nonFig, want);
+                  collected.push(...picked.map(attachChap));
                 }
+
                 let still = neededFromBank - collected.length;
                 if (still > 0) {
-                  const exclude = [...sessionUsedExclude, ...currentIds, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const exclude = [...excludeBase, ...collected.map((q) => q.originalId || q.id).filter(isUuid)];
                   const fillerPool = await fetchEligibleQuestions({
                     ...baseEligibleArgs,
                     excludeIds: exclude,
                     limit: eligibleOversampleLimit(still),
                   });
-                  const fillerPick = selectQuestionsMaxTopicSpread(fillerPool, still);
-                  collected.push(
-                    ...fillerPick.map((bq) => ({
-                      ...bq,
-                      sourceChapterName: bq.sourceChapterName || chap.name,
-                    }))
+                  const fillerPick = selectQuestionsMaxTopicSpread(
+                    fillerPool.filter((q) => !questionHasFigure(q)),
+                    still
                   );
+                  collected.push(...fillerPick.map(attachChap));
                 }
                 newBatch = collected.slice(0, neededFromBank);
               } else {
-                const pool = await fetchEligibleQuestions({
-                  ...baseEligibleArgs,
-                  excludeIds: [...sessionUsedExclude, ...currentIds],
-                  limit: eligibleOversampleLimit(neededFromBank),
-                });
-                newBatch = selectQuestionsMaxTopicSpread(pool, neededFromBank).map((bq) => ({
-                  ...bq,
-                  sourceChapterName: bq.sourceChapterName || chap.name,
-                }));
-              }
-
-              const figWanted = figureSlotsByChapter.get(chap.id) ?? 0;
-              if (figWanted > 0 && newBatch.length > 0) {
-                let guard = 0;
-                while (
-                  guard++ < 48 &&
-                  newBatch.filter(questionHasFigure).length < figWanted &&
-                  newBatch.some((q) => !questionHasFigure(q))
-                ) {
-                  const excludeIds = [
-                    ...sessionUsedExclude,
-                    ...currentIds,
-                    ...newBatch.map((q) => q.originalId || q.id).filter(isUuid),
-                  ];
-                  const morePool = await fetchEligibleQuestions({
+                const rem = neededFromBank - figSlice.length;
+                let rest: Question[] = [];
+                if (rem > 0) {
+                  const exclude = [...excludeBase, ...figSlice.map((q) => q.originalId || q.id).filter(isUuid)];
+                  const pool = await fetchEligibleQuestions({
                     ...baseEligibleArgs,
-                    excludeIds,
-                    limit: eligibleOversampleLimit(neededFromBank),
+                    excludeIds: exclude,
+                    limit: eligibleOversampleLimit(rem),
                   });
-                  const figOnly = morePool.filter(questionHasFigure);
-                  const one = selectQuestionsMaxTopicSpread(figOnly, 1)[0];
-                  if (!one) break;
-                  const dropIdx = newBatch.findIndex((q) => !questionHasFigure(q));
-                  if (dropIdx < 0) break;
-                  const next = newBatch.slice();
-                  next.splice(dropIdx, 1);
-                  next.push({
-                    ...one,
-                    sourceChapterName: one.sourceChapterName || chap.name,
-                  });
-                  newBatch = next;
+                  const nonFig = pool.filter((q) => !questionHasFigure(q));
+                  rest = selectQuestionsMaxTopicSpread(nonFig, rem).map(attachChap);
                 }
+                newBatch = [...figSlice, ...rest];
               }
 
+              const gotFig = newBatch.filter(questionHasFigure).length;
+              if (figCap > 0 && gotFig < figCap) {
+                throw new Error(
+                  `Figure quota could not be met for “${chap.name}” (got ${gotFig}, need ${figCap}). Try again or adjust filters.`
+                );
+              }
           }
 
           if (newBatch.length < neededFromBank) {
@@ -1280,6 +1299,18 @@ const Quiz: React.FC = () => {
                   setEditInitialKnowledgeBaseId(options.knowledgeBaseId ?? undefined);
                   setEditInitialChapters(options.chapters);
                   setEditInitialManualQuestions(test.questions || options.manualQuestions);
+                  setEditInitialTotalTarget(
+                      typeof options.totalQuestions === 'number' ? options.totalQuestions : undefined
+                  );
+                  setEditInitialDistributionMode(
+                      Array.isArray(options.chapters) && options.chapters[0]?.selectionMode === 'percent'
+                          ? 'percent'
+                          : 'count'
+                  );
+                  setEditInitialGlobalTypes(options.globalTypeMix || options.globalTypes);
+                  setEditInitialGlobalFigureCount(
+                      typeof options.globalFigureCount === 'number' ? options.globalFigureCount : 0
+                  );
                   setEditInitialSettings({ totalQuestions: options.totalQuestions, globalDiff: options.globalDifficultyMix || options.globalDiff, globalTypes: options.globalTypeMix || options.globalTypes, useGlobalDifficulty: options.useGlobalDifficulty, globalFigureCount: options.globalFigureCount, selectionMode: options.selectionMode || (options.manualQuestions ? 'manual' : 'auto') });
                   if (options.mode === 'online-exam' || test.config.mode === 'online-exam') setIsOnlineExamCreatorOpen(true); else setIsCreatorOpen(true);
               }

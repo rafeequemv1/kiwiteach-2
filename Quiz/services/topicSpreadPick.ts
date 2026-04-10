@@ -24,6 +24,75 @@ export function eligibleOversampleLimit(need: number): number {
   return Math.min(600, Math.max(n * 12, n + 64));
 }
 
+/** Larger pool for figure-only queries (rare in bank vs text-only). */
+export function figureEligibleOversampleLimit(need: number): number {
+  const n = Math.max(1, need);
+  return Math.min(2500, Math.max(n * 100, n + 200, 500));
+}
+
+const STYLE_KEYS = ['mcq', 'reasoning', 'matching', 'statements'] as const;
+export type BankStyleKey = (typeof STYLE_KEYS)[number];
+
+/**
+ * After picking figure questions (any style), how many non-figure slots remain per style
+ * so totals still match `neededFromBank`, with redistribution if figures skew types.
+ */
+export function remainingStylePlanAfterFigures(
+  planFull: Record<BankStyleKey, number>,
+  figPicked: Question[],
+  rem: number
+): Record<BankStyleKey, number> {
+  const figBy: Record<BankStyleKey, number> = {
+    mcq: 0,
+    reasoning: 0,
+    matching: 0,
+    statements: 0,
+  };
+  for (const q of figPicked) {
+    const t = (q.type || 'mcq') as string;
+    const k = (STYLE_KEYS as readonly string[]).includes(t) ? (t as BankStyleKey) : 'mcq';
+    figBy[k]++;
+  }
+  const out: Record<BankStyleKey, number> = {
+    mcq: Math.max(0, planFull.mcq - figBy.mcq),
+    reasoning: Math.max(0, planFull.reasoning - figBy.reasoning),
+    matching: Math.max(0, planFull.matching - figBy.matching),
+    statements: Math.max(0, planFull.statements - figBy.statements),
+  };
+  let s = STYLE_KEYS.reduce((acc, k) => acc + out[k], 0);
+  if (s === rem) return out;
+  if (s < rem) {
+    let diff = rem - s;
+    let i = 0;
+    while (diff > 0 && i < 500) {
+      const k = STYLE_KEYS[i % STYLE_KEYS.length];
+      out[k]++;
+      diff--;
+      i++;
+    }
+    return out;
+  }
+  let diff = s - rem;
+  let guard = 0;
+  while (diff > 0 && guard++ < 500) {
+    let best: BankStyleKey = 'mcq';
+    let bestVal = -1;
+    for (const k of STYLE_KEYS) {
+      if (out[k] > bestVal) {
+        bestVal = out[k];
+        best = k;
+      }
+    }
+    if (out[best] > 0) {
+      out[best]--;
+      diff--;
+    } else {
+      break;
+    }
+  }
+  return out;
+}
+
 function qid(q: Question): string {
   return String(q.originalId || q.id);
 }

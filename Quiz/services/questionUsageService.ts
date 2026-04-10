@@ -1,6 +1,7 @@
 import { supabase } from '../../supabase/client';
 import type { Question } from '../types';
 import { topicTagIsExcluded } from '../../services/syllabusService';
+import { questionHasFigure } from './topicSpreadPick';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -37,6 +38,8 @@ interface EligibleInput {
   difficulty?: string | null;
   /** When set, only this question_type is returned (still uses class usage RPC when classId is set). */
   questionType?: string | null;
+  /** When true, only rows with a non-empty figure_url (RPC / direct query). */
+  requireFigure?: boolean;
   excludeIds?: string[];
   limit?: number;
   allowRepeats?: boolean;
@@ -57,10 +60,13 @@ async function fetchEligibleQuestionsDirect(input: EligibleInput): Promise<Quest
   let query = supabase.from('question_bank_neet').select('*').eq('chapter_id', input.chapterId);
   if (input.questionType) query = query.eq('question_type', input.questionType);
   if (input.difficulty) query = query.eq('difficulty', input.difficulty);
+  if (input.requireFigure) query = query.not('figure_url', 'is', null);
   if (excludeIds.length > 0) query = query.not('id', 'in', `(${excludeIds.join(',')})`);
   const { data, error } = await query.limit(limit);
   if (error) throw error;
-  return applyTopicExclusion((data || []).map(mapBankRowToQuestion), input.excludedTopicLabelsNormalized);
+  let rows = (data || []).map(mapBankRowToQuestion);
+  if (input.requireFigure) rows = rows.filter(questionHasFigure);
+  return applyTopicExclusion(rows, input.excludedTopicLabelsNormalized);
 }
 
 export async function fetchEligibleQuestions(input: EligibleInput): Promise<Question[]> {
@@ -79,9 +85,12 @@ export async function fetchEligibleQuestions(input: EligibleInput): Promise<Ques
       allow_repeats: !!input.allowRepeats,
       include_used_question_ids: includeUsedQuestionIds,
       target_question_type: typeFilter,
+      require_figure: !!input.requireFigure,
     });
     if (!error && Array.isArray(data)) {
-      return applyTopicExclusion(data.map(mapBankRowToQuestion), input.excludedTopicLabelsNormalized);
+      let mapped = data.map(mapBankRowToQuestion);
+      if (input.requireFigure) mapped = mapped.filter(questionHasFigure);
+      return applyTopicExclusion(mapped, input.excludedTopicLabelsNormalized);
     }
     if (error) {
       console.warn('get_eligible_questions_for_class failed; falling back to direct bank query', error);
