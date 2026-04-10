@@ -2658,10 +2658,10 @@ const QuestionBankHome: React.FC = () => {
       if (!isUuidLike(questionId)) {
         throw new Error('Only saved hub questions (UUID id) can update the figure.');
       }
-      const { error } = await supabase
-        .from('question_bank_neet')
-        .update({ figure_url: pngDataUrl })
-        .eq('id', questionId);
+      const { error } = await supabase.rpc('admin_update_question_bank_figure', {
+        p_question_id: questionId,
+        p_figure_url: pngDataUrl,
+      });
       if (error) throw error;
       setQuestions((prev) =>
         prev.map((row) =>

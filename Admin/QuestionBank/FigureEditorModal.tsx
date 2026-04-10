@@ -12,6 +12,27 @@ export type FigureEditorModalProps = {
 
 type PencilMode = 'black' | 'white';
 
+/** Copy RGBA rectangle from ImageData (avoids reading dashed crop UI from the canvas). */
+function copyImageDataRegion(src: ImageData, sx: number, sy: number, sw: number, sh: number): ImageData {
+  const dest = new ImageData(sw, sh);
+  const s = src.data;
+  const d = dest.data;
+  const srcW = src.width;
+  for (let row = 0; row < sh; row++) {
+    const srcRow = (sy + row) * srcW + sx;
+    const dstRow = row * sw;
+    for (let col = 0; col < sw; col++) {
+      const si = (srcRow + col) * 4;
+      const di = (dstRow + col) * 4;
+      d[di] = s[si];
+      d[di + 1] = s[si + 1];
+      d[di + 2] = s[si + 2];
+      d[di + 3] = s[si + 3];
+    }
+  }
+  return dest;
+}
+
 function clientToCanvas(
   canvas: HTMLCanvasElement,
   clientX: number,
@@ -41,6 +62,8 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
   const cropBackupRef = useRef<ImageData | null>(null);
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** Latest crop rect (sync); React state can lag one frame behind “Apply crop”. */
+  const cropRectRef = useRef<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   /** PNG data URLs: oldest → newest; used for Undo after crop / AI / pencil-before-AI. */
   const historyRef = useRef<string[]>([]);
 
@@ -93,6 +116,7 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
         cropBackupRef.current = null;
         cropStartRef.current = null;
         setCropDrag(null);
+        cropRectRef.current = null;
         setCropMode(false);
         onDone?.();
       };
@@ -147,6 +171,7 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
       cropBackupRef.current = null;
       cropStartRef.current = null;
       setCropDrag(null);
+      cropRectRef.current = null;
       setCropMode(false);
       setLoading(false);
       try {
@@ -346,7 +371,9 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
           return;
         }
       }
-      setCropDrag({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
+      const r0 = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+      cropRectRef.current = r0;
+      setCropDrag(r0);
       return;
     }
     drawingRef.current = true;
@@ -359,7 +386,9 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
     const p = clientToCanvas(canvas, e.clientX, e.clientY);
     if (cropMode && cropStartRef.current && cropBackupRef.current) {
       const s = cropStartRef.current;
-      setCropDrag({ x1: s.x, y1: s.y, x2: p.x, y2: p.y });
+      const r = { x1: s.x, y1: s.y, x2: p.x, y2: p.y };
+      cropRectRef.current = r;
+      setCropDrag(r);
       redrawCropPreview(s.x, s.y, p.x, p.y);
       return;
     }
@@ -390,30 +419,60 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
 
   const applyCrop = () => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx || !cropDrag) return;
-    const { x1, y1, x2, y2 } = cropDrag;
-    const left = Math.max(0, Math.min(x1, x2));
-    const top = Math.max(0, Math.min(y1, y2));
+    if (!canvas) return;
+    const drag = cropRectRef.current ?? cropDrag;
+    if (!drag) {
+      alert('Drag a rectangle on the image first, then Apply crop.');
+      return;
+    }
+    const fullW = canvas.width;
+    const fullH = canvas.height;
+    const { x1, y1, x2, y2 } = drag;
+    let left = Math.max(0, Math.min(x1, x2));
+    let top = Math.max(0, Math.min(y1, y2));
     let w = Math.abs(x2 - x1);
     let h = Math.abs(y2 - y1);
-    w = Math.min(w, canvas.width - left);
-    h = Math.min(h, canvas.height - top);
+    left = Math.floor(left);
+    top = Math.floor(top);
+    w = Math.floor(Math.min(w, fullW - left));
+    h = Math.floor(Math.min(h, fullH - top));
     if (w < 8 || h < 8) {
       alert('Crop area too small — drag a larger rectangle.');
       return;
     }
+
+    const backup = cropBackupRef.current;
     let data: ImageData;
-    try {
-      data = ctx.getImageData(left, top, w, h);
-    } catch {
-      alert('Crop failed: pixels could not be read. Try reloading the figure (fetch/CORS).');
-      return;
+    if (backup && backup.width === fullW && backup.height === fullH) {
+      try {
+        data = copyImageDataRegion(backup, left, top, w, h);
+      } catch {
+        alert('Crop failed: could not read image region.');
+        return;
+      }
+    } else {
+      const ctxPrev = canvas.getContext('2d');
+      if (!ctxPrev) return;
+      if (backup) {
+        ctxPrev.putImageData(backup, 0, 0);
+      }
+      try {
+        data = ctxPrev.getImageData(left, top, w, h);
+      } catch {
+        alert('Crop failed: pixels could not be read. Try reloading the figure (fetch/CORS).');
+        return;
+      }
     }
+
+    // Resizing the canvas resets the bitmap; always take a fresh context before putImageData.
     canvas.width = w;
     canvas.height = h;
-    ctx.putImageData(data, 0, 0);
+    const ctx2 = canvas.getContext('2d');
+    if (!ctx2) return;
+    ctx2.putImageData(data, 0, 0);
+
     cropBackupRef.current = null;
+    cropRectRef.current = null;
     setCropDrag(null);
     setCropMode(false);
     pushHistoryIfChanged();
@@ -428,6 +487,7 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
     }
     cropBackupRef.current = null;
     cropStartRef.current = null;
+    cropRectRef.current = null;
     setCropDrag(null);
     setCropMode(false);
   };
@@ -567,6 +627,7 @@ export const FigureEditorModal: React.FC<FigureEditorModalProps> = ({
                 onClick={() => {
                   setCropMode(true);
                   cropBackupRef.current = null;
+                  cropRectRef.current = null;
                   setCropDrag(null);
                 }}
                 disabled={loading || !!loadError}
