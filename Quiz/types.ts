@@ -22,6 +22,8 @@ export interface Question {
   sourceFigureDataUrl?: string;
   figure_url?: string;
   source_figure_url?: string;
+  /** Dense labels / small diagram text — default to large figure tier on printed papers. */
+  figureHighDensity?: boolean;
   figureDimensions?: { width: number; height: number; };
   pdfImageIndex?: number;
   columnA?: string[];

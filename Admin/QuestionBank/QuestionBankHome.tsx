@@ -2705,6 +2705,27 @@ const QuestionBankHome: React.FC = () => {
     setFlagReasonsByQuestionId((prev) => ({ ...prev, [questionId]: reason }));
   };
 
+  const handleToggleFigureHighDensity = async (questionId: string, next: boolean) => {
+    if (!isUuidLike(questionId)) {
+      alert('Only saved repository questions can be updated.');
+      return;
+    }
+    const { error } = await supabase.rpc('admin_set_question_figure_high_density', {
+      p_question_id: questionId,
+      p_high_density: next,
+    });
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    setQuestions((prev) =>
+      prev.map((row) => (String(row.id) === questionId ? { ...row, figure_high_density: next } : row))
+    );
+    setReviewQueue((prev) =>
+      prev.map((row) => (String(row.id) === questionId ? { ...row, figure_high_density: next } : row))
+    );
+  };
+
   const handleFigureEditorSave = useCallback(
     async (questionId: string, pngDataUrl: string) => {
       if (!isUuidLike(questionId)) {
@@ -5053,7 +5074,8 @@ const QuestionBankHome: React.FC = () => {
                                         sourceFigureDataUrl: q.source_figure_url || q.sourceFigureDataUrl,
                                         columnA: q.column_a || q.columnA,
                                         columnB: q.column_b || q.columnB,
-                                        topic_tag: q.topic_tag || 'General'
+                                        topic_tag: q.topic_tag || 'General',
+                                        figureHighDensity: q.figure_high_density === true,
                                     }}
                                     showExplanation={
                                       (mode === 'browse' || mode === 'review') && questionCardDisplay.showExplanation
@@ -5097,6 +5119,11 @@ const QuestionBankHome: React.FC = () => {
                                     onEditFigure={
                                       mode === 'browse' || mode === 'review'
                                         ? (id, url) => setFigureEditor({ id, url })
+                                        : undefined
+                                    }
+                                    onToggleFigureHighDensity={
+                                      mode === 'browse' || mode === 'review'
+                                        ? handleToggleFigureHighDensity
                                         : undefined
                                     }
                                 />

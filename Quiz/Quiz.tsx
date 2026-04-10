@@ -52,6 +52,7 @@ import {
   questionHasFigure,
   remainingStylePlanAfterFigures,
   selectQuestionsMaxTopicSpread,
+  spreadFigureQuestionsAcrossPaper,
   type BankStyleKey,
 } from './services/topicSpreadPick';
 import { fetchUserExcludedTopicLabels } from '../services/syllabusService';
@@ -978,6 +979,7 @@ const Quiz: React.FC = () => {
         : [];
 
       const chaptersForBank = options.chapters.map((c) => ({ ...c, source: 'db' as const }));
+      // Spread figure quota across chapters (one per chapter before seconds) when template asks for many figures.
       const figureSlotsByChapter = allocateFigureSlotsByChapter(
         chaptersForBank.map((c) => ({ id: c.id, count: c.count || 0 })),
         options.globalFigureCount ?? 0
@@ -1056,11 +1058,7 @@ const Quiz: React.FC = () => {
                   questionType: null,
                 });
                 const picked = selectQuestionsMaxTopicSpread(pool, figCap);
-                if (picked.length < figCap) {
-                  throw new Error(
-                    `Only ${picked.length} figure question(s) are available in the bank for “${chap.name}” with the current filters; this chapter needs ${figCap} from the bank after applying your Figure Qs target and any manual figures in this chapter. Add figure-based items to the bank, relax difficulty or topic filters, allow past questions, or lower Figure Qs.`
-                  );
-                }
+                // Shortfall is filled with non-figure questions here; a later pass swaps in figures from chapters that have them in the bank.
                 return picked.map(attachChap);
               };
 
@@ -1118,12 +1116,6 @@ const Quiz: React.FC = () => {
                 newBatch = [...figSlice, ...rest];
               }
 
-              const gotFig = newBatch.filter(questionHasFigure).length;
-              if (figCap > 0 && gotFig < figCap) {
-                throw new Error(
-                  `Figure quota could not be met for “${chap.name}” (got ${gotFig}, need ${figCap}). Try again or adjust filters.`
-                );
-              }
           }
 
           if (newBatch.length < neededFromBank) {
@@ -1153,6 +1145,100 @@ const Quiz: React.FC = () => {
           }));
           finalQuestions = [...finalQuestions, ...enriched];
       }
+
+      const totalQuestionSlots = chaptersForBank.reduce((s, c) => s + (c.count || 0), 0);
+      const rawGlobalFig = options.globalFigureCount ?? 0;
+      const targetGlobalFig =
+        totalQuestionSlots <= 0
+          ? 0
+          : Math.max(0, Math.min(Math.floor(Number(rawGlobalFig)) || 0, totalQuestionSlots));
+      let needMoreFig =
+        targetGlobalFig - finalQuestions.filter(questionHasFigure).length;
+      const shuffleChaptersLocal = <T,>(arr: T[]): T[] => {
+        const a = [...arr];
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      };
+      const maxFigRedistIters = Math.min(
+        400,
+        Math.max(needMoreFig * Math.max(chaptersForBank.length, 1) * 4, 48)
+      );
+      let figRedistIter = 0;
+      while (needMoreFig > 0 && figRedistIter < maxFigRedistIters) {
+        figRedistIter += 1;
+        let progressed = false;
+        for (const chap of shuffleChaptersLocal(chaptersForBank)) {
+          if (needMoreFig <= 0) break;
+          const swapIdx = finalQuestions.findIndex(
+            (q, i) =>
+              i >= manualQs.length &&
+              (q.sourceChapterId || '') === chap.id &&
+              !questionHasFigure(q)
+          );
+          if (swapIdx < 0) continue;
+
+          const currentIds = finalQuestions
+            .map((q) => q.originalId || q.id)
+            .filter((id): id is string => isUuid(id));
+
+          const baseArgs = {
+            classId: effectiveClassIdForBank,
+            chapterId: chap.id,
+            difficulty: chap.difficulty === 'Global' ? null : chap.difficulty,
+            allowRepeats: !!options.allowPastQuestions,
+            includeUsedQuestionIds: options.includeUsedQuestionIds || [],
+            excludedTopicLabelsNormalized,
+          } as const;
+
+          const excludeBase = [...sessionUsedExclude, ...currentIds];
+          const pool = await fetchEligibleQuestions({
+            ...baseArgs,
+            excludeIds: excludeBase,
+            limit: figureEligibleOversampleLimit(1),
+            requireFigure: true,
+            questionType: null,
+          });
+          const picked = selectQuestionsMaxTopicSpread(pool, 1);
+          if (picked.length < 1) continue;
+
+          const rawReplacement = {
+            ...picked[0],
+            sourceChapterName: picked[0].sourceChapterName || chap.name,
+          };
+          const replacement = {
+            ...rawReplacement,
+            sourceChapterId: rawReplacement.sourceChapterId || chap.id,
+            sourceChapterName: rawReplacement.sourceChapterName || chap.name,
+            sourceSubjectName: rawReplacement.sourceSubjectName || chap.subjectName,
+            sourceBiologyBranch:
+              rawReplacement.sourceBiologyBranch === 'botany' || rawReplacement.sourceBiologyBranch === 'zoology'
+                ? rawReplacement.sourceBiologyBranch
+                : chap.biology_branch === 'botany' || chap.biology_branch === 'zoology'
+                  ? chap.biology_branch
+                  : rawReplacement.sourceBiologyBranch ?? null,
+          };
+
+          finalQuestions = [
+            ...finalQuestions.slice(0, swapIdx),
+            replacement,
+            ...finalQuestions.slice(swapIdx + 1),
+          ];
+          needMoreFig -= 1;
+          progressed = true;
+          setStatus(`Meeting figure target: swapped in a figure from “${chap.name}”…`);
+          break;
+        }
+        if (!progressed) break;
+      }
+
+      const manualPrefixLen = manualQs.length;
+      finalQuestions = [
+        ...finalQuestions.slice(0, manualPrefixLen),
+        ...spreadFigureQuestionsAcrossPaper(finalQuestions.slice(manualPrefixLen)),
+      ];
 
       if (effectiveClassIdForBank) {
         const acc =

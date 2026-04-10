@@ -174,7 +174,15 @@ export function selectQuestionsMaxTopicSpread(pool: Question[], need: number): Q
 }
 
 /**
- * Split global figure quota across chapters by question count (largest remainder).
+ * Split global figure quota across chapters with **maximum chapter spread**:
+ * each iteration adds one slot to a chapter that currently has the **fewest** figure slots among those
+ * still under that chapter’s question `count` cap — so every active chapter tends to get a first
+ * figure before any gets a second (and so on). If the figure quota exceeds the number of chapters,
+ * extra rounds fill again in the same fair order (shuffled once so “who goes first” isn’t alphabetical).
+ *
+ * This matches templates like “15 figure questions” across many chapters: use as many distinct chapters
+ * as possible; only repeat a chapter after all eligible chapters already have at least one slot (unless
+ * a chapter’s `count` is 0 or small caps force concentration).
  */
 export function allocateFigureSlotsByChapter(
   rows: { id: string; count: number }[],
@@ -187,27 +195,60 @@ export function allocateFigureSlotsByChapter(
   const G = Math.max(0, Math.min(Math.floor(rawG), total));
   if (total <= 0 || G <= 0) return out;
 
-  const weights = rows.map((r) => ({ ...r, w: Math.max(0, r.count) }));
-  const sumW = weights.reduce((s, r) => s + r.w, 0);
-  if (sumW <= 0) return out;
+  const active = rows
+    .filter((r) => r.count > 0)
+    .map((r) => ({ id: r.id, cap: Math.max(0, r.count) }));
+  if (active.length === 0) return out;
 
-  const parts = weights.map((r) => {
-    const raw = (G * r.w) / sumW;
-    return { id: r.id, floor: Math.floor(raw), frac: raw - Math.floor(raw) };
-  });
-  let assigned = parts.reduce((s, p) => s + p.floor, 0);
-  let rem = G - assigned;
-  parts.forEach((p) => out.set(p.id, p.floor));
-  const order = [...parts].sort((a, b) => b.frac - a.frac);
-  let i = 0;
-  while (rem > 0 && i < order.length * 4) {
-    const p = order[i % order.length];
-    const cap = weights.find((w) => w.id === p.id)?.w ?? 0;
-    if ((out.get(p.id) ?? 0) < cap) {
-      out.set(p.id, (out.get(p.id) ?? 0) + 1);
-      rem--;
-    }
-    i++;
+  shuffleInPlace(active);
+  const orderIdx = new Map(active.map((r, i) => [r.id, i]));
+
+  for (let k = 0; k < G; k++) {
+    const eligible = active.filter(({ id, cap }) => (out.get(id) ?? 0) < cap);
+    if (eligible.length === 0) break;
+    eligible.sort((a, b) => {
+      const ca = out.get(a.id) ?? 0;
+      const cb = out.get(b.id) ?? 0;
+      if (ca !== cb) return ca - cb;
+      return (orderIdx.get(a.id) ?? 0) - (orderIdx.get(b.id) ?? 0);
+    });
+    const pick = eligible[0];
+    out.set(pick.id, (out.get(pick.id) ?? 0) + 1);
   }
+
   return out;
+}
+
+/**
+ * Reorders bank questions so figure items are spaced through the list (even gaps), preserving
+ * relative order within the figure group and within the non-figure group. Reduces adjacent clustering
+ * when chapters were filled sequentially.
+ */
+export function spreadFigureQuestionsAcrossPaper(questions: Question[]): Question[] {
+  const n = questions.length;
+  if (n <= 1) return questions;
+
+  const fig = questions.filter(questionHasFigure);
+  const text = questions.filter((q) => !questionHasFigure(q));
+  const k = fig.length;
+  if (k === 0) return questions;
+
+  const targets: number[] = [];
+  for (let j = 0; j < k; j++) {
+    targets.push(Math.floor(((j + 1) * n) / (k + 1)));
+  }
+
+  const result: Question[] = new Array(n);
+  let fPlaced = 0;
+  let tIdx = 0;
+  for (let i = 0; i < n; i++) {
+    if (fPlaced < k && targets[fPlaced] === i) {
+      result[i] = fig[fPlaced];
+      fPlaced += 1;
+    } else {
+      result[i] = text[tIdx];
+      tIdx += 1;
+    }
+  }
+  return result;
 }

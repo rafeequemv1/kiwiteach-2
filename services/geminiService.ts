@@ -805,6 +805,7 @@ export const generateQuizQuestions = async (
        ` : ''}
        - **POINTER LINES (WHEN REQUIRED)**: If the stem asks to identify **specific parts drawn on the diagram** (P, Q, R, numbered loci), figurePrompt **must** require **leader lines** from each such marker to the correct site. **Do not** require pointers from **A–D** to structures when A–D are the four **written MCQ option labels** — options are text-only.
        - **NO STEM REDRAW IN FIGURE**: figurePrompt must **not** tell the image model to redraw a full multi-step reaction or long scheme **already given in the stem**. Command a **single complementary** visual (e.g. one structure, “?” for unknown product, apparatus, graph).
+       - **FIGURE-ESSENTIAL STEM (HARD FAIL IF VIOLATED)**: With the figure removed, the item must be **unanswerable** or **unfair** from stem + options alone. **Never** name or define in the stem the same technique / structure / process the image is testing (e.g. stem must not say “spooling” if the picture shows spooling). **Never** narrate the drawing in prose (same scene as the image). Use neutral prompts (“shown in the figure”, “the method illustrated”, “identify the technique depicted”) and put **named** alternatives only in **options** where appropriate.
        - **NO OPTION PANEL IN IMAGE**: figurePrompt must **not** ask for a composite of “four structures labeled A–B–C–D with arrows” for standard structure-MCQ — that duplicates the answer choices in the figure.
        - **FIGURE PROMPT RULES**: 
          - The 'figurePrompt' must be a direct command to the image generator to TRACE the source image (or synthesize when no source).
@@ -841,7 +842,7 @@ The ${count} questions MUST satisfy this exact quota (topic_tag on each object):
 ${syllabusTopicQuotaBatch.map((x) => `• ${x.count} × topic_tag exactly "${String(x.label).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join('\n')}
 - **JSON ARRAY ORDER**: Interleave topics as you build the array — do not place all items for one topic_tag before moving to the next.
 - **INTRA_TOPIC_DEPTH**: Within each topic_tag, probe different ideas; no two questions on the same narrow fact or wording pattern.
-${figureCount > 0 ? '- **FIGURE_SPREAD**: Each figure-backed question should emphasize a different sub-idea where possible (structure vs process vs graph vs apparatus).' : ''}`
+${figureCount > 0 ? '- **FIGURE_SPREAD**: Each figure-backed question should emphasize a different sub-idea where possible (structure vs process vs graph vs apparatus). **Interleave** figure and non-figure items in JSON array order — no long runs of only figurePrompt rows.' : ''}`
       : '';
 
   const topicBreadthInstruction =
@@ -849,7 +850,7 @@ ${figureCount > 0 ? '- **FIGURE_SPREAD**: Each figure-backed question should emp
       ? ''
       : `[TOPIC_BREADTH — EXAM_COVERAGE]:
 - Span as many distinct subtopics as ${count} questions reasonably allow; avoid clustering on one narrow theme.
-${figureCount > 0 ? '- For diagram items: vary what is being tested (different structures, graphs, cycles, setups) — avoid repeating the same visual concept.' : ''}`;
+${figureCount > 0 ? '- For diagram items: vary what is being tested (different structures, graphs, cycles, setups) — avoid repeating the same visual concept. **Interleave** figure and non-figure questions in the JSON array order — avoid a single block of only figure items.' : ''}`;
 
   const exclusionInstruction =
     excludedTopicLabels && excludedTopicLabels.length > 0
@@ -890,7 +891,8 @@ ${figureCount > 0 ? '- For diagram items: vary what is being tested (different s
     - The difficulty counts MUST match exactly the mandate above.
     - **NEET GOAL**: Overall batch reflects a real paper mix — Easy items are genuinely accessible; Hard items are repeater-grade discriminators that still respect the syllabus; options vary across the batch (substantial numeric-option questions and near-miss distractors where topics allow, per OPTION FORMAT MIX in forge protocols).
     - **LABEL EXPLANATION CHECK**: If a question asks to identify labels (e.g. "Identify P"), the explanation MUST be ultra-short (max 2 sentences).
-    ${figureCount > 0 ? `- **FIGURE_BATCH_QUALITY**: Figure stems must demand linked reasoning across concepts (see VISUAL_MANDATE). Label-type items must specify pointer lines in figurePrompt. **All** figurePrompts must demand **black line drawing on white only — no color.**${hasReferenceDiagrams ? ' Reference diagrams: trace fidelity is mandatory — no creative edits to layout.' : ''}` : ''}
+    ${figureCount > 0 ? `- **FIGURE_BATCH_QUALITY**: Every figure item must be **figure-essential**: stem + options (without the image) must not allow a confident correct answer (no naming the depicted technique/structure/process in the stem; no prose that duplicates the drawing). Figure stems must demand linked reasoning across concepts (see VISUAL_MANDATE). Label-type items must specify pointer lines in figurePrompt. **All** figurePrompts must demand **black line drawing on white only — no color.**${hasReferenceDiagrams ? ' Reference diagrams: trace fidelity is mandatory — no creative edits to layout.' : ''}
+    - **FIGURE_ORDER_IN_JSON**: Do **not** output all figure-backed objects in one contiguous block in the array. **Interleave** figure and non-figure questions through the batch so the list order does not cluster every diagram item together.` : ''}
 
     - TARGET CHAPTER: "${topic}"
     - TOTAL QUANTITY: ${count} questions.
@@ -1003,6 +1005,7 @@ const SYNTHETIC_FIGURE_RULES = `NEET EXAM STYLE — applies to every non-empty c
 3. **INTEGRAL, NON-REDUNDANT FIGURE**:
    - The drawing must add what the **stem cannot** (spatial layout, single structure, apparatus, graph, circuit, crystal, etc.). **Do not** repeat a full reaction sequence, multi-step scheme, or long equation **already described in text** inside the same question — that wastes space and confuses students.
    - Prefer **one** clear focal diagram (e.g. starting material only, intermediate marked “?”, or apparatus) that the stem **refers to**, not a second copy of the written pathway.
+   - **Visual must matter**: The picture should be what a student **looks at** to decide — not a mere illustration after the answer is already given in words. Do not draw a labeled caption on-image that names the technique if the stem is supposed to ask students to identify it.
 4. **ANTI-ANSWER / NO MCQ OPTION PANEL**:
    - **Forbidden**: Drawing the four MCQ choices as structures (or names) inside the image with **A, B, C, D** (or arrows from A–D) pointing at them — that makes the figure look like the **answer key**. Options belong in the written options only.
    - **Forbidden**: Any layout that duplicates “pick A/B/C/D from this picture” when those letters are the exam’s option labels.

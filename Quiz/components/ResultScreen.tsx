@@ -160,6 +160,19 @@ function choicesInnerHtmlForMeasure(options: string[], compact: boolean): string
 /** Max image height in column — must match BlockRenderer `max-h-*` map. */
 const FIGURE_MAX_IMG_HEIGHT_PX: Record<FigureSize, number> = { small: 80, medium: 120, large: 180 };
 
+function effectiveFigureTier(q: Question, sizes: Record<string, FigureSize>): FigureSize {
+  const manual = sizes[q.id];
+  if (manual) return manual;
+  return q.figureHighDensity ? 'large' : 'medium';
+}
+
+/** Max image height for layout: optional boost when high-density + large tier. */
+function figureRenderMaxHeightPx(q: Question, tier: FigureSize): number {
+  const base = FIGURE_MAX_IMG_HEIGHT_PX[tier];
+  if (q.figureHighDensity && tier === 'large') return Math.min(300, Math.round(base * 1.33));
+  return base;
+}
+
 function resolveFigurePixelDims(
   q: Question,
   naturalById: Record<string, { w: number; h: number }>
@@ -173,7 +186,7 @@ function resolveFigurePixelDims(
 
 /**
  * Printed figure block height: object-contain image inside column width, capped by size tier,
- * plus wrapper chrome (mt-2, mb-1, p-1, border) to match DOM.
+ * plus wrapper chrome (mt-2, mb-1) to match DOM (no figure border on paper).
  */
 function estimateMainFigureBlockHeightPx(args: {
   maxImgHeightPx: number;
@@ -185,7 +198,7 @@ function estimateMainFigureBlockHeightPx(args: {
   if (dims && columnContentWidthPx > 0 && dims.w > 0 && dims.h > 0) {
     imgDisplayH = Math.min(maxImgHeightPx, (dims.h / dims.w) * columnContentWidthPx);
   }
-  const WRAPPER_CHROME_PX = 22;
+  const WRAPPER_CHROME_PX = 14;
   return Math.max(28, Math.ceil(imgDisplayH + WRAPPER_CHROME_PX));
 }
 
@@ -1175,6 +1188,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
           sourceChapterName: bq.chapter_name,
           pageNumber: bq.page_number,
           topic_tag: bq.topic_tag,
+          figureHighDensity: bq.figure_high_density === true,
         })) as Question[];
       }
 
@@ -1414,11 +1428,11 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
              coreDiv.appendChild(qText);
 
              const figSrc = mainFigureSrc(q);
-             const tierSize: FigureSize = figureSizes[q.id] || 'medium';
+             const tierSize: FigureSize = effectiveFigureTier(q, figureSizes);
              const mainFigureBlockH =
                figSrc != null
                  ? estimateMainFigureBlockHeightPx({
-                     maxImgHeightPx: FIGURE_MAX_IMG_HEIGHT_PX[tierSize],
+                     maxImgHeightPx: figureRenderMaxHeightPx(q, tierSize),
                      columnContentWidthPx: contentWidthPx,
                      dims: resolveFigurePixelDims(q, figureNaturalById),
                    })
@@ -1900,8 +1914,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
       const hasFigure = !!figureDisplayUrl;
 
       const sizeMap: Record<FigureSize, string> = { small: 'S', medium: 'M', large: 'L' };
-      const currentSize = figureSizes[q.id] || 'medium';
-      const figureMaxHeightPx = FIGURE_MAX_IMG_HEIGHT_PX[currentSize];
+      const currentSize = effectiveFigureTier(q, figureSizes);
+      const figureMaxHeightPx = figureRenderMaxHeightPx(q, currentSize);
       const stemNumber =
         typeof displayQuestionNumber === 'number' ? displayQuestionNumber : (block.globalIndex ?? 0) + 1;
 
@@ -1997,7 +2011,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
               </div>
               {figureDisplayUrl && (
                   <div
-                    className="ml-5 mt-2 mb-1 p-1 border border-black/20 rounded inline-block bg-white shadow-sm relative group/figure"
+                    className="ml-5 mt-2 mb-1 inline-block bg-white relative group/figure"
                     title={isFlagged ? flagTip : undefined}
                   >
                       <img

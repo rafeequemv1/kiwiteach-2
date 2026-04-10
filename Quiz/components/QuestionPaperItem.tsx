@@ -63,6 +63,8 @@ interface QuestionPaperItemProps {
   onRequestDelete?: (id: string) => void;
   /** Question DB: open figure editor modal (paint / crop / save to hub). */
   onEditFigure?: (id: string, imageUrl: string) => void;
+  /** Question DB: toggle high-density figure flag (larger default on printed papers). */
+  onToggleFigureHighDensity?: (id: string, next: boolean) => void | Promise<void>;
 }
 
 const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({ 
@@ -88,8 +90,10 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
   sourceFigureIconToggle = false,
   onRequestDelete,
   onEditFigure,
+  onToggleFigureHighDensity,
 }) => {
   const [sourcePeekOpen, setSourcePeekOpen] = useState(false);
+  const [hdBusy, setHdBusy] = useState(false);
   const isMatching = (question.type as any) === 'matching';
   const columnA = question.columnA || question.column_a;
   const columnB = question.columnB || question.column_b;
@@ -270,9 +274,10 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
       {/* Figures */}
       {(question.figureDataUrl || question.figure_url) && (
           <div
-            className="relative my-3 flex justify-center overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2"
+            className="relative my-3 flex justify-center overflow-hidden rounded-md bg-zinc-50/80 p-2 ring-1 ring-zinc-100"
             title={isFlaggedOutOfSyllabus && onFlagOutOfSyllabus ? flagTooltip : undefined}
           >
+              <div className="absolute left-1.5 top-1.5 z-10 flex flex-wrap items-center gap-1">
               {onEditFigure && HUB_QUESTION_ID_RE.test(String(question.id)) && (
                 <button
                   type="button"
@@ -281,13 +286,42 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
                     const url = String(question.figureDataUrl || question.figure_url || '');
                     if (url) onEditFigure(String(question.id), url);
                   }}
-                  className="absolute left-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md border border-violet-200 bg-white/95 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-violet-800 shadow-sm backdrop-blur-sm hover:bg-violet-50"
+                  className="flex items-center gap-1 rounded-md border border-violet-200 bg-white/95 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-violet-800 shadow-sm backdrop-blur-sm hover:bg-violet-50"
                   title="Edit figure (draw, crop, save)"
                 >
                   <iconify-icon icon="mdi:pencil-outline" width="14" />
                   Edit
                 </button>
               )}
+              {onToggleFigureHighDensity && HUB_QUESTION_ID_RE.test(String(question.id)) && (
+                <button
+                  type="button"
+                  disabled={hdBusy}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const next = !question.figureHighDensity;
+                    setHdBusy(true);
+                    try {
+                      await onToggleFigureHighDensity(String(question.id), next);
+                    } finally {
+                      setHdBusy(false);
+                    }
+                  }}
+                  className={`flex h-7 min-w-[1.75rem] items-center justify-center rounded-md border px-1.5 text-[8px] font-black uppercase tracking-wide shadow-sm backdrop-blur-sm transition-colors disabled:opacity-50 ${
+                    question.figureHighDensity
+                      ? 'border-amber-400 bg-amber-100/95 text-amber-950'
+                      : 'border-zinc-200 bg-white/95 text-zinc-600 hover:border-amber-200 hover:bg-amber-50/80'
+                  }`}
+                  title={
+                    question.figureHighDensity
+                      ? 'High-density: papers use large (L) figure — click to turn off'
+                      : 'Small / dense labels — mark for larger figure on printed papers (L)'
+                  }
+                >
+                  {hdBusy ? '…' : 'HD'}
+                </button>
+              )}
+              </div>
               {showSourcePeekButton && (
                 <button
                   type="button"
@@ -307,7 +341,11 @@ const QuestionPaperItem: React.FC<QuestionPaperItemProps> = ({
                   <iconify-icon icon={sourcePeekOpen ? 'mdi:image-off-outline' : 'mdi:image-search-outline'} width="18" />
                 </button>
               )}
-              <img src={question.figureDataUrl || question.figure_url} className="max-h-40 object-contain mix-blend-multiply" alt="Diagram" />
+              <img
+                src={question.figureDataUrl || question.figure_url}
+                className={`object-contain mix-blend-multiply ${question.figureHighDensity ? 'max-h-52' : 'max-h-40'}`}
+                alt="Diagram"
+              />
           </div>
       )}
 

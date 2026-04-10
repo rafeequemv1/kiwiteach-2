@@ -20,6 +20,7 @@ const mapBankRowToQuestion = (bq: any): Question => ({
   explanation: bq.explanation,
   figureDataUrl: bq.figure_url,
   sourceFigureDataUrl: bq.source_figure_url,
+  figureHighDensity: bq.figure_high_density === true,
   columnA: bq.column_a,
   columnB: bq.column_b,
   correctMatches: bq.correct_matches,
