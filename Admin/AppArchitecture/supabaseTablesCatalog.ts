@@ -17,18 +17,32 @@ export const SUPABASE_TABLE_CATALOG: SupabaseTableRow[] = [
   { schema: 'public', name: 'kb_classes', purpose: 'Tracks/grades within a knowledge base (curriculum “class”, not org class).' },
   { schema: 'public', name: 'subjects', purpose: 'Subjects under a kb_class; parent of chapters.' },
   { schema: 'public', name: 'chapters', purpose: 'Chapter metadata, syllabus linkage, storage paths for source PDFs/DOCX.' },
-  { schema: 'public', name: 'question_bank_neet', purpose: 'Primary NEET-style question bank; keyed by chapter. prompt_set_id, prompt_set_name (denormalized set label at generation), prompt_generation_source, generation_model for Neural Studio / Lab provenance.' },
+  {
+    schema: 'public',
+    name: 'question_bank_neet',
+    purpose:
+      'Primary NEET-style question bank; keyed by chapter. Provenance: prompt_set_id, prompt_set_name, prompt_generation_source, generation_model. figure_high_density: larger default figure tier on printed papers for dense diagrams.',
+  },
   { schema: 'public', name: 'folders', purpose: 'User-owned folders for organizing tests in the hub.' },
   { schema: 'public', name: 'tests', purpose: 'Assessments: drafts, generated papers, scheduling, class_ids, JSON questions.' },
   { schema: 'public', name: 'question_usage', purpose: 'Class-scoped usage of question_id to enforce no-repeat draws.' },
   { schema: 'public', name: 'online_test_attempts', purpose: 'Student online exam attempt sessions (timing, status).' },
   { schema: 'public', name: 'online_test_attempt_responses', purpose: 'Per-question answers and scores for each attempt.' },
-  { schema: 'public', name: 'branding_settings', purpose: 'Per-user branding for generated PDFs and OMR sheets.' },
+  {
+    schema: 'public',
+    name: 'branding_settings',
+    purpose:
+      'Per-user workspace branding (sidebar name/logo, PDF/OMR toggles). RLS: own row only — not shared across users. Default UI label KiwiTeach until a row exists.',
+  },
   { schema: 'public', name: 'blog_posts', purpose: 'Marketing blog content; public read for published posts.' },
   { schema: 'public', name: 'payments', purpose: 'Dodo Payments events; written by webhook/service role.' },
   { schema: 'public', name: 'subscriptions', purpose: 'Dodo subscription state; billing and renewal fields.' },
   { schema: 'public', name: 'marketing_pricing_plans', purpose: 'Pricing page plans (INR, features JSON); public read when active.' },
-  { schema: 'public', name: 'platform_branding', purpose: 'Global product theme (colors, fonts) for the signed-in shell.' },
+  {
+    schema: 'public',
+    name: 'platform_branding',
+    purpose: 'Global product theme (colors, fonts, sidebar gradient) for the signed-in shell — single row id default; distinct from per-user branding_settings.',
+  },
   { schema: 'public', name: 'exam_paper_profiles', purpose: 'Exam paper layout/styling presets per knowledge base.' },
   { schema: 'public', name: 'syllabus_sets', purpose: 'Named syllabus versions tied to a knowledge base.' },
   { schema: 'public', name: 'syllabus_entries', purpose: 'Rows mapping syllabus sets to chapters / coverage.' },
@@ -68,6 +82,12 @@ export const SUPABASE_TABLE_CATALOG: SupabaseTableRow[] = [
   { schema: 'public', name: 'role_registry', purpose: 'System and custom role slugs for the permission matrix.' },
   { schema: 'public', name: 'permission_registry', purpose: 'Fine-grained permission keys (nav, admin sections, etc.).' },
   { schema: 'public', name: 'role_permission_grant', purpose: 'Join: which permissions each role_registry row allows.' },
+  {
+    schema: 'public',
+    name: 'question_bank_review_marks',
+    purpose:
+      'Per-reviewer quality marks on bank questions (wrong, OOS, LaTeX, figure, notes). RPC upsert_question_bank_review_mark; can_submit_question_bank_review() allows dev, school_admin, reviewer, teacher.',
+  },
 ];
 
 /** Mermaid: core foreign-key style links (simplified; not every column shown). */
@@ -111,6 +131,9 @@ export const DIAGRAM_SUPABASE_TABLE_LINKS = `flowchart TB
     RQS["reference_question_sets"]
     RQ["reference_questions"]
   end
+  subgraph REV["Question bank review"]
+    QBM["question_bank_review_marks"]
+  end
   subgraph ACCESS["Access / roles"]
     STI["subscription_tiers"]
     UKA["user_knowledge_base_access"]
@@ -150,6 +173,8 @@ export const DIAGRAM_SUPABASE_TABLE_LINKS = `flowchart TB
   SE -.-> CH
   CH --> OOS
   QB --> OOS
+  QB --> QBM
+  AU --> QBM
   AU --> BR
   PR --> FO
   PR --> TE

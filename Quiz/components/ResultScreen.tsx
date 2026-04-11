@@ -18,7 +18,7 @@ import {
 } from '../../utils/matchingPaperColumns';
 import OMRScannerModal from './OCR/OMRScannerModal';
 import { generateOMR } from './OMR/OMRGenerator';
-import { generateAnswerKeyPDF } from './AnswerKeyGenerator';
+import { answerKeyAnswerLine } from './AnswerKeyGenerator';
 import { fetchEligibleQuestions, isUuid } from '../services/questionUsageService';
 import { eligibleOversampleLimit, selectQuestionsMaxTopicSpread } from '../services/topicSpreadPick';
 import { workspacePageClass } from '../../Teacher/components/WorkspaceChrome';
@@ -442,9 +442,6 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
     savedFingerprint !== null && paperContentFingerprint(currentQuestions, editableTopic) === savedFingerprint;
   const [isOmrOpen, setIsOmrOpen] = useState(false);
   const [isDownloadingOmrPdf, setIsDownloadingOmrPdf] = useState(false);
-  const [isDownloadingAnswerSheet, setIsDownloadingAnswerSheet] = useState(false);
-  /** Answer key PDF: off = compact one-page key; on = key + explanations (matches paper order). */
-  const [answerSheetWithExplanations, setAnswerSheetWithExplanations] = useState(false);
   /** Left rail: paper matrix, breakdown, page navigator (lg+). */
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
   const [pendingPrint, setPendingPrint] = useState(false);
@@ -699,6 +696,12 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
     [pages, currentQuestions]
   );
 
+  const answerSheetMathKey = useMemo(
+    () =>
+      `${paperConfig.fontSize}:${paperConfig.lineHeight}:${paperConfig.gap}:${encodeURIComponent(paperConfig.fontFamily)}`,
+    [paperConfig.fontSize, paperConfig.lineHeight, paperConfig.gap, paperConfig.fontFamily]
+  );
+
   const paperTopicModalClassCounts = useMemo(() => {
     const chapters = sourceOptions?.chapters;
     const byId = buildChapterIdToClassName(chapters);
@@ -813,32 +816,6 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
           setSavedFingerprint(paperContentFingerprint(currentQuestions, editableTopic));
       } catch (e: any) { alert("Save failed: " + e.message); } finally { setIsSaving(false); }
   };
-
-  const handleDownloadAnswerSheet = useCallback(async () => {
-    setIsDownloadingAnswerSheet(true);
-    try {
-      const safeName = editableTopic.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, '_') || 'Test';
-      const suffix = answerSheetWithExplanations ? '_Answer_Key_Explained.pdf' : '_Answer_Key.pdf';
-      await generateAnswerKeyPDF({
-        topic: editableTopic,
-        questions: questionsOrderedForAnswerKey,
-        brandConfig,
-        includeExplanations: answerSheetWithExplanations,
-        filename: `${safeName}${suffix}`,
-        paperStyle: {
-          fontFamily: paperConfig.fontFamily,
-          fontSize: paperConfig.fontSize,
-          lineHeight: paperConfig.lineHeight,
-          marginX: paperConfig.marginX,
-          marginY: paperConfig.marginY,
-        },
-      });
-    } catch (e: any) {
-      alert('Answer key PDF failed: ' + (e?.message ? String(e.message) : String(e)));
-    } finally {
-      setIsDownloadingAnswerSheet(false);
-    }
-  }, [editableTopic, questionsOrderedForAnswerKey, brandConfig, answerSheetWithExplanations, paperConfig]);
 
   const clearPendingPrint = useCallback(() => setPendingPrint(false), []);
 
@@ -988,6 +965,105 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
     }, printDelayMs);
     setTimeout(cleanup, 3000);
   }, [clearPendingPrint]);
+
+  const printAnswerSheetFromIsolatedFrame = useCallback(() => {
+    const printableArea = document.getElementById('printable-answer-sheet-area');
+    if (!printableArea) {
+      alert('Answer sheet could not be prepared.');
+      return;
+    }
+
+    const styleAndLinks = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+      .map((node) => node.outerHTML)
+      .join('\n');
+
+    const printFrame = document.createElement('iframe');
+    printFrame.setAttribute('aria-hidden', 'true');
+    printFrame.style.position = 'fixed';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    document.body.appendChild(printFrame);
+
+    const printDoc = printFrame.contentDocument;
+    if (!printDoc) {
+      document.body.removeChild(printFrame);
+      return;
+    }
+
+    const printHtml = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Answer key</title>
+          ${styleAndLinks}
+          <style>
+            @page { size: A4; margin: 0; }
+            html, body {
+              margin: 0 !important;
+              padding: 0 !important;
+              background: #fff !important;
+            }
+            #printable-answer-sheet-area {
+              width: 100% !important;
+              max-width: none !important;
+              margin: 0 !important;
+              display: block !important;
+            }
+            .answer-print-item {
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+            .answer-print-explanation {
+              margin-top: 0.35em !important;
+              padding: 0 !important;
+              border: none !important;
+              background: transparent !important;
+              border-radius: 0 !important;
+            }
+            .math-content .katex { font-size: 1em !important; }
+            * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          </style>
+        </head>
+        <body>${printableArea.outerHTML}</body>
+      </html>
+    `;
+
+    printDoc.open();
+    printDoc.write(printHtml);
+    printDoc.close();
+
+    const frameWindow = printFrame.contentWindow;
+    if (!frameWindow) {
+      document.body.removeChild(printFrame);
+      return;
+    }
+
+    const cleanup = () => {
+      if (document.body.contains(printFrame)) {
+        document.body.removeChild(printFrame);
+      }
+    };
+
+    frameWindow.addEventListener('afterprint', cleanup, { once: true });
+    const printDelayMs =
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches ? 450 : 200;
+    setTimeout(() => {
+      try {
+        frameWindow.focus();
+        frameWindow.print();
+      } catch {
+        cleanup();
+      }
+    }, printDelayMs);
+    setTimeout(cleanup, 3000);
+  }, []);
 
   const handlePrint = () => {
     // Keep browser print flow, but always request it from scroll mode.
@@ -2516,6 +2592,9 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
              width: 210mm !important;
              height: 297mm !important;
            }
+           .printable-answer-sheet-host {
+             display: none !important;
+           }
          }
        `}</style>
 
@@ -2775,6 +2854,99 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                             </div>
                         );
                     })}
+                </div>
+
+                <div
+                  className="printable-answer-sheet-host pointer-events-none fixed left-[-9999px] top-0 z-0 w-[210mm]"
+                  aria-hidden
+                >
+                  <div
+                    id="printable-answer-sheet-area"
+                    className="box-border bg-white text-black"
+                    style={{
+                      fontFamily: paperConfig.fontFamily,
+                      fontSize: `${paperConfig.fontSize}pt`,
+                      lineHeight: `${paperConfig.lineHeight}`,
+                      paddingLeft: `${paperConfig.marginX}mm`,
+                      paddingRight: `${paperConfig.marginX}mm`,
+                      paddingTop: `${paperConfig.marginY * QUESTION_PAGE_TOP_MARGIN_FRAC}mm`,
+                      paddingBottom: `${paperConfig.marginY}mm`,
+                    }}
+                  >
+                    <header className="mb-4 border-b border-zinc-200 pb-3">
+                      <h1 className="text-sm font-black tracking-tight text-black">Answer key</h1>
+                      <p className="mt-0.5 text-[10pt] font-medium text-zinc-800">{editableTopic}</p>
+                      <p className="mt-0.5 text-[9pt] text-zinc-600">
+                        {questionsOrderedForAnswerKey.length} question
+                        {questionsOrderedForAnswerKey.length === 1 ? '' : 's'} — correct choices and explanations (same
+                        order as the test paper). Use print → Save as PDF.
+                      </p>
+                      {(brandConfig.logo || brandConfig.name) && (
+                        <div className="mt-2 flex items-center gap-2 text-[9pt] text-zinc-800">
+                          {brandConfig.logo ? (
+                            <img src={brandConfig.logo} alt="" className="h-6 w-auto object-contain" />
+                          ) : null}
+                          {brandConfig.name ? <span className="font-semibold">{brandConfig.name}</span> : null}
+                        </div>
+                      )}
+                    </header>
+                    <div className="space-y-3">
+                      {questionsOrderedForAnswerKey.map((q, idx) => {
+                        const n = idx + 1;
+                        const stableQid = String(q.originalId || q.id);
+                        const matchingPaper = resolveMatchingPaperColumns(q);
+                        const colB = matchingPaper?.colB;
+                        const matches = q.correctMatches;
+                        const exp = (q.explanation || '').trim();
+                        const isMatching =
+                          q.type === 'matching' && Array.isArray(matches) && matches.length > 0 && colB;
+
+                        return (
+                          <div key={stableQid} className="answer-print-item math-content">
+                            <div className="font-bold text-black">
+                              <span className="tabular-nums">{n}.</span> {answerKeyAnswerLine(q)}
+                            </div>
+                            {isMatching ? (
+                              <div className="mt-1 space-y-0.5">
+                                {matches!.map((bIdx, aIdx) => {
+                                  const txt = colB![bIdx] ?? '';
+                                  return (
+                                    <div key={`${stableQid}-m-${aIdx}`} className="text-black">
+                                      <span className="font-semibold">{matchingRowLetter(aIdx)}:</span>{' '}
+                                      <PaperRich
+                                        key={`${answerSheetMathKey}-ans-${stableQid}-row-${aIdx}`}
+                                        as="span"
+                                        text={txt}
+                                        className="min-w-0"
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="mt-1 text-black">
+                                <PaperRich
+                                  key={`${answerSheetMathKey}-opt-${stableQid}`}
+                                  as="div"
+                                  text={q.options[q.correctIndex ?? 0] ?? ''}
+                                  className="min-w-0"
+                                />
+                              </div>
+                            )}
+                            {exp ? (
+                              <div className="answer-print-explanation text-black">
+                                <PaperRich
+                                  key={`${answerSheetMathKey}-exp-${stableQid}`}
+                                  as="div"
+                                  text={exp}
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
             </main>
             </div>
@@ -3054,7 +3226,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                      Answer key
                    </h2>
                    <p className="mt-1 text-[10px] font-medium text-zinc-500">
-                     OMR bubble sheet or answer key PDF (same order as the test paper).
+                     OMR PDF, or answer key via print (Save as PDF) — same order as the test paper.
                    </p>
                  </div>
                  <button
@@ -3083,30 +3255,16 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
                    )}
                    OMR sheet (PDF)
                  </button>
-                 <label className="flex cursor-pointer select-none items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800">
-                   <input
-                     type="checkbox"
-                     checked={answerSheetWithExplanations}
-                     onChange={(e) => setAnswerSheetWithExplanations(e.target.checked)}
-                     className="h-4 w-4 rounded border-zinc-400 text-cyan-700 focus:ring-cyan-500"
-                   />
-                   Include explanations on answer key
-                 </label>
                  <button
                    type="button"
                    onClick={() => {
-                     void handleDownloadAnswerSheet();
+                     printAnswerSheetFromIsolatedFrame();
                      setDownloadModalOpen(false);
                    }}
-                   disabled={isPaginating || isDownloadingAnswerSheet}
-                   className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-cyan-900 shadow-sm transition-colors hover:bg-cyan-100 disabled:opacity-50"
+                   className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-cyan-900 shadow-sm transition-colors hover:bg-cyan-100"
                  >
-                   {isDownloadingAnswerSheet ? (
-                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-200 border-t-cyan-700" />
-                   ) : (
-                     <iconify-icon icon="mdi:file-document-outline" width="18" />
-                   )}
-                   Answer key (PDF)
+                   <iconify-icon icon="mdi:printer" width="18" />
+                   Answer key (print / PDF)
                  </button>
                </div>
              </div>

@@ -9,12 +9,25 @@ export const landingNavLinks = [
 /** WebP assets in `public/landing/` — run `npm run optimize:landing-images` after replacing PNG sources. */
 export const NEET_TEST_PREP_OMR_IMAGE = '/landing/neet-test-prep-omr-hero.webp';
 
-/** On-brand illustrations (navy #1c2442, teal #35c3ae, cream) — home page. */
-export const LANDING_HOME_HERO_IMAGE = '/landing/home-hero-classroom.webp';
+/**
+ * Home hero carousel (WebP in `public/landing/`). Slide 1 is the original classroom hero; add PNGs and run
+ * `npm run optimize:landing-images` when refreshing art.
+ */
+export const LANDING_HOME_HERO_SLIDES = [
+  '/landing/home-hero-classroom.webp',
+  '/landing/home-hero-male-teacher-classroom.webp',
+  '/landing/home-hero-student-home-app.webp',
+] as const;
 
-/** SEO / accessibility: descriptive alts (keywords natural, India + teaching context). */
-export const LANDING_HOME_HERO_ALT =
-  'Indian teacher in a bright modern classroom — KiwiTeach AI tools for lesson plans, assessments, and NEET prep for schools';
+export const LANDING_HOME_HERO_ALTS = [
+  'Indian teacher in a bright modern classroom — KiwiTeach AI tools for lesson plans, assessments, and NEET prep for schools',
+  'Illustration: male teacher teaching smiling high school students in class — KiwiTeach navy, teal, and cream brand colours',
+  'Illustration: student studying at home on a laptop with KiwiTeach for online practice tests and revision',
+] as const;
+
+/** First slide — used for preload / OG fallbacks. */
+export const LANDING_HOME_HERO_IMAGE = LANDING_HOME_HERO_SLIDES[0];
+export const LANDING_HOME_HERO_ALT = LANDING_HOME_HERO_ALTS[0];
 
 /** Classroom command center carousel: WebP in `public/landing/` (run `npm run optimize:landing-images` after new PNGs). */
 export const LANDING_HOME_COMMAND_CAROUSEL = [

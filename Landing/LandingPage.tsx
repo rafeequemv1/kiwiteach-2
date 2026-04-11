@@ -28,8 +28,8 @@ import {
   landingTheme,
   LANDING_FOOTER_BLURB,
   LANDING_HOME_COMMAND_CAROUSEL,
-  LANDING_HOME_HERO_ALT,
-  LANDING_HOME_HERO_IMAGE,
+  LANDING_HOME_HERO_ALTS,
+  LANDING_HOME_HERO_SLIDES,
   LANDING_HERO_OUTCOME,
   LANDING_ICP_LINE,
   NEET_PREP_HERO_ALTS,
@@ -203,6 +203,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [heroInsightIdx, setHeroInsightIdx] = useState(0);
   const [homeCommandSlideIdx, setHomeCommandSlideIdx] = useState(0);
+  const [homeHeroSlideIdx, setHomeHeroSlideIdx] = useState(0);
   const [neetHeroSlideIdx, setNeetHeroSlideIdx] = useState(0);
 
   const pushMarketingRoute = useCallback((tab: LandingMarketingTab, slug: string | null = null) => {
@@ -246,6 +247,14 @@ const LandingPage: React.FC<LandingPageProps> = ({
     const id = window.setInterval(() => {
       setHomeCommandSlideIdx((i) => (i + 1) % LANDING_HOME_COMMAND_CAROUSEL.length);
     }, 5500);
+    return () => clearInterval(id);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'home') return;
+    const id = window.setInterval(() => {
+      setHomeHeroSlideIdx((i) => (i + 1) % LANDING_HOME_HERO_SLIDES.length);
+    }, 6000);
     return () => clearInterval(id);
   }, [activeTab]);
 
@@ -645,17 +654,48 @@ const LandingPage: React.FC<LandingPageProps> = ({
 
           <div className="relative mx-auto w-full max-w-xl lg:max-w-none">
             <div className="overflow-hidden rounded-2xl border border-zinc-200/80 bg-white p-2 shadow-lg shadow-zinc-200/40">
-              <img
-                src={LANDING_HOME_HERO_IMAGE}
-                alt={LANDING_HOME_HERO_ALT}
-                className="h-[300px] w-full rounded-xl object-cover md:h-[420px]"
-                width={1280}
-                height={960}
-                sizes="(max-width: 1024px) 100vw, 50vw"
-                decoding="async"
-                fetchPriority="high"
-                loading="eager"
-              />
+              <div
+                className="relative min-h-[300px] overflow-hidden rounded-xl md:min-h-[420px]"
+                role="region"
+                aria-roledescription="carousel"
+                aria-label="KiwiTeach in classrooms and at home"
+              >
+                <AnimatePresence initial={false} mode="wait">
+                  <motion.img
+                    key={homeHeroSlideIdx}
+                    src={LANDING_HOME_HERO_SLIDES[homeHeroSlideIdx]}
+                    alt={LANDING_HOME_HERO_ALTS[homeHeroSlideIdx]}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+                    className="absolute inset-0 h-full w-full object-cover"
+                    width={1280}
+                    height={960}
+                    sizes="(max-width: 1024px) 100vw, 50vw"
+                    decoding="async"
+                    fetchPriority={homeHeroSlideIdx === 0 ? 'high' : 'low'}
+                    loading={homeHeroSlideIdx === 0 ? 'eager' : 'lazy'}
+                  />
+                </AnimatePresence>
+              </div>
+              <div className="mt-3 flex justify-center gap-2">
+                {LANDING_HOME_HERO_SLIDES.map((src, i) => (
+                  <button
+                    key={src}
+                    type="button"
+                    aria-label={`Hero scene ${i + 1} of ${LANDING_HOME_HERO_SLIDES.length}`}
+                    aria-current={i === homeHeroSlideIdx ? 'true' : undefined}
+                    onClick={() => setHomeHeroSlideIdx(i)}
+                    className="h-2 w-2 rounded-full transition-opacity focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-400"
+                    style={{
+                      backgroundColor:
+                        i === homeHeroSlideIdx ? landingTheme.colors.accent : 'rgba(28,36,66,0.22)',
+                      opacity: i === homeHeroSlideIdx ? 1 : 0.55,
+                    }}
+                  />
+                ))}
+              </div>
             </div>
             <HomeHeroStackCards />
           </div>

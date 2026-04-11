@@ -41,11 +41,13 @@ const DIAGRAM_DB = `flowchart TB
     RP["roles and permissions"]
   end
   subgraph META["Platform"]
-    BR["platform_branding"]
+    BR["platform_branding global shell theme"]
+    BS["branding_settings per user PDFs OMR"]
     SY["syllabus_sets and exclusions"]
     FL["out_of_syllabus flags"]
   end
   U --> P
+  P --> BS
   BU --> IN --> CL
   P --> BU
   ST --> CL
@@ -68,40 +70,43 @@ const DIAGRAM_DB = `flowchart TB
 
 const DIAGRAM_USER = `flowchart TD
   L["Landing page"] --> SI["Sign in / Sign up Supabase Auth"]
-  SI --> R{"App role"}
-  R -->|developer| AD["Full Admin plus dev tools"]
-  R -->|school_admin| SA["Admin org branding exam papers syllabus"]
-  R -->|teacher| TW["Teacher workspace"]
-  R -->|student| SW["Student workspace"]
-  AD --> QZ["Quiz studio tests folders"]
+  SI --> R{"profiles.role → resolveAppRole UI"}
+  R -->|developer| AD["Workspace + Admin console + Question bank review + dev-only labs"]
+  R -->|school_admin| SA["Workspace + Admin console org syllabus KB access NO review nav"]
+  R -->|teacher| TW["Workspace + Question bank review + class tools"]
+  R -->|reviewer| RV["Question bank review workspace only"]
+  R -->|student| SW["Online tests + mock tests"]
+  AD --> QZ["Quiz.tsx hub tests folders"]
   SA --> QZ
   TW --> QZ
   TW --> TS["Online exam scheduler"]
-  TW --> SYH["Syllabus hub"]
-  SW --> SE["Scheduled exams and attempts"]
-  SW --> SR["Results and review"]
+  AD --> ADM["AdminView syllabus prompts knowledge dev sections"]
+  SA --> ADM
+  SW --> SE["Scheduled exams attempts"]
   QZ --> DB["Save tests to Supabase"]
-  QZ --> GEN["Optional Gemini generation"]
-  SE --> OA["Online attempt RPCs"]
-  OA --> SR`;
+  QZ --> GEN["Gemini text + batched figure generation"]
+  SE --> OA["Online attempt RPCs"]`;
 
 const DIAGRAM_APP = `flowchart LR
   subgraph UI["KiwiTeach UI React Vite"]
-    Q["Quiz.tsx views"]
+    Q["Quiz.tsx dashboard views"]
     T["Teacher panels"]
-    A["AdminView sections"]
-    LA["Landing"]
+    A["AdminView role-gated sections"]
+    RVW["QuestionBankReviewWorkspace"]
+    LA["Landing marketing shell"]
   end
   subgraph SVC["Client services"]
     SB["supabase client"]
-    GS["geminiService"]
-    QUS["questionUsageService"]
-    SY["syllabusService"]
+    GS["geminiService forge figures prompts"]
+    QUS["questionUsageService eligible + commit"]
+    SY["syllabusService topics exclusions"]
+    SP["splitImageGrid4x4 2x2 inset crop"]
+    TSP["topicSpreadPick figure slots on papers"]
   end
   subgraph SBAPI["Supabase platform"]
     SAUTH["Auth JWT"]
     SDB["Postgres RLS"]
-    SRPC["RPCs e.g. eligible questions record usage"]
+    SRPC["RPCs eligible usage review marks"]
     SST["Storage buckets"]
   end
   subgraph EXT["External"]
@@ -110,14 +115,35 @@ const DIAGRAM_APP = `flowchart LR
   Q --> SB
   A --> SB
   T --> SB
+  RVW --> SB
   Q --> GS
   A --> GS
   Q --> QUS
+  Q --> SP
+  GS --> GEM
+  GS --> SP
+  Q --> TSP
   SB --> SAUTH
   SB --> SDB
   SB --> SRPC
-  SB --> SST
-  GS --> GEM`;
+  SB --> SST`;
+
+/** Optional: up to four figure prompts per Gemini image call; client crops quadrants with inset to drop model grid lines */
+const DIAGRAM_FIGURE_PIPELINE = `flowchart TB
+  subgraph BANK["Question Bank forge"]
+    TOG["2x2 batch + slice mode"]
+    HD["figure_high_density row flag"]
+  end
+  subgraph GEM["Gemini image"]
+    PR["Prompts forbid strokes on crop midlines"]
+    IMG["One square raster 2x2"]
+  end
+  subgraph WEB["Browser"]
+    SL["splitBase64ImageTo2x2Grid inset crop"]
+    OUT["Four cells to bank rows"]
+  end
+  TOG --> PR --> IMG --> SL --> OUT
+  HD -.->|printed paper figure tier| OUT`;
 
 /** Organization + tables + pick/save flow for class-scoped no-repeat */
 const DIAGRAM_QUESTION_USAGE = `flowchart TB
@@ -180,10 +206,12 @@ const DIAGRAM_ROLES_ACCESS = `flowchart TB
     GR["role_permission_grant role_id permission_id allowed"]
   end
   subgraph ENF["App enforcement layers"]
-    RV["resolveAppRole UI shell only"]
-    VW["viewsAllowedForRole dashboard views"]
-    ADM["AdminView section gates developer school_admin"]
-    RPCD["Postgres is_developer RLS RPCs admin_* can_use_platform_ai"]
+    RV["resolveAppRole UI shell allowlist email"]
+    VW["viewsAllowedForRole dashboard routes"]
+    AC["canAccessAdminConsole developer school_admin"]
+    QR["canAccessQuestionBankReview developer teacher reviewer not school_admin"]
+    ADM["AdminView per-section gates"]
+    RPCD["Postgres is_developer is_reviewer RLS RPCs"]
   end
   B --> I --> C
   S --> C
@@ -191,6 +219,8 @@ const DIAGRAM_ROLES_ACCESS = `flowchart TB
   AL --> RV
   PF --> RV
   RV --> VW
+  RV --> AC
+  RV --> QR
   RV --> ADM
   RR --> GR
   PM --> GR
@@ -275,8 +305,10 @@ const AppArchitectureHome: React.FC = () => {
     <div className="space-y-6 p-4 md:p-6">
       <div className="max-w-3xl space-y-2">
         <p className="text-[13px] leading-relaxed text-zinc-600">
-          High-level maps: full database sketch, detailed question-usage and org linkage, roles/permissions hierarchy,
-          user journeys, and frontend-to-backend flow. Mermaid diagrams — scroll each panel when content is large.
+          High-level maps: database sketch, question usage and org linkage, roles with client route gates (
+          <code className="rounded bg-zinc-100 px-1">auth/roles.ts</code>), user journeys, app layers, batched figure pipeline, and
+          conceptual table links. Scroll wide diagrams. A compact markdown mirror for editors and AI context lives at repo root:{' '}
+          <code className="rounded bg-zinc-100 px-1">ARCHITECTURE.md</code>.
         </p>
       </div>
 
@@ -326,11 +358,17 @@ const AppArchitectureHome: React.FC = () => {
       <MermaidBlock
         diagramKey="roles"
         title="Roles, permissions, and access hierarchy"
-        description="profiles.role in Postgres drives RLS and RPCs; the client allowlist only affects resolveAppRole for navigation chrome. Tenant tree: businesses → institutes → classes → students. role_registry / permission_registry / role_permission_grant store the admin permission matrix."
+        description="profiles.role drives RLS and RPCs (e.g. is_developer, is_reviewer). Client: resolveAppRole (developer email allowlist is UI-only), viewsAllowedForRole, canAccessAdminConsole (developer + school_admin), canAccessQuestionBankReview (developer + teacher + reviewer — not school_admin). Tenant tree: businesses → institutes → classes → students. role_registry / permission_registry / role_permission_grant back the Roles admin UI."
         definition={DIAGRAM_ROLES_ACCESS}
       />
       <MermaidBlock diagramKey="user" title="User flow" definition={DIAGRAM_USER} />
       <MermaidBlock diagramKey="app" title="Application architecture" definition={DIAGRAM_APP} />
+      <MermaidBlock
+        diagramKey="figures"
+        title="Batched figure generation (2×2 slice)"
+        description="Neural Studio can batch up to four figure prompts in one Gemini image call; the client splits the composite with pixel inset on internal edges so model-drawn grid lines are not kept. topicSpreadPick allocates figure slots when assembling papers."
+        definition={DIAGRAM_FIGURE_PIPELINE}
+      />
     </div>
   );
 };
