@@ -1117,8 +1117,8 @@ async function generateOneReferenceVariant(
   sourceMimeType: string,
   imageModelId: string
 ): Promise<string> {
-  const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
-  const instruction = `TASK: Create a professional "NEET Exam Style" black-and-white line diagram based on the source image.
+            const imagePart = { inlineData: { mimeType: sourceMimeType, data: cleanedSource } };
+            const instruction = `TASK: Create a professional "NEET Exam Style" black-and-white line diagram based on the source image.
 
 ${REFERENCE_TRACE_RULES}
 
@@ -1147,12 +1147,12 @@ TASK: The first attachment is the SOURCE reference. Output **one** square image 
 ${REFERENCE_TRACE_RULES}
 
 ${buildReferenceGridCellSpecs(padded)}`;
-
-  const response = await adminGeminiGenerateContent({
-    model: imageModelId,
-    contents: { parts: [imagePart, { text: instruction }] },
-  });
-  const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+            
+            const response = await adminGeminiGenerateContent({
+                model: imageModelId,
+                contents: { parts: [imagePart, { text: instruction }] },
+            });
+            const outputPart = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
   if (!outputPart?.inlineData?.data) {
     throw new Error('Gemini did not return an image for reference 2×2 batch');
   }
@@ -1226,9 +1226,9 @@ export const generateCompositeStyleVariants = async (
           results.push('');
         }
       }
+        }
     }
-  }
-  return results;
+    return results;
 };
 
 /**
@@ -1273,16 +1273,16 @@ export const generateCompositeFigures = async (
   imageModelId: string = COMPOSITE_IMAGE_MODEL_DEFAULT,
   batchWithSlicing: boolean = true
 ): Promise<string[]> => {
-  const results: string[] = [];
+    const results: string[] = [];
 
   if (!batchWithSlicing) {
     for (const p of prompts) {
       const t = (p || '').trim();
       if (!t) {
         results.push('');
-        continue;
-      }
-      try {
+            continue;
+        }
+        try {
         results.push(await generateOneSyntheticFigure(t, imageModelId));
       } catch {
         results.push('');
@@ -1316,9 +1316,9 @@ export const generateCompositeFigures = async (
           results.push('');
         }
       }
+        }
     }
-  }
-  return results;
+    return results;
 };
 
 export const refineSystemPrompt = async (currentPrompt: string, instruction: string): Promise<string> => {

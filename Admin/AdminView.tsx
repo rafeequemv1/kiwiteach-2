@@ -229,12 +229,11 @@ const AdminSectionFrame: React.FC<AdminSectionFrameProps> = ({
 const AdminView: React.FC<AdminViewProps> = ({ appRole, userId, onRefreshOrg }) => {
   const isDeveloper = appRole === 'developer';
   const isSchoolAdmin = appRole === 'school_admin';
-  const isTeacher = appRole === 'teacher';
-  const canUseSyllabusHub = isDeveloper || isSchoolAdmin || isTeacher;
+  const canUseSyllabusHub = isDeveloper || isSchoolAdmin;
   const canManagePlatformBranding = isDeveloper || isSchoolAdmin;
   const canManageExamPapers = isDeveloper || isSchoolAdmin;
 
-  const fallbackSection: AdminSection = isDeveloper || isSchoolAdmin ? 'institutes' : 'syllabus';
+  const fallbackSection: AdminSection = 'institutes';
 
   const [activeSection, setActiveSection] = useState<AdminSection>(fallbackSection);
   const [navCollapsed, setNavCollapsed] = useState(false);

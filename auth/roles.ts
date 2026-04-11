@@ -52,6 +52,7 @@ export type DashboardView =
   | 'student-online-test'
   | 'student-mock-test';
 
+/** Teacher / coach workspace — no platform Admin console (syllabus hub, org-wide tools). */
 const TEACHER_VIEWS: DashboardView[] = [
   'overview',
   'test',
@@ -59,24 +60,39 @@ const TEACHER_VIEWS: DashboardView[] = [
   'students',
   'reports',
   'settings',
-  'admin',
 ];
+
+/** Admin console: syllabus & exclusions, knowledge, prompts, etc. — developer + school_admin only. */
+const ADMIN_CONSOLE_VIEWS: DashboardView[] = ['admin'];
 
 const QUESTION_BANK_REVIEW_VIEW: DashboardView = 'question-bank-review';
 
 const STUDENT_VIEWS: DashboardView[] = ['student-online-test', 'student-mock-test'];
 
-const SCHOOL_ADMIN_VIEWS: DashboardView[] = [...TEACHER_VIEWS];
+const SCHOOL_ADMIN_VIEWS: DashboardView[] = [...TEACHER_VIEWS, ...ADMIN_CONSOLE_VIEWS];
+
+/** Whether the sidebar should show the Admin entry and `/dashboard/admin` is allowed. */
+export function canAccessAdminConsole(role: AppRole): boolean {
+  return role === 'developer' || role === 'school_admin';
+}
+
+/**
+ * Question bank review UI (sidebar + route). Institute admins manage org/billing, not curation queues.
+ * Reviewers, platform developers, and teachers who run review workflows — not `school_admin` unless given `reviewer`.
+ */
+export function canAccessQuestionBankReview(role: AppRole): boolean {
+  return role === 'reviewer' || role === 'developer' || role === 'teacher';
+}
 
 export function viewsAllowedForRole(role: AppRole): DashboardView[] {
   if (role === 'developer') {
     return Array.from(
-      new Set<DashboardView>([...TEACHER_VIEWS, ...STUDENT_VIEWS, QUESTION_BANK_REVIEW_VIEW])
+      new Set<DashboardView>([...TEACHER_VIEWS, ...ADMIN_CONSOLE_VIEWS, ...STUDENT_VIEWS, QUESTION_BANK_REVIEW_VIEW])
     );
   }
   if (role === 'teacher') return [...TEACHER_VIEWS, QUESTION_BANK_REVIEW_VIEW];
   if (role === 'student') return [...STUDENT_VIEWS];
-  if (role === 'school_admin') return [...SCHOOL_ADMIN_VIEWS, QUESTION_BANK_REVIEW_VIEW];
+  if (role === 'school_admin') return [...SCHOOL_ADMIN_VIEWS];
   if (role === 'reviewer') return [QUESTION_BANK_REVIEW_VIEW];
   return STUDENT_VIEWS;
 }

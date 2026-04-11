@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { generateOMR } from '../Quiz/components/OMR/OMRGenerator';
 import { BrandingConfig } from '../Quiz/types';
 import { usePlatformBranding } from '../branding/PlatformBrandingContext';
-import type { AppRole } from '../auth/roles';
+import { type AppRole, canAccessAdminConsole, canAccessQuestionBankReview } from '../auth/roles';
 
 interface LeftPanelProps {
   activeView: string;
@@ -34,10 +34,8 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
 
   const showTeacherNav = appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
   const showStudentZone = appRole === 'developer' || appRole === 'student';
-  const showAdminInFooter =
-    appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
-  const showReviewNav =
-    appRole === 'reviewer' || appRole === 'developer' || appRole === 'teacher' || appRole === 'school_admin';
+  const showAdminInFooter = canAccessAdminConsole(appRole);
+  const showReviewNav = canAccessQuestionBankReview(appRole);
 
   const navItems = [
     { id: 'overview', label: 'Overview', icon: 'mdi:view-dashboard-outline', role: 'teacher' },

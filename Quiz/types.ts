@@ -68,6 +68,18 @@ export interface BrandingConfig {
   show_on_omr?: boolean;
 }
 
+/** Sidebar / PDF identity until the user saves their own row in `branding_settings` (one row per account). */
+export const DEFAULT_USER_BRAND_NAME = 'KiwiTeach';
+
+export function defaultUserBrandingConfig(): BrandingConfig {
+  return {
+    name: DEFAULT_USER_BRAND_NAME,
+    logo: null,
+    showOnTest: true,
+    showOnOmr: true,
+  };
+}
+
 export interface TypeDistribution {
   mcq: number;
   reasoning: number;

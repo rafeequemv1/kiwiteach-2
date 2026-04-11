@@ -26,6 +26,8 @@ import {
   resolveAppRole,
   persistedRoleForNewProfile,
   canAccessView,
+  canAccessAdminConsole,
+  canAccessQuestionBankReview,
   defaultViewForRole,
   type AppRole,
   type DashboardView,
@@ -38,6 +40,8 @@ import {
   LayoutConfig,
   TypeDistribution,
   CreateTestOptions,
+  DEFAULT_USER_BRAND_NAME,
+  defaultUserBrandingConfig,
 } from './types';
 import {
   fetchEligibleQuestions,
@@ -271,7 +275,7 @@ const Quiz: React.FC = () => {
   const [viewMode, setViewMode] = useState<'icons' | 'list' | 'calendar' | 'kanban'>('icons');
   const [calendarType, setCalendarType] = useState<'month' | 'week' | 'year'>('month');
 
-  const [brandConfig, setBrandConfig] = useState<BrandingConfig>({ name: 'KiwiTeach', logo: null, showOnTest: true, showOnOmr: true });
+  const [brandConfig, setBrandConfig] = useState<BrandingConfig>(() => defaultUserBrandingConfig());
   const [platformTheme, setPlatformTheme] = useState(() => resolvePlatformBranding(null));
 
   const loadPlatformBranding = useCallback(async () => {
@@ -536,28 +540,50 @@ const Quiz: React.FC = () => {
         setOrgScopeReady(false);
         didInitRouteRef.current = false;
         classScopedSessionUsedRef.current.clear();
+        setBrandConfig(defaultUserBrandingConfig());
       }
     });
     return () => subscription.unsubscribe();
   }, []);
 
   const fetchBranding = async (userId: string) => {
-      const { data, error } = await supabase.from('branding_settings').select('brand_name, logo_url, show_on_test, show_on_omr').eq('user_id', userId).single();
-      if (!error && data) {
-          setBrandConfig({ 
-            name: data.brand_name || 'KiwiTeach', 
-            logo: data.logo_url || null, 
-            showOnTest: data.show_on_test ?? true, 
-            showOnOmr: data.show_on_omr ?? true 
-          });
-      }
+    const { data, error } = await supabase
+      .from('branding_settings')
+      .select('brand_name, logo_url, show_on_test, show_on_omr')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) {
+      console.warn('branding_settings:', error.message);
+      setBrandConfig(defaultUserBrandingConfig());
+      return;
+    }
+    if (!data) {
+      setBrandConfig(defaultUserBrandingConfig());
+      return;
+    }
+    const name = (data.brand_name && String(data.brand_name).trim()) || DEFAULT_USER_BRAND_NAME;
+    setBrandConfig({
+      name,
+      logo: data.logo_url || null,
+      showOnTest: data.show_on_test ?? true,
+      showOnOmr: data.show_on_omr ?? true,
+    });
   };
 
   const handleUpdateBranding = async (newConfig: BrandingConfig) => {
-      setBrandConfig(newConfig);
-      if (session?.user) {
-          await supabase.from('branding_settings').upsert({ user_id: session.user.id, brand_name: newConfig.name, logo_url: newConfig.logo, show_on_test: newConfig.showOnTest, show_on_omr: newConfig.showOnOmr, updated_at: new Date().toISOString() });
-      }
+    const name = (newConfig.name || '').trim() || DEFAULT_USER_BRAND_NAME;
+    const normalized: BrandingConfig = { ...newConfig, name };
+    setBrandConfig(normalized);
+    if (session?.user) {
+      await supabase.from('branding_settings').upsert({
+        user_id: session.user.id,
+        brand_name: name,
+        logo_url: normalized.logo,
+        show_on_test: normalized.showOnTest,
+        show_on_omr: normalized.showOnOmr,
+        updated_at: new Date().toISOString(),
+      });
+    }
   };
 
   const fetchWorkspace = async (currentUser?: any, force?: boolean) => {
@@ -1694,8 +1720,12 @@ const Quiz: React.FC = () => {
         {activeView === 'students' && <StudentDirectory institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'reports' && <ReportsDashboard institutesList={institutes} classesList={orgClasses} />}
         {activeView === 'settings' && <SettingsView brandConfig={brandConfig} onUpdateBranding={handleUpdateBranding} onSignOut={() => supabase.auth.signOut()} userId={session.user.id} onRefresh={refreshOrgData} />}
-        {activeView === 'admin' && <AdminView appRole={appRole} userId={session.user.id} onRefreshOrg={refreshOrgData} />}
-        {activeView === 'question-bank-review' && <QuestionBankReviewWorkspace />}
+        {activeView === 'admin' && canAccessAdminConsole(appRole) && (
+          <AdminView appRole={appRole} userId={session.user.id} onRefreshOrg={refreshOrgData} />
+        )}
+        {activeView === 'question-bank-review' && canAccessQuestionBankReview(appRole) && (
+          <QuestionBankReviewWorkspace />
+        )}
         {activeView === 'student-online-test' && (
           <StudentOnlineTestDashboard
             availableTests={studentOnlineExamsOnly}

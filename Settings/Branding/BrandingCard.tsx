@@ -99,6 +99,11 @@ const BrandingCard: React.FC<BrandingCardProps> = ({ config, onUpdate, embedded 
       )}
 
       <div className={embedded ? 'space-y-6' : 'space-y-8'}>
+        {embedded && (
+          <p className="text-[12px] leading-relaxed text-zinc-500">
+            Shown on your sidebar, test PDFs, and OMR when enabled below. This is saved for your account only — it does not change branding for other users.
+          </p>
+        )}
         {/* Brand Name Input */}
         <div>
           <label className="mb-2 ml-0.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Brand name</label>
