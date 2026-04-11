@@ -998,7 +998,8 @@ const GRID_LAYOUT_PREAMBLE = `LAYOUT (MANDATORY — UNIFORM 2×2 BATCHING, EXACT
 - Canvas must be **square** (image width = image height) so each quadrant is **square** and the same size in every batch.
 - Divide the canvas into exactly **2 columns × 2 rows** = **4 cells** of **equal** pixel width and height (four quadrants).
 - **Row-major cell index**: cell 1 = **top-left**, cell 2 = **top-right**, cell 3 = **bottom-left**, cell 4 = **bottom-right**.
-- **INVISIBLE PARTITIONS (CRITICAL)**: Separate quadrants using **extra white margin only**. **Forbidden**: black lines, grey lines, rules, borders, “grid”, crop guides, hairlines, or any stroke between quadrants. The split must be **invisible** — client software crops by geometry; your drawing must show **no** outline or frame around cells.
+- **NO BOUNDARY STROKES (CRITICAL)**: The exact midpoint lines between quadrants are **software crop edges**. **Never** draw black, grey, or any line on those midlines — they appear as ugly artifacts in each sliced figure. Use a **wide white gutter** (at least ~2–3% of canvas width) between cell contents so chemistry lines never touch the invisible grid.
+- **INVISIBLE PARTITIONS**: Separate quadrants with **white space only**. **Forbidden**: grid lines, rules, borders, frames, “T” junctions on the center cross, crop guides, hairlines between cells.
 - **No diagram, line, or label may cross** from one quadrant into another.
 - For any cell marked UNUSED below: fill with solid **#FFFFFF** only — no strokes, no text, no marks.`;
 
@@ -1020,7 +1021,8 @@ const SYNTHETIC_FIGURE_RULES = `NEET EXAM STYLE — applies to every non-empty c
    - **NO DUAL LABELING**: Do not write both a letter marker and a full structure name for the same part.
    - **POINTER LINES**: Use leader lines **only** for markers the stem actually asks about (e.g. “identify P and Q”). Do **not** add decorative arrows or labels “just to look like NEET” if they duplicate options or give away the answer.
    - **NO DUPLICATES** within a cell: do not label two parts with the same letter.
-6. **CLARITY**: Lines distinct; parts easily distinguishable within the cell.`;
+6. **CLARITY**: Lines distinct; parts easily distinguishable within the cell.
+7. **BATCH SLICING**: On a 2×2 sheet, the canvas **vertical and horizontal midlines** are where the client crops — never draw grid, frames, or chemistry along those lines; keep content inset from the inner edges of each quadrant.`;
 
 const REFERENCE_TRACE_RULES = `CRITICAL — NO COLOR: Output **only** monochrome line art: **black strokes on pure white**. If the source is in color, **discard all chroma**.
 
@@ -1029,7 +1031,8 @@ EXECUTION RULES (STRICT FIDELITY — per cell that uses the SOURCE):
 1. **TRACING / POINTERS**: Keep leader lines in the **same position and angle** as the original where applicable; **text swap only** for new markers.
 2. **CLEANING**: Pure white (#FFFFFF) background; remove watermarks; remove original printed labels before adding prompt-specified markers.
 3. **LABELING**: Same exclusivity, no dual labeling, pointers required, huge bold black markers, no duplicates within the cell.
-4. **STYLE**: Black on white only; no shading or grey fills.`;
+4. **STYLE**: Black on white only; no shading or grey fills.
+5. **BATCH SLICING**: On a 2×2 sheet, **never** stroke or align linework to the canvas midlines (those are crop edges). Keep traced chemistry inset from quadrant inner edges toward the sheet center.`;
 
 function padFigureChunk(chunk: string[]): string[] {
   const padded = chunk.slice(0, FIGURE_SLICE_BATCH);
