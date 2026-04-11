@@ -437,6 +437,59 @@ function resolvedSourceFigureIndexForBankRow(q: Question, referenceImageCount: n
   return 0;
 }
 
+/** Expand admin "diagram slot #i × count" into one source index per figure question (array order). */
+function buildFigureSourceIndexPlan(
+  nFigureQuestions: number,
+  selectedFigures: Record<string, number> | undefined,
+  sourceImageCount: number
+): number[] {
+  if (sourceImageCount <= 0 || nFigureQuestions <= 0) return [];
+  const entries = Object.entries(selectedFigures || {})
+    .map(([k, v]) => ({ i: parseInt(k, 10), n: Math.max(0, Math.floor(Number(v))) }))
+    .filter((e) => !Number.isNaN(e.i) && e.i >= 0 && e.i < sourceImageCount && e.n > 0)
+    .sort((a, b) => a.i - b.i);
+  const plan: number[] = [];
+  for (const e of entries) {
+    for (let k = 0; k < e.n; k++) plan.push(e.i);
+  }
+  if (plan.length === 0) {
+    for (let i = 0; i < nFigureQuestions; i++) plan.push(i % sourceImageCount);
+    return plan;
+  }
+  let p = 0;
+  while (plan.length < nFigureQuestions) {
+    plan.push(plan[p % plan.length]!);
+    p++;
+  }
+  return plan.slice(0, nFigureQuestions);
+}
+
+/** Human-readable quota for Gemini: which sourceImageIndex must appear how many times. */
+function formatFigureBreakdownForPrompt(
+  selectedFigures: Record<string, number> | undefined,
+  sourceImageCount: number
+): string | undefined {
+  if (sourceImageCount <= 0) return undefined;
+  const entries = Object.entries(selectedFigures || {})
+    .map(([k, v]) => ({ i: parseInt(k, 10), n: Math.max(0, Math.floor(Number(v))) }))
+    .filter((e) => !Number.isNaN(e.i) && e.i >= 0 && e.i < sourceImageCount && e.n > 0)
+    .sort((a, b) => a.i - b.i);
+  if (entries.length === 0) {
+    return (
+      `Attached reference diagrams are **0-based**: sourceImageIndex must be an integer in [0, ${sourceImageCount - 1}]. ` +
+      `Set sourceImageIndex to the **one** bitmap that actually contains the structures/reaction your stem and figurePrompt refer to. ` +
+      `Do not default every item to 0 when a later page holds the relevant chemistry.`
+    );
+  }
+  const parts = entries.map(
+    (e) => `sourceImageIndex=${e.i} (reference #${e.i + 1}): **${e.n}** figure-question(s)`
+  );
+  return (
+    parts.join('; ') +
+    '. List figure-backed questions in JSON **in the same order** as this plan when possible: first block uses the first index’s quota, then the next, etc. Each question’s stem/figurePrompt must describe content **visible on that reference bitmap** only.'
+  );
+}
+
 function questionsToNeetBankRows(
   chapter: { id: string; name: string; subject_name: string; class_name: string },
   qs: Question[],
@@ -1692,9 +1745,33 @@ const QuestionBankHome: React.FC = () => {
                         });
                       }
 
-                      const runFigurePipeline = async (gen: Question[]) => {
+                        const runFigurePipeline = async (gen: Question[]) => {
                         if (!includeFigures) return;
                         const figureQs = gen.filter((q) => q.figurePrompt);
+                        if (
+                          config.visualMode === 'image' &&
+                          sourceImages.length > 0 &&
+                          figureQs.length > 0
+                        ) {
+                          const plan = buildFigureSourceIndexPlan(
+                            figureQs.length,
+                            config.selectedFigures,
+                            sourceImages.length
+                          );
+                          figureQs.forEach((q, i) => {
+                            const raw = q.sourceImageIndex;
+                            const valid =
+                              typeof raw === 'number' &&
+                              Number.isFinite(raw) &&
+                              Number.isInteger(raw) &&
+                              raw >= 0 &&
+                              raw < sourceImages.length &&
+                              !!sourceImages[raw]?.data;
+                            if (!valid) {
+                              q.sourceImageIndex = plan[i] ?? 0;
+                            }
+                          });
+                        }
                         if (figureQs.length === 0 || figureCount <= 0) {
                           setForgeDetail((p) =>
                             p?.figureUi
@@ -2036,7 +2113,14 @@ const QuestionBankHome: React.FC = () => {
                               },
                               figureCount,
                               false,
-                              includeFigures ? JSON.stringify(config.selectedFigures || {}) : undefined,
+                              includeFigures && config.visualMode === 'image' && sourceImages.length > 0
+                                ? formatFigureBreakdownForPrompt(
+                                    config.selectedFigures || {},
+                                    sourceImages.length
+                                  )
+                                : includeFigures && figureCount > 0
+                                  ? formatFigureBreakdownForPrompt(undefined, sourceImages.length)
+                                  : undefined,
                               selectedModel,
                               visualModeForGen,
                               undefined,

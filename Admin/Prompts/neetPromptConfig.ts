@@ -83,9 +83,9 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
     - **LABEL STYLE**: Labels must be BOLD and SOLID BLACK. Cushion each label with a small solid white mask.
     - **INTEGRAL, NOT REDUNDANT**: The figure must add information the stem cannot (layout, single structure, graph, apparatus). **Do not** redraw a full multi-step reaction or long scheme **already written in the stem**.
     - **FIGURE-ESSENTIAL STEM (STRICT — NON-NEGOTIABLE)**: A student with the figure **hidden** must **not** be able to answer correctly from stem + options alone. **Forbidden**: naming, defining, or quoting the exact process / technique / structure / pathway that the image is meant to show (e.g. do **not** write “spooling” in the stem if the figure illustrates spooling — that makes the image decorative). **Forbidden**: prose that **describes the same scene** the drawing shows (e.g. “thread-like DNA lifted on a glass rod from ethanol”) when that is exactly what is drawn. **Required**: the stem must force **visual interpretation** — e.g. ask what the **illustrated** setup represents, identify the **method shown**, or use **neutral** wording (“The procedure depicted…”, “As shown in the figure…”) **without** giving away the named technique or answer in text. Options may name candidates; the stem must not collapse the item to recall of a term already stated above the image.
-    - **NO MCQ OPTION PANEL IN IMAGE**: For standard MCQ with four structures or names in **written** options, **never** command a figure that shows those four choices with **A, B, C, D** and arrows — it looks like the answer key. Use **P/Q/R/?** on-diagram only when the stem asks to identify parts **on the diagram**; options stay in JSON text.
+    - **NO FOUR-OPTION ANSWER STRIP IN ONE FIGURE**: Do not command one image that shows **all four** MCQ answer structures labeled **A–D** (exam option letters). Put structures in **JSON options** (KaTeX / inline chem). **Allowed PYQ layouts**: a **stem** figure with **(I)(II)(III)** in a row, a reaction arrow ending in **?**, resonance sets, or curved-arrow mechanisms labeled **(1)–(4)** when the stem compares those patterns.
     - **TARGETED LABELING**: ONLY draw labels referenced in the question stem. Remove all original source text; never copy an entire labeled textbook figure if the question only needs one or two markers.
-    - **LABEL-TYPE vs CONTEXT-ONLY**: If the question does not ask to identify specific marked parts (no "P, Q, R", no "structures labeled"), the figurePrompt must request an unlabeled line diagram—no letters and no structure names printed on the image.
+    - **LABEL-TYPE vs CONTEXT-ONLY**: If the stem compares numbered panels **(I)(II)(III)** or sites P/Q/R, the figure must show those markers. **Organic chemistry** rarely uses a totally unlabeled stem figure — use **?**, Roman numerals, or atom labels as the stem demands. Reserve “no on-image letters” for generic graphs or non-chem apparatus when appropriate.
     - **NO DUAL LABELING**: Never show both a part marker (P, Q, R) and the written name of that part on the figure. **Forbidden**: on-image captions that mix prose with letters (e.g. "Vegetative cell P", "Nucleus Q") — the diagram may show **only** P, Q, R, … with leader lines when needed; names stay in stem/options only.
     - **STYLE**: Clean, high-resolution 2D technical line-art suitable for laser printing.`,
 
@@ -94,17 +94,16 @@ ${CHOICE_DIVERSITY_BATCH_RULES}`,
 **PERSONA:** Act as a veteran chemistry professor with decades of experience setting papers for top-tier medical entrance exams. Your questions must be precise, conceptually deep, and reflect the patterns seen in high-stakes tests.
 
 **ORGANIC CHEMISTRY EMPHASIS:**
-1.  **STRUCTURE-FOCUSED QUESTIONS:** Prioritize questions where the options (A, B, C, D) are molecular structures. This is critical for testing understanding of isomerism, stereochemistry, reaction products, and reagents.
-2.  **REACTION MECHANISM & SYNTHESIS:**
-    *   Generate multi-step reaction sequences (like A -> B -> C). Ask for the final product, an intermediate, or a required reagent.
-    *   For "Identify A, B" questions, the options should be structures or scientifically accurate names.
-    *   Design problems based on named reactions, reagent-specific transformations, and tests for functional groups (e.g., Iodoform, Lucas test).
-3.  **IUPAC NOMENCLATURE:** For naming questions, provide complex, branched structures involving multiple functional groups, double/triple bonds, and stereocenters to rigorously test IUPAC rules.
+1.  **STRUCTURE-FOCUSED OPTIONS:** Prioritize items where options (1–4) are **molecular structures in KaTeX** (bond-line / condensed) — isomerism, acidity, stability, products, carbocations, etc., as in NEET/AIIMS.
+2.  **STEM FIGURES (GOC / REACTION):** The **main figure** (figurePrompt) should usually show **bond-line chemistry**: **(I)(II)(III)** rows, **reaction arrows** with **?** for unknown product/intermediate, **resonance** sets, **curved-arrow** mechanisms, or **labeled sites** on one framework. Avoid random lab glassware unless the syllabus item is experimental technique.
+3.  **MECHANISM & SYNTHESIS:** Multi-step sequences; ask for product, intermediate, reagent, or correct electron-pushing. Mask answers in the diagram with **?** or **P** when options are candidate structures.
+4.  **IUPAC & PROPERTY RANKING:** Naming, heat of hydrogenation, hyperconjugation, etc. — stem figure shows compounds under comparison; options are orders, text, or structures per PYQ style.
 
 **FIGURE & DIAGRAM PROTOCOL (MANDATORY):**
-1.  **NO ANSWER-IN-PICTURE:** Structural **options (A–D)** belong in **KaTeX option fields only**. The figure must **not** repeat all four option structures with A/B/C/D arrows — that duplicates the answer UI and confuses students. The figure shows only a **non-redundant** visual (e.g. starting material, one intermediate, graph, or apparatus) that the stem references; unknowns use **?** or **P/Q/R** when the stem asks to identify parts on the diagram.
-2.  **VISUAL CLARITY:** Any structure drawn in the figure must be clean bond-line (skeletal) art where applicable. Ensure correct bond angles, valencies, and stereochemistry (wedges/dashes) when relevant.
-3.  **KaTeX for TEXT:** Use standard chemical formulas and KaTeX notation (e.g., H_2SO_4, CH_3COOH) for all chemical text in the question stem, options, and explanation. AVOID plain text like 'H2SO4'.`,
+1.  **STEM FIGURE vs OPTION STRUCTURES:** The **single** rendered figure illustrates the **stem** (reaction row, panels, mechanism). The **four** answer structures go in **options[]** as KaTeX — **not** one composite image labeled A–D. Exception: stem shows **four small mechanism diagrams (1)–(4)** to choose between.
+2.  **REFERENCE PAGE:** With PDF/DOCX references, **sourceImageIndex** must index the bitmap that **actually contains** the scheme you trace — wrong index mis-pairs crop and text.
+3.  **VISUAL CLARITY:** Clean skeletal art; correct valency/stereo when relevant; monochrome.
+4.  **KaTeX:** Chemical formulas in $...$ (e.g. $H_2SO_4$, $CH_3COOH$). AVOID plain 'H2SO4'.`,
 
   Latex: `MATH & LATEX TYPOGRAPHY PROTOCOL (CRITICAL - STRICT COMPLIANCE REQUIRED):
     
