@@ -590,8 +590,8 @@ const QuestionBankReviewWorkspace: React.FC = () => {
           )}
         </div>
       ) : (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          <aside className="flex max-h-[40vh] min-h-0 w-full shrink-0 flex-col border-b border-zinc-200 bg-white lg:max-h-none lg:w-48 lg:shrink-0 lg:border-b-0 lg:border-r">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:flex-row lg:items-stretch">
+          <aside className="flex max-h-[40vh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-zinc-200 bg-white lg:max-h-none lg:w-48 lg:max-w-[12rem] lg:shrink-0 lg:grow-0 lg:basis-48 lg:flex-none lg:border-b-0 lg:border-r">
             <div className="shrink-0 border-b border-zinc-100 px-3 py-2">
               <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Chapters</p>
               <p className="mt-0.5 truncate text-[10px] font-semibold text-zinc-600">
@@ -812,7 +812,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
             </div>
           </aside>
 
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-zinc-50/50">
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-zinc-50/50 lg:min-w-0">
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white px-3 py-1.5">
               <p className="text-[10px] font-bold text-zinc-700">
                 {currentQuestion ? (
