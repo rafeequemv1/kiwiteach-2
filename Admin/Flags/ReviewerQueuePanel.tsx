@@ -82,6 +82,29 @@ function reviewerOptionsFromQueueRows(rows: ReviewerMarkRow[]): ReviewerOption[]
   return [...m.values()].sort((a, b) => a.reviewer_name.localeCompare(b.reviewer_name));
 }
 
+type MarkingPresenceFilter = 'any' | 'marked' | 'clean';
+type MarkingTypeKey = 'wrong' | 'oos' | 'latex' | 'figure' | 'notes';
+
+function rowHasAnyMarking(r: ReviewerMarkRow): boolean {
+  return (
+    r.mark_wrong ||
+    r.mark_out_of_syllabus ||
+    r.mark_latex_issue ||
+    r.mark_figure_issue ||
+    !!(r.notes && r.notes.trim())
+  );
+}
+
+function rowMatchesSelectedMarkingTypes(r: ReviewerMarkRow, types: Set<MarkingTypeKey>): boolean {
+  if (types.size === 0) return true;
+  if (types.has('wrong') && r.mark_wrong) return true;
+  if (types.has('oos') && r.mark_out_of_syllabus) return true;
+  if (types.has('latex') && r.mark_latex_issue) return true;
+  if (types.has('figure') && r.mark_figure_issue) return true;
+  if (types.has('notes') && r.notes && r.notes.trim()) return true;
+  return false;
+}
+
 function mergeReviewerOptions(a: ReviewerOption[], b: ReviewerOption[]): ReviewerOption[] {
   const m = new Map<string, ReviewerOption>();
   for (const x of a) {
@@ -120,6 +143,8 @@ const ReviewerQueuePanel: React.FC = () => {
   const [draftExplanation, setDraftExplanation] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [markingPresence, setMarkingPresence] = useState<MarkingPresenceFilter>('any');
+  const [markingTypes, setMarkingTypes] = useState<Set<MarkingTypeKey>>(() => new Set());
 
   const syncReviewerDropdown = useCallback(async (queueRows: ReviewerMarkRow[]) => {
     let rpcOpts: ReviewerOption[] = [];
@@ -284,6 +309,63 @@ const ReviewerQueuePanel: React.FC = () => {
     return { open, resolved, total: rows.length };
   }, [rows]);
 
+  const markingCounts = useMemo(() => {
+    let wrong = 0;
+    let oos = 0;
+    let latex = 0;
+    let figure = 0;
+    let notes = 0;
+    let marked = 0;
+    for (const r of rows) {
+      if (r.mark_wrong) wrong += 1;
+      if (r.mark_out_of_syllabus) oos += 1;
+      if (r.mark_latex_issue) latex += 1;
+      if (r.mark_figure_issue) figure += 1;
+      if (r.notes && r.notes.trim()) notes += 1;
+      if (rowHasAnyMarking(r)) marked += 1;
+    }
+    const clean = rows.length - marked;
+    return { wrong, oos, latex, figure, notes, marked, clean };
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((r) => {
+      if (markingPresence === 'marked' && !rowHasAnyMarking(r)) return false;
+      if (markingPresence === 'clean' && rowHasAnyMarking(r)) return false;
+      if (!rowMatchesSelectedMarkingTypes(r, markingTypes)) return false;
+      return true;
+    });
+  }, [rows, markingPresence, markingTypes]);
+
+  const queueSummaryFiltered = useMemo(() => {
+    const open = filteredRows.filter((r) => r.admin_status === 'open').length;
+    const resolved = filteredRows.filter((r) => r.admin_status !== 'open').length;
+    return { open, resolved, total: filteredRows.length };
+  }, [filteredRows]);
+
+  const filtersActive =
+    markingPresence !== 'any' || markingTypes.size > 0;
+
+  const setPresenceFilter = (v: MarkingPresenceFilter) => {
+    setMarkingPresence(v);
+    if (v === 'clean') setMarkingTypes(new Set());
+  };
+
+  const toggleMarkingType = (k: MarkingTypeKey) => {
+    setMarkingTypes((prev) => {
+      const n = new Set(prev);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
+    setMarkingPresence((p) => (p === 'clean' ? 'any' : p));
+  };
+
+  const clearMarkingFilters = () => {
+    setMarkingPresence('any');
+    setMarkingTypes(new Set());
+  };
+
   const flagBadges = useMemo(() => {
     return (r: ReviewerMarkRow) => {
       const tags: { key: string; label: string }[] = [];
@@ -318,7 +400,7 @@ const ReviewerQueuePanel: React.FC = () => {
             <select
               value={reviewerFilter}
               onChange={(e) => setReviewerFilter(e.target.value)}
-              title="Filter by who filed the review (includes teachers & school admins with review access)"
+              title="Filter by who filed the review"
               className="max-w-[min(100%,280px)] min-w-[160px] rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold text-zinc-800"
             >
               <option value="">All reviewers</option>
@@ -347,12 +429,91 @@ const ReviewerQueuePanel: React.FC = () => {
           </div>
           {!loading && rows.length > 0 ? (
             <p className="text-[10px] font-semibold tabular-nums text-zinc-500">
-              Showing {queueSummary.total} · Open {queueSummary.open}
-              {scope === 'all' ? ` · Resolved ${queueSummary.resolved}` : ''}
+              Showing {queueSummaryFiltered.total}
+              {filtersActive && queueSummaryFiltered.total !== queueSummary.total
+                ? ` of ${queueSummary.total}`
+                : ''}{' '}
+              · Open {queueSummaryFiltered.open}
+              {scope === 'all' ? ` · Resolved ${queueSummaryFiltered.resolved}` : ''}
             </p>
           ) : null}
         </div>
       </div>
+
+      {!loading && rows.length > 0 ? (
+        <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2.5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Marking</p>
+            {filtersActive ? (
+              <button
+                type="button"
+                onClick={clearMarkingFilters}
+                className="text-[9px] font-bold uppercase tracking-wide text-indigo-600 hover:text-indigo-800"
+              >
+                Clear marking filters
+              </button>
+            ) : null}
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {(
+              [
+                { id: 'any' as const, label: 'All', count: rows.length },
+                { id: 'marked' as const, label: 'Marked', count: markingCounts.marked },
+                { id: 'clean' as const, label: 'Non-marked', count: markingCounts.clean },
+              ] as const
+            ).map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setPresenceFilter(chip.id)}
+                className={`rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-wide tabular-nums ${
+                  markingPresence === chip.id
+                    ? 'border-indigo-600 bg-indigo-600 text-white'
+                    : 'border-zinc-200 bg-zinc-50 text-zinc-600 hover:bg-zinc-100'
+                }`}
+              >
+                {chip.label} ({chip.count})
+              </button>
+            ))}
+          </div>
+          <p className="mb-1 mt-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
+            Flags and notes (any match)
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {(
+              [
+                { id: 'wrong' as const, label: 'Wrong', count: markingCounts.wrong },
+                { id: 'oos' as const, label: 'OOS', count: markingCounts.oos },
+                { id: 'latex' as const, label: 'LaTeX', count: markingCounts.latex },
+                { id: 'figure' as const, label: 'Figure', count: markingCounts.figure },
+                { id: 'notes' as const, label: 'Notes', count: markingCounts.notes },
+              ] as const
+            ).map((chip) => {
+              const on = markingTypes.has(chip.id);
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => toggleMarkingType(chip.id)}
+                  disabled={markingPresence === 'clean'}
+                  title={
+                    markingPresence === 'clean'
+                      ? 'Switch to All or Marked to filter by flag type'
+                      : 'Toggle: show rows that have this flag or note (OR with other selected chips)'
+                  }
+                  className={`rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-wide tabular-nums disabled:cursor-not-allowed disabled:opacity-40 ${
+                    on
+                      ? 'border-rose-500 bg-rose-50 text-rose-900'
+                      : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50'
+                  }`}
+                >
+                  {chip.label} ({chip.count})
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="rounded-lg border border-zinc-200 bg-white px-4 py-10 text-center text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
@@ -390,9 +551,25 @@ const ReviewerQueuePanel: React.FC = () => {
             </p>
           </div>
         </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-8 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-900">
+            No items match these marking filters
+          </p>
+          <p className="mx-auto max-w-md text-[10px] text-amber-950/80">
+            Loaded {rows.length} from the server. Try clearing marking chips or widening scope (Include resolved).
+          </p>
+          <button
+            type="button"
+            onClick={clearMarkingFilters}
+            className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-900 hover:bg-amber-50"
+          >
+            Clear marking filters
+          </button>
+        </div>
       ) : (
         <div className="space-y-3">
-          {rows.map((row) => {
+          {filteredRows.map((row) => {
             const tags = flagBadges(row);
             const disabled =
               busyMarkId === row.mark_id ||
