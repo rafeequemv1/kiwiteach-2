@@ -73,6 +73,12 @@ function markRowHasFlagsOrNotes(m: MarkStatsRow): boolean {
   return n.length > 0;
 }
 
+function hasFigureUrl(url: string | null | undefined): boolean {
+  return typeof url === 'string' && url.trim().length > 0;
+}
+
+type FigureFilter = 'all' | 'with' | 'without';
+
 type Stage = 'pick-kb' | 'review';
 
 /**
@@ -89,6 +95,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
   const [questions, setQuestions] = useState<QuestionRow[]>([]);
   const [qIndex, setQIndex] = useState(0);
   const [chapterQCounts, setChapterQCounts] = useState<Record<string, number>>({});
+  const [chapterWithFigureCounts, setChapterWithFigureCounts] = useState<Record<string, number>>({});
   const [chapterReviewedCounts, setChapterReviewedCounts] = useState<Record<string, number>>({});
   const [chapterMarkedCounts, setChapterMarkedCounts] = useState<Record<string, number>>({});
   const [loadingKb, setLoadingKb] = useState(true);
@@ -102,6 +109,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
   const [statsNonce, setStatsNonce] = useState(0);
   const [selectedClassFilters, setSelectedClassFilters] = useState<Set<string>>(new Set());
   const [selectedSubjectFilters, setSelectedSubjectFilters] = useState<Set<string>>(new Set());
+  const [figureFilter, setFigureFilter] = useState<FigureFilter>('all');
 
   const classFilterOptions = useMemo(() => {
     const m = new Map<string, number>();
@@ -131,21 +139,33 @@ const QuestionBankReviewWorkspace: React.FC = () => {
     });
   }, [chapters, selectedClassFilters, selectedSubjectFilters]);
 
+  const visibleChapters = useMemo(() => {
+    if (loadingStats) return filteredChapters;
+    return filteredChapters.filter((c) => {
+      const total = chapterQCounts[c.id] ?? 0;
+      const withFig = chapterWithFigureCounts[c.id] ?? 0;
+      if (figureFilter === 'with') return withFig > 0;
+      if (figureFilter === 'without') return total > 0 && withFig === 0;
+      return true;
+    });
+  }, [filteredChapters, figureFilter, chapterQCounts, chapterWithFigureCounts, loadingStats]);
+
   useEffect(() => {
     if (stage !== 'review' || !kbId || loadingCh) return;
-    if (filteredChapters.length === 0) {
+    if (visibleChapters.length === 0) {
       if (chapterId !== null) setChapterId(null);
       return;
     }
-    if (!chapterId || !filteredChapters.some((c) => c.id === chapterId)) {
-      setChapterId(filteredChapters[0].id);
+    if (!chapterId || !visibleChapters.some((c) => c.id === chapterId)) {
+      setChapterId(visibleChapters[0].id);
       setQIndex(0);
     }
-  }, [filteredChapters, chapterId, stage, kbId, loadingCh]);
+  }, [visibleChapters, chapterId, stage, kbId, loadingCh]);
 
   useEffect(() => {
     setSelectedClassFilters(new Set());
     setSelectedSubjectFilters(new Set());
+    setFigureFilter('all');
   }, [kbId]);
 
   useEffect(() => {
@@ -213,10 +233,14 @@ const QuestionBankReviewWorkspace: React.FC = () => {
     };
   }, [kbId]);
 
-  /** Per-chapter question totals + how many this reviewer has saved a mark row for (any flags/notes or not). */
+  /**
+   * Per-chapter question totals (paginated: PostgREST caps pages at ~1000 rows),
+   * with-figure counts, and this reviewer's saved marks (reviewed = any row; marked = flags/notes).
+   */
   useEffect(() => {
     if (!userId || chapters.length === 0) {
       setChapterQCounts({});
+      setChapterWithFigureCounts({});
       setChapterReviewedCounts({});
       setChapterMarkedCounts({});
       return;
@@ -226,22 +250,37 @@ const QuestionBankReviewWorkspace: React.FC = () => {
     (async () => {
       setLoadingStats(true);
       try {
-        const { data: qrows, error: qe } = await supabase
-          .from('question_bank_neet')
-          .select('id, chapter_id')
-          .in('chapter_id', chapterIds);
-        if (qe) throw new Error(qe.message);
-        if (cancelled) return;
-        const rows = (qrows || []) as { id: string; chapter_id: string }[];
+        const pageSize = 1000;
+        let from = 0;
+        const rows: { id: string; chapter_id: string; figure_url: string | null }[] = [];
+        for (;;) {
+          const { data: page, error: qe } = await supabase
+            .from('question_bank_neet')
+            .select('id, chapter_id, figure_url')
+            .in('chapter_id', chapterIds)
+            .order('id', { ascending: true })
+            .range(from, from + pageSize - 1);
+          if (qe) throw new Error(qe.message);
+          if (cancelled) return;
+          const chunk = (page || []) as { id: string; chapter_id: string; figure_url: string | null }[];
+          rows.push(...chunk);
+          if (chunk.length < pageSize) break;
+          from += pageSize;
+        }
         const qCount: Record<string, number> = {};
+        const figCount: Record<string, number> = {};
         for (const r of rows) {
           qCount[r.chapter_id] = (qCount[r.chapter_id] || 0) + 1;
+          if (hasFigureUrl(r.figure_url)) {
+            figCount[r.chapter_id] = (figCount[r.chapter_id] || 0) + 1;
+          }
         }
         const reviewedByChapter: Record<string, number> = {};
         const markedByChapter: Record<string, number> = {};
         const qids = rows.map((r) => r.id);
         const reviewedIds = new Set<string>();
         const markedIds = new Set<string>();
+        const markAgg = new Map<string, MarkStatsRow>();
         const chunk = 400;
         for (let i = 0; i < qids.length; i += chunk) {
           const slice = qids.slice(i, i + chunk);
@@ -253,9 +292,27 @@ const QuestionBankReviewWorkspace: React.FC = () => {
             .in('question_id', slice);
           if (me) throw new Error(me.message);
           (marks || []).forEach((m: MarkStatsRow) => {
-            reviewedIds.add(m.question_id);
-            if (markRowHasFlagsOrNotes(m)) markedIds.add(m.question_id);
+            const prev = markAgg.get(m.question_id);
+            if (!prev) {
+              markAgg.set(m.question_id, { ...m });
+            } else {
+              const pn = typeof prev.notes === 'string' ? prev.notes.trim() : '';
+              const mn = typeof m.notes === 'string' ? m.notes.trim() : '';
+              const mergedNotes = [pn, mn].filter(Boolean).join(' ').trim();
+              markAgg.set(m.question_id, {
+                question_id: m.question_id,
+                mark_wrong: !!(prev.mark_wrong || m.mark_wrong),
+                mark_out_of_syllabus: !!(prev.mark_out_of_syllabus || m.mark_out_of_syllabus),
+                mark_latex_issue: !!(prev.mark_latex_issue || m.mark_latex_issue),
+                mark_figure_issue: !!(prev.mark_figure_issue || m.mark_figure_issue),
+                notes: mergedNotes.length > 0 ? mergedNotes : null,
+              });
+            }
           });
+        }
+        for (const [qid, m] of markAgg) {
+          reviewedIds.add(qid);
+          if (markRowHasFlagsOrNotes(m)) markedIds.add(qid);
         }
         for (const r of rows) {
           if (reviewedIds.has(r.id)) {
@@ -267,12 +324,14 @@ const QuestionBankReviewWorkspace: React.FC = () => {
         }
         if (!cancelled) {
           setChapterQCounts(qCount);
+          setChapterWithFigureCounts(figCount);
           setChapterReviewedCounts(reviewedByChapter);
           setChapterMarkedCounts(markedByChapter);
         }
       } catch {
         if (!cancelled) {
           setChapterQCounts({});
+          setChapterWithFigureCounts({});
           setChapterReviewedCounts({});
           setChapterMarkedCounts({});
         }
@@ -359,25 +418,35 @@ const QuestionBankReviewWorkspace: React.FC = () => {
     writeResume({ kbId, chapterId, qIndex });
   }, [stage, kbId, chapterId, qIndex, questions.length]);
 
+  const kbScopeChapters = useMemo(() => {
+    const scoped =
+      selectedClassFilters.size > 0 ||
+      selectedSubjectFilters.size > 0 ||
+      figureFilter !== 'all';
+    return scoped ? visibleChapters : chapters;
+  }, [chapters, visibleChapters, selectedClassFilters, selectedSubjectFilters, figureFilter]);
+
   const kbTotals = useMemo(() => {
     let q = 0;
     let r = 0;
     let mk = 0;
-    for (const c of chapters) {
+    for (const c of kbScopeChapters) {
       q += chapterQCounts[c.id] || 0;
       r += chapterReviewedCounts[c.id] || 0;
       mk += chapterMarkedCounts[c.id] || 0;
     }
     return { questions: q, reviewed: r, marked: mk };
-  }, [chapters, chapterQCounts, chapterReviewedCounts, chapterMarkedCounts]);
+  }, [kbScopeChapters, chapterQCounts, chapterReviewedCounts, chapterMarkedCounts]);
 
   const chapterProgress = useMemo(() => {
     if (!chapterId) return { total: 0, reviewed: 0, marked: 0, index: 0 };
-    const total = questions.length;
+    const dbTotal = chapterQCounts[chapterId] ?? 0;
+    const loaded = questions.length;
+    const total = Math.max(dbTotal, loaded);
     const reviewed = chapterReviewedCounts[chapterId] ?? 0;
     const marked = chapterMarkedCounts[chapterId] ?? 0;
     return { total, reviewed, marked, index: qIndex + 1 };
-  }, [chapterId, questions.length, chapterReviewedCounts, chapterMarkedCounts, qIndex]);
+  }, [chapterId, questions.length, chapterReviewedCounts, chapterMarkedCounts, chapterQCounts, qIndex]);
 
   const setMarkField = (qid: string, patch: Partial<ReviewMarkInput>) => {
     setMarksByQuestion((prev) => ({
@@ -445,19 +514,24 @@ const QuestionBankReviewWorkspace: React.FC = () => {
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-semibold text-zinc-600">
             <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 tabular-nums">
               <span className="font-black text-zinc-900">{kbTotals.reviewed}</span>{' '}
-              <span className="font-bold text-zinc-600">reviewed</span>
+              <span className="font-bold text-zinc-600">saved</span>
               <span className="mx-1.5 text-zinc-300">·</span>
               <span className="font-black text-amber-900">{kbTotals.marked}</span>{' '}
-              <span className="font-bold text-zinc-600">marked</span>
+              <span className="font-bold text-zinc-600">flagged / noted</span>
               <span className="mx-1.5 text-zinc-300">·</span>
               <span className="font-black text-zinc-900">{kbTotals.questions}</span>{' '}
-              <span className="font-bold text-zinc-600">in bank</span>
+              <span className="font-bold text-zinc-600">
+                questions
+                {kbScopeChapters.length < chapters.length ? (
+                  <span className="ml-1 font-semibold normal-case text-zinc-400">(visible)</span>
+                ) : null}
+              </span>
             </span>
             {chapterId ? (
               <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-900 tabular-nums">
                 Chapter · {Math.min(chapterProgress.index, chapterProgress.total)}/{chapterProgress.total} position ·{' '}
-                <span className="font-black">{chapterProgress.reviewed}</span> reviewed ·{' '}
-                <span className="font-black text-indigo-950">{chapterProgress.marked}</span> marked
+                <span className="font-black">{chapterProgress.reviewed}</span> saved ·{' '}
+                <span className="font-black text-indigo-950">{chapterProgress.marked}</span> flagged
               </span>
             ) : null}
             {loadingStats ? <span className="text-zinc-400">Updating counts…</span> : null}
@@ -517,7 +591,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
         </div>
       ) : (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          <aside className="flex max-h-[40vh] min-h-0 shrink-0 flex-col border-b border-zinc-200 bg-white lg:max-h-none lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-r">
+          <aside className="flex max-h-[40vh] min-h-0 w-full shrink-0 flex-col border-b border-zinc-200 bg-white lg:max-h-none lg:w-48 lg:shrink-0 lg:border-b-0 lg:border-r">
             <div className="shrink-0 border-b border-zinc-100 px-3 py-2">
               <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Chapters</p>
               <p className="mt-0.5 truncate text-[10px] font-semibold text-zinc-600">
@@ -630,6 +704,57 @@ const QuestionBankReviewWorkspace: React.FC = () => {
                     })}
                   </div>
                 </div>
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-1">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Figure</span>
+                    {figureFilter !== 'all' ? (
+                      <button
+                        type="button"
+                        onClick={() => setFigureFilter('all')}
+                        className="text-[7px] font-black uppercase tracking-widest text-zinc-400 hover:text-indigo-600"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setFigureFilter('all')}
+                      className={`rounded-full border px-2 py-0.5 text-[7px] font-black uppercase tracking-widest ${
+                        figureFilter === 'all'
+                          ? 'border-indigo-600 bg-indigo-600 text-white'
+                          : 'border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50'
+                      }`}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      title="Chapters with at least one question that has a figure image"
+                      onClick={() => setFigureFilter('with')}
+                      className={`rounded-full border px-2 py-0.5 text-[7px] font-black uppercase tracking-widest ${
+                        figureFilter === 'with'
+                          ? 'border-indigo-600 bg-indigo-600 text-white'
+                          : 'border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50'
+                      }`}
+                    >
+                      With fig.
+                    </button>
+                    <button
+                      type="button"
+                      title="Chapters where every question is text-only (no figure URL)"
+                      onClick={() => setFigureFilter('without')}
+                      className={`rounded-full border px-2 py-0.5 text-[7px] font-black uppercase tracking-widest ${
+                        figureFilter === 'without'
+                          ? 'border-indigo-600 bg-indigo-600 text-white'
+                          : 'border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50'
+                      }`}
+                    >
+                      No fig.
+                    </button>
+                  </div>
+                </div>
               </div>
             ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto p-1.5 custom-scrollbar">
@@ -637,11 +762,11 @@ const QuestionBankReviewWorkspace: React.FC = () => {
                 <p className="p-2 text-[11px] text-zinc-400">Loading…</p>
               ) : chapters.length === 0 ? (
                 <p className="p-2 text-[11px] text-zinc-500">No chapters.</p>
-              ) : filteredChapters.length === 0 ? (
+              ) : visibleChapters.length === 0 ? (
                 <p className="p-2 text-[11px] text-zinc-500">No chapters match filters.</p>
               ) : (
                 <ul className="space-y-0.5">
-                  {filteredChapters.map((c) => {
+                  {visibleChapters.map((c) => {
                     const active = c.id === chapterId;
                     const tq = chapterQCounts[c.id] ?? 0;
                     const tr = chapterReviewedCounts[c.id] ?? 0;
@@ -654,17 +779,29 @@ const QuestionBankReviewWorkspace: React.FC = () => {
                             setChapterId(c.id);
                             setQIndex(0);
                           }}
-                          className={`w-full rounded-lg px-2 py-1.5 text-left text-[10px] font-medium leading-snug transition-colors ${
+                          className={`flex w-full items-start gap-1.5 rounded-lg px-1.5 py-1.5 text-left text-[10px] font-medium leading-snug transition-colors ${
                             active ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-700 hover:bg-zinc-100'
                           }`}
                         >
-                          <span className="line-clamp-2">{chLabel(c)}</span>
+                          <div className="min-w-0 flex-1">
+                            <span className="line-clamp-2">{chLabel(c)}</span>
+                            <span
+                              className={`mt-0.5 block text-[8px] font-bold tabular-nums leading-tight ${
+                                active ? 'text-indigo-100' : 'text-zinc-400'
+                              }`}
+                            >
+                              {tm} flagged · {tr}/{tq} saved
+                            </span>
+                          </div>
                           <span
-                            className={`mt-0.5 block text-[9px] font-bold tabular-nums ${
-                              active ? 'text-indigo-100' : 'text-zinc-400'
+                            className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-black tabular-nums ${
+                              active
+                                ? 'border-indigo-400 bg-indigo-500 text-white'
+                                : 'border-zinc-200 bg-zinc-50 text-zinc-600'
                             }`}
+                            title="Questions in this chapter"
                           >
-                            {tm} marked · {tr}/{tq} reviewed
+                            {tq}
                           </span>
                         </button>
                       </li>
