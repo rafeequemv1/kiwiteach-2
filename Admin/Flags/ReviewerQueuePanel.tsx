@@ -1,5 +1,6 @@
 import '../../types';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { getSupabaseUrl } from '../../config/env';
 import { supabase } from '../../supabase/client';
 import { parsePseudoLatexAndMath } from '../../utils/latexParser';
 
@@ -139,11 +140,12 @@ const ReviewerQueuePanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Argument order must match PostgREST / DB signature (uuid, text): p_reviewer_id, p_scope.
-      const { data, error } = await supabase.rpc('admin_list_question_bank_reviewer_marks', {
-        p_reviewer_id: reviewerFilter || null,
-        p_scope: scope,
-      });
+      // DB signature is (p_reviewer_id uuid, p_scope text). Omit p_reviewer_id when unset so PostgREST
+      // applies the default; sending JSON null can prevent overload resolution ("schema cache" error).
+      const reviewerId = reviewerFilter.trim();
+      const rpcArgs: { p_scope: typeof scope; p_reviewer_id?: string } = { p_scope: scope };
+      if (reviewerId) rpcArgs.p_reviewer_id = reviewerId;
+      const { data, error } = await supabase.rpc('admin_list_question_bank_reviewer_marks', rpcArgs);
       if (error) {
         const msg = error.message || String(error);
         setListError(msg);
@@ -362,14 +364,24 @@ const ReviewerQueuePanel: React.FC = () => {
             No reviewer items in this view
           </p>
           {listError ? (
-            <p className="mx-auto max-w-md text-xs font-medium leading-relaxed text-rose-700">{listError}</p>
+            <div className="mx-auto max-w-md space-y-1">
+              <p className="text-xs font-medium leading-relaxed text-rose-700">{listError}</p>
+              {/schema cache|not find the function/i.test(listError) ? (
+                <p className="text-[10px] leading-relaxed text-zinc-500">
+                  This app is calling{' '}
+                  <code className="rounded bg-zinc-100 px-1">{new URL(getSupabaseUrl()).host}</code>. Migrations must
+                  be applied on that same Supabase project, then refresh (or wait a minute for API schema reload).
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <div className="mx-auto max-w-md space-y-2 text-left text-[10px] leading-relaxed text-zinc-600">
             <p>
               <span className="font-semibold text-zinc-800">If you expected rows here:</span> apply the latest
               Supabase migrations in <code className="rounded bg-zinc-100 px-1">Kiwiteach-Quiz/supabase/migrations</code>{' '}
               (including <code className="rounded bg-zinc-100 px-1">20260422240000</code> for RPC argument
-              order), then refresh.
+              order), then refresh. On Vercel, confirm <code className="rounded bg-zinc-100 px-1">VITE_SUPABASE_URL</code>{' '}
+              matches that project.
             </p>
             <p>
               Try <span className="font-semibold">Include resolved</span> if marks were already approved or dismissed.
