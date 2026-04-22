@@ -44,8 +44,70 @@ function linesToOptions(text: string): string[] {
     .filter(Boolean);
 }
 
+type ReviewerOption = { reviewer_id: string; reviewer_name: string; reviewer_email: string | null };
+
+function mapRpcReviewerRow(r: Record<string, unknown>): ReviewerOption {
+  const id = r.reviewer_id ?? (r as { REVIEWER_ID?: unknown }).REVIEWER_ID;
+  const name = r.reviewer_name ?? (r as { REVIEWER_NAME?: unknown }).REVIEWER_NAME;
+  const email = r.reviewer_email ?? (r as { REVIEWER_EMAIL?: unknown }).REVIEWER_EMAIL;
+  const sid = id != null ? String(id) : '';
+  const sname = name != null ? String(name).trim() : '';
+  const semail = email != null ? String(email) : null;
+  return {
+    reviewer_id: sid,
+    reviewer_name: sname || semail || (sid ? `${sid.slice(0, 8)}…` : ''),
+    reviewer_email: semail,
+  };
+}
+
+function reviewerOptionsFromQueueRows(rows: ReviewerMarkRow[]): ReviewerOption[] {
+  const m = new Map<string, ReviewerOption>();
+  for (const row of rows) {
+    const id = row.reviewer_id;
+    if (!id) continue;
+    const label =
+      (row.reviewer_name && row.reviewer_name.trim()) ||
+      row.reviewer_email ||
+      `${id.slice(0, 8)}…`;
+    const existing = m.get(id);
+    if (!existing || label.length > (existing.reviewer_name?.length ?? 0)) {
+      m.set(id, {
+        reviewer_id: id,
+        reviewer_name: label,
+        reviewer_email: row.reviewer_email,
+      });
+    }
+  }
+  return [...m.values()].sort((a, b) => a.reviewer_name.localeCompare(b.reviewer_name));
+}
+
+function mergeReviewerOptions(a: ReviewerOption[], b: ReviewerOption[]): ReviewerOption[] {
+  const m = new Map<string, ReviewerOption>();
+  for (const x of a) {
+    if (x.reviewer_id) m.set(x.reviewer_id, x);
+  }
+  for (const y of b) {
+    if (!y.reviewer_id) continue;
+    const ex = m.get(y.reviewer_id);
+    if (!ex) {
+      m.set(y.reviewer_id, y);
+    } else {
+      const pick =
+        (y.reviewer_name?.length ?? 0) > (ex.reviewer_name?.length ?? 0) ? y : ex;
+      m.set(y.reviewer_id, {
+        reviewer_id: y.reviewer_id,
+        reviewer_name: pick.reviewer_name,
+        reviewer_email: pick.reviewer_email ?? ex.reviewer_email ?? y.reviewer_email,
+      });
+    }
+  }
+  return [...m.values()].sort((a, b) => a.reviewer_name.localeCompare(b.reviewer_name));
+}
+
 const ReviewerQueuePanel: React.FC = () => {
   const [scope, setScope] = useState<'open' | 'all'>('open');
+  const [reviewerFilter, setReviewerFilter] = useState<string>('');
+  const [reviewerOptions, setReviewerOptions] = useState<ReviewerOption[]>([]);
   const [rows, setRows] = useState<ReviewerMarkRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyMarkId, setBusyMarkId] = useState<string | null>(null);
@@ -56,20 +118,42 @@ const ReviewerQueuePanel: React.FC = () => {
   const [draftCorrect, setDraftCorrect] = useState(0);
   const [draftExplanation, setDraftExplanation] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const syncReviewerDropdown = useCallback(async (queueRows: ReviewerMarkRow[]) => {
+    let rpcOpts: ReviewerOption[] = [];
+    try {
+      const { data, error } = await supabase.rpc('admin_list_question_bank_mark_queue_reviewers');
+      if (!error && Array.isArray(data)) {
+        rpcOpts = (data as Record<string, unknown>[])
+          .map(mapRpcReviewerRow)
+          .filter((o) => o.reviewer_id.length > 0);
+      }
+    } catch {
+      /* RPC missing or network — still merge from queue rows */
+    }
+    const fromRows = reviewerOptionsFromQueueRows(queueRows);
+    setReviewerOptions(mergeReviewerOptions(rpcOpts, fromRows));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase.rpc('admin_list_question_bank_reviewer_marks', {
         p_scope: scope,
+        p_reviewer_id: reviewerFilter || null,
       });
       if (error) {
-        alert(error.message);
+        const msg = error.message || String(error);
+        setListError(msg);
+        alert(msg);
+        setRows([]);
+        await syncReviewerDropdown([]);
         return;
       }
+      setListError(null);
       const raw = (data || []) as Record<string, unknown>[];
-      setRows(
-        raw.map((r) => ({
+      const parsed = raw.map((r) => ({
           mark_id: String(r.mark_id),
           mark_updated_at: String(r.mark_updated_at),
           admin_status: String(r.admin_status),
@@ -99,12 +183,13 @@ const ReviewerQueuePanel: React.FC = () => {
           reviewer_email: r.reviewer_email != null ? String(r.reviewer_email) : null,
           reviewer_name: r.reviewer_name != null ? String(r.reviewer_name) : null,
           reviewer_role: r.reviewer_role != null ? String(r.reviewer_role) : null,
-        }))
-      );
+        })) as ReviewerMarkRow[];
+      setRows(parsed);
+      await syncReviewerDropdown(parsed);
     } finally {
       setLoading(false);
     }
-  }, [scope]);
+  }, [scope, reviewerFilter, syncReviewerDropdown]);
 
   useEffect(() => {
     void load();
@@ -190,6 +275,12 @@ const ReviewerQueuePanel: React.FC = () => {
     }
   };
 
+  const queueSummary = useMemo(() => {
+    const open = rows.filter((r) => r.admin_status === 'open').length;
+    const resolved = rows.filter((r) => r.admin_status !== 'open').length;
+    return { open, resolved, total: rows.length };
+  }, [rows]);
+
   const flagBadges = useMemo(() => {
     return (r: ReviewerMarkRow) => {
       const tags: { key: string; label: string }[] = [];
@@ -207,26 +298,56 @@ const ReviewerQueuePanel: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-zinc-900">Reviewer queue</h3>
           <p className="text-[11px] text-zinc-500">
-            Flags and notes from reviewers — verify, approve, edit the question, or delete.
+            Every saved question-bank review (flags or not) — verify, approve, edit the question, or delete. Use
+            &quot;Include resolved&quot; for history.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={scope}
-            onChange={(e) => setScope(e.target.value as 'open' | 'all')}
-            className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800"
-          >
-            <option value="open">Open only</option>
-            <option value="all">Include resolved</option>
-          </select>
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-700 hover:bg-zinc-50"
-          >
-            <iconify-icon icon="mdi:refresh" />
-            Refresh
-          </button>
+        <div className="flex flex-col gap-2 sm:items-end">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as 'open' | 'all')}
+              className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800"
+            >
+              <option value="open">Open only</option>
+              <option value="all">Include resolved</option>
+            </select>
+            <select
+              value={reviewerFilter}
+              onChange={(e) => setReviewerFilter(e.target.value)}
+              title="Filter by who filed the review (includes teachers & school admins with review access)"
+              className="max-w-[min(100%,280px)] min-w-[160px] rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold text-zinc-800"
+            >
+              <option value="">All reviewers</option>
+              {reviewerOptions.map((o) => {
+                const primary = o.reviewer_name || o.reviewer_email || o.reviewer_id.slice(0, 8);
+                const suffix =
+                  o.reviewer_email && o.reviewer_name && o.reviewer_email !== o.reviewer_name
+                    ? ` — ${o.reviewer_email}`
+                    : '';
+                return (
+                  <option key={o.reviewer_id} value={o.reviewer_id}>
+                    {primary}
+                    {suffix}
+                  </option>
+                );
+              })}
+            </select>
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-700 hover:bg-zinc-50"
+            >
+              <iconify-icon icon="mdi:refresh" />
+              Refresh
+            </button>
+          </div>
+          {!loading && rows.length > 0 ? (
+            <p className="text-[10px] font-semibold tabular-nums text-zinc-500">
+              Showing {queueSummary.total} · Open {queueSummary.open}
+              {scope === 'all' ? ` · Resolved ${queueSummary.resolved}` : ''}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -235,8 +356,26 @@ const ReviewerQueuePanel: React.FC = () => {
           Loading…
         </div>
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-zinc-200 bg-white px-4 py-10 text-center text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-          No reviewer items in this view
+        <div className="space-y-3 rounded-lg border border-zinc-200 bg-white px-4 py-8 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+            No reviewer items in this view
+          </p>
+          {listError ? (
+            <p className="mx-auto max-w-md text-xs font-medium leading-relaxed text-rose-700">{listError}</p>
+          ) : null}
+          <div className="mx-auto max-w-md space-y-2 text-left text-[10px] leading-relaxed text-zinc-600">
+            <p>
+              <span className="font-semibold text-zinc-800">If you expected rows here:</span> apply the latest
+              Supabase migrations in <code className="rounded bg-zinc-100 px-1">Kiwiteach-Quiz/supabase/migrations</code>{' '}
+              (especially <code className="rounded bg-zinc-100 px-1">20260422200000</code>,{' '}
+              <code className="rounded bg-zinc-100 px-1">20260422220000</code>,{' '}
+              <code className="rounded bg-zinc-100 px-1">20260422230000</code>), then refresh.
+            </p>
+            <p>
+              Try <span className="font-semibold">Include resolved</span> if marks were already approved or dismissed.
+              Clear the reviewer filter if it hides everything.
+            </p>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
@@ -275,7 +414,21 @@ const ReviewerQueuePanel: React.FC = () => {
                   </span>
                 </div>
 
-                {tags.length > 0 && (
+                <div className="mb-2 rounded-lg border border-indigo-100 bg-indigo-50/90 px-2.5 py-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-indigo-700">Reviewer</p>
+                  <p className="mt-0.5 text-sm font-bold text-indigo-950">
+                    {row.reviewer_name || row.reviewer_email || 'Unknown reviewer'}
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-indigo-900/80">
+                    {row.reviewer_email ? <span>{row.reviewer_email}</span> : null}
+                    {row.reviewer_email && row.reviewer_role ? ' · ' : null}
+                    {row.reviewer_role ? <span className="capitalize">{row.reviewer_role}</span> : null}
+                    {' · '}
+                    <span className="tabular-nums">Updated {new Date(row.mark_updated_at).toLocaleString()}</span>
+                  </p>
+                </div>
+
+                {tags.length > 0 ? (
                   <div className="mb-2 flex flex-wrap gap-1">
                     {tags.map((t) => (
                       <span
@@ -286,17 +439,15 @@ const ReviewerQueuePanel: React.FC = () => {
                       </span>
                     ))}
                   </div>
+                ) : (
+                  <div className="mb-2">
+                    <span className="rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-zinc-600">
+                      No flags / notes on this save
+                    </span>
+                  </div>
                 )}
 
                 <div className="mb-2 flex flex-wrap gap-2 text-[10px] text-zinc-600">
-                  <span className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
-                    Reviewer: {row.reviewer_name || row.reviewer_email || row.reviewer_id.slice(0, 8)}
-                  </span>
-                  {row.reviewer_role && (
-                    <span className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
-                      Role: {row.reviewer_role}
-                    </span>
-                  )}
                   {row.knowledge_base_name && (
                     <span className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
                       KB: {row.knowledge_base_name}
