@@ -139,9 +139,10 @@ const ReviewerQueuePanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // Argument order must match PostgREST / DB signature (uuid, text): p_reviewer_id, p_scope.
       const { data, error } = await supabase.rpc('admin_list_question_bank_reviewer_marks', {
-        p_scope: scope,
         p_reviewer_id: reviewerFilter || null,
+        p_scope: scope,
       });
       if (error) {
         const msg = error.message || String(error);
@@ -367,9 +368,8 @@ const ReviewerQueuePanel: React.FC = () => {
             <p>
               <span className="font-semibold text-zinc-800">If you expected rows here:</span> apply the latest
               Supabase migrations in <code className="rounded bg-zinc-100 px-1">Kiwiteach-Quiz/supabase/migrations</code>{' '}
-              (especially <code className="rounded bg-zinc-100 px-1">20260422200000</code>,{' '}
-              <code className="rounded bg-zinc-100 px-1">20260422220000</code>,{' '}
-              <code className="rounded bg-zinc-100 px-1">20260422230000</code>), then refresh.
+              (including <code className="rounded bg-zinc-100 px-1">20260422240000</code> for RPC argument
+              order), then refresh.
             </p>
             <p>
               Try <span className="font-semibold">Include resolved</span> if marks were already approved or dismissed.
