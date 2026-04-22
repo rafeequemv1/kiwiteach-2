@@ -58,6 +58,21 @@ const emptyMarks: ReviewMarkInput = {
   notes: '',
 };
 
+type MarkStatsRow = {
+  question_id: string;
+  mark_wrong?: boolean | null;
+  mark_out_of_syllabus?: boolean | null;
+  mark_latex_issue?: boolean | null;
+  mark_figure_issue?: boolean | null;
+  notes?: string | null;
+};
+
+function markRowHasFlagsOrNotes(m: MarkStatsRow): boolean {
+  if (m.mark_wrong || m.mark_out_of_syllabus || m.mark_latex_issue || m.mark_figure_issue) return true;
+  const n = typeof m.notes === 'string' ? m.notes.trim() : '';
+  return n.length > 0;
+}
+
 type Stage = 'pick-kb' | 'review';
 
 /**
@@ -75,6 +90,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
   const [qIndex, setQIndex] = useState(0);
   const [chapterQCounts, setChapterQCounts] = useState<Record<string, number>>({});
   const [chapterReviewedCounts, setChapterReviewedCounts] = useState<Record<string, number>>({});
+  const [chapterMarkedCounts, setChapterMarkedCounts] = useState<Record<string, number>>({});
   const [loadingKb, setLoadingKb] = useState(true);
   const [loadingCh, setLoadingCh] = useState(false);
   const [loadingQs, setLoadingQs] = useState(false);
@@ -202,6 +218,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
     if (!userId || chapters.length === 0) {
       setChapterQCounts({});
       setChapterReviewedCounts({});
+      setChapterMarkedCounts({});
       return;
     }
     let cancelled = false;
@@ -221,33 +238,43 @@ const QuestionBankReviewWorkspace: React.FC = () => {
           qCount[r.chapter_id] = (qCount[r.chapter_id] || 0) + 1;
         }
         const reviewedByChapter: Record<string, number> = {};
+        const markedByChapter: Record<string, number> = {};
         const qids = rows.map((r) => r.id);
         const reviewedIds = new Set<string>();
+        const markedIds = new Set<string>();
         const chunk = 400;
         for (let i = 0; i < qids.length; i += chunk) {
           const slice = qids.slice(i, i + chunk);
           if (slice.length === 0) continue;
           const { data: marks, error: me } = await supabase
             .from('question_bank_review_marks')
-            .select('question_id')
+            .select('question_id, mark_wrong, mark_out_of_syllabus, mark_latex_issue, mark_figure_issue, notes')
             .eq('reviewer_id', userId)
             .in('question_id', slice);
           if (me) throw new Error(me.message);
-          (marks || []).forEach((m: { question_id: string }) => reviewedIds.add(m.question_id));
+          (marks || []).forEach((m: MarkStatsRow) => {
+            reviewedIds.add(m.question_id);
+            if (markRowHasFlagsOrNotes(m)) markedIds.add(m.question_id);
+          });
         }
         for (const r of rows) {
           if (reviewedIds.has(r.id)) {
             reviewedByChapter[r.chapter_id] = (reviewedByChapter[r.chapter_id] || 0) + 1;
+            if (markedIds.has(r.id)) {
+              markedByChapter[r.chapter_id] = (markedByChapter[r.chapter_id] || 0) + 1;
+            }
           }
         }
         if (!cancelled) {
           setChapterQCounts(qCount);
           setChapterReviewedCounts(reviewedByChapter);
+          setChapterMarkedCounts(markedByChapter);
         }
       } catch {
         if (!cancelled) {
           setChapterQCounts({});
           setChapterReviewedCounts({});
+          setChapterMarkedCounts({});
         }
       } finally {
         if (!cancelled) setLoadingStats(false);
@@ -335,19 +362,22 @@ const QuestionBankReviewWorkspace: React.FC = () => {
   const kbTotals = useMemo(() => {
     let q = 0;
     let r = 0;
+    let mk = 0;
     for (const c of chapters) {
       q += chapterQCounts[c.id] || 0;
       r += chapterReviewedCounts[c.id] || 0;
+      mk += chapterMarkedCounts[c.id] || 0;
     }
-    return { questions: q, reviewed: r };
-  }, [chapters, chapterQCounts, chapterReviewedCounts]);
+    return { questions: q, reviewed: r, marked: mk };
+  }, [chapters, chapterQCounts, chapterReviewedCounts, chapterMarkedCounts]);
 
   const chapterProgress = useMemo(() => {
-    if (!chapterId) return { total: 0, reviewed: 0, index: 0 };
+    if (!chapterId) return { total: 0, reviewed: 0, marked: 0, index: 0 };
     const total = questions.length;
     const reviewed = chapterReviewedCounts[chapterId] ?? 0;
-    return { total, reviewed, index: qIndex + 1 };
-  }, [chapterId, questions.length, chapterReviewedCounts, qIndex]);
+    const marked = chapterMarkedCounts[chapterId] ?? 0;
+    return { total, reviewed, marked, index: qIndex + 1 };
+  }, [chapterId, questions.length, chapterReviewedCounts, chapterMarkedCounts, qIndex]);
 
   const setMarkField = (qid: string, patch: Partial<ReviewMarkInput>) => {
     setMarksByQuestion((prev) => ({
@@ -412,14 +442,22 @@ const QuestionBankReviewWorkspace: React.FC = () => {
           ) : null}
         </div>
         {stage === 'review' && kbId ? (
-          <div className="mt-2 flex flex-wrap gap-2 text-[10px] font-semibold text-zinc-600">
-            <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
-              Bank · {kbTotals.reviewed}/{kbTotals.questions} touched
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-semibold text-zinc-600">
+            <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 tabular-nums">
+              <span className="font-black text-zinc-900">{kbTotals.reviewed}</span>{' '}
+              <span className="font-bold text-zinc-600">reviewed</span>
+              <span className="mx-1.5 text-zinc-300">·</span>
+              <span className="font-black text-amber-900">{kbTotals.marked}</span>{' '}
+              <span className="font-bold text-zinc-600">marked</span>
+              <span className="mx-1.5 text-zinc-300">·</span>
+              <span className="font-black text-zinc-900">{kbTotals.questions}</span>{' '}
+              <span className="font-bold text-zinc-600">in bank</span>
             </span>
             {chapterId ? (
-              <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-900">
+              <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-900 tabular-nums">
                 Chapter · {Math.min(chapterProgress.index, chapterProgress.total)}/{chapterProgress.total} position ·{' '}
-                {chapterProgress.reviewed}/{chapterProgress.total} with your saved review
+                <span className="font-black">{chapterProgress.reviewed}</span> reviewed ·{' '}
+                <span className="font-black text-indigo-950">{chapterProgress.marked}</span> marked
               </span>
             ) : null}
             {loadingStats ? <span className="text-zinc-400">Updating counts…</span> : null}
@@ -607,6 +645,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
                     const active = c.id === chapterId;
                     const tq = chapterQCounts[c.id] ?? 0;
                     const tr = chapterReviewedCounts[c.id] ?? 0;
+                    const tm = chapterMarkedCounts[c.id] ?? 0;
                     return (
                       <li key={c.id}>
                         <button
@@ -625,7 +664,7 @@ const QuestionBankReviewWorkspace: React.FC = () => {
                               active ? 'text-indigo-100' : 'text-zinc-400'
                             }`}
                           >
-                            {tr}/{tq} reviewed
+                            {tm} marked · {tr}/{tq} reviewed
                           </span>
                         </button>
                       </li>
