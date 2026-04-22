@@ -379,9 +379,10 @@ const ReviewerQueuePanel: React.FC = () => {
             <p>
               <span className="font-semibold text-zinc-800">If you expected rows here:</span> apply the latest
               Supabase migrations in <code className="rounded bg-zinc-100 px-1">Kiwiteach-Quiz/supabase/migrations</code>{' '}
-              (including <code className="rounded bg-zinc-100 px-1">20260422240000</code> for RPC argument
-              order), then refresh. On Vercel, confirm <code className="rounded bg-zinc-100 px-1">VITE_SUPABASE_URL</code>{' '}
-              matches that project.
+              (including <code className="rounded bg-zinc-100 px-1">20260422240000</code> for RPC argument order
+              and <code className="rounded bg-zinc-100 px-1">20260423183000</code> if{' '}
+              <code className="rounded bg-zinc-100 px-1">admin_status</code> is missing), then refresh. On Vercel,
+              confirm <code className="rounded bg-zinc-100 px-1">VITE_SUPABASE_URL</code> matches that project.
             </p>
             <p>
               Try <span className="font-semibold">Include resolved</span> if marks were already approved or dismissed.
