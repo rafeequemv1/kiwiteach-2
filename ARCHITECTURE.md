@@ -33,7 +33,7 @@
 | `reviewer` | — | — | Yes (default view) |
 | `developer` | Yes (+ student zone) | Yes | Yes |
 
-Postgres helpers (examples): `is_developer()`, `is_reviewer()`, `can_submit_question_bank_review()` (allows dev, school_admin, reviewer, teacher).
+Postgres helpers (examples): `is_developer()`, `is_reviewer()`, `can_submit_question_bank_review()` (allows dev, reviewer, teacher — not school_admin).
 
 ---
 

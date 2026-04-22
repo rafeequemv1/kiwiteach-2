@@ -86,7 +86,7 @@ export const SUPABASE_TABLE_CATALOG: SupabaseTableRow[] = [
     schema: 'public',
     name: 'question_bank_review_marks',
     purpose:
-      'Per-reviewer quality marks on bank questions (wrong, OOS, LaTeX, figure, notes). RPC upsert_question_bank_review_mark; can_submit_question_bank_review() allows dev, school_admin, reviewer, teacher.',
+      'Per-reviewer quality marks on bank questions (wrong, OOS, LaTeX, figure, notes). RPC upsert_question_bank_review_mark; can_submit_question_bank_review() allows dev, reviewer, teacher.',
   },
 ];
 

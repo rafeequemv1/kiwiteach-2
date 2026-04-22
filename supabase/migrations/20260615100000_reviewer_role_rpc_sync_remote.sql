@@ -30,7 +30,6 @@ security invoker
 set search_path = public
 as $$
   select public.is_developer()
-    or public.is_school_admin()
     or public.is_reviewer()
     or exists (
       select 1

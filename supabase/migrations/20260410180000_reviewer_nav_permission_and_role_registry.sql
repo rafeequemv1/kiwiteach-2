@@ -23,12 +23,12 @@ join public.permission_registry p on p.perm_key = 'nav.question_bank_review'
 where r.role_slug = 'reviewer'
 on conflict (role_id, permission_id) do update set allowed = excluded.allowed;
 
--- Teacher / school_admin: add review nav alongside existing grants
+-- Teacher: review nav (school_admin uses admin console only; see 20260424120000)
 insert into public.role_permission_grant (role_id, permission_id, allowed)
 select r.id, p.id, true
 from public.role_registry r
 join public.permission_registry p on p.perm_key = 'nav.question_bank_review'
-where r.role_slug in ('teacher', 'school_admin')
+where r.role_slug = 'teacher'
 on conflict (role_id, permission_id) do update set allowed = excluded.allowed;
 
 -- Developer: all permissions including new one
