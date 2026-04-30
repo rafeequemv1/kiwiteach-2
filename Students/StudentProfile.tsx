@@ -37,12 +37,25 @@ interface DemoHistoryRow {
   takeaway: string;
 }
 
+interface ReportBranding {
+  name: string;
+  logo: string | null;
+  primary: string;
+  secondary: string;
+}
+
 const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClasses, onBack, onUpdate }) => {
   const [activeTab, setActiveTab] = useState<'profile' | 'report' | 'demo'>('profile');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [results, setResults] = useState<TestResult[]>([]);
   const [showReportPreview, setShowReportPreview] = useState(false);
+  const [reportBranding, setReportBranding] = useState<ReportBranding>({
+    name: 'KiwiTeach',
+    logo: null,
+    primary: '#6366f1',
+    secondary: '#35c3ae',
+  });
 
   const [formData, setFormData] = useState({
       name: student.name,
@@ -61,6 +74,43 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
           setResults(all.filter(r => r.student_id === student.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
       }
   }, [student.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const uid = authData.user?.id;
+        if (!uid) return;
+
+        const [{ data: userBrand }, { data: platformBrand }] = await Promise.all([
+          supabase
+            .from('branding_settings')
+            .select('brand_name, logo_url')
+            .eq('user_id', uid)
+            .maybeSingle(),
+          supabase
+            .from('platform_branding')
+            .select('primary_color, secondary_color')
+            .eq('id', 'default')
+            .maybeSingle(),
+        ]);
+
+        if (cancelled) return;
+        setReportBranding((prev) => ({
+          name: (userBrand?.brand_name && String(userBrand.brand_name).trim()) || prev.name,
+          logo: userBrand?.logo_url || prev.logo,
+          primary: platformBrand?.primary_color || prev.primary,
+          secondary: platformBrand?.secondary_color || prev.secondary,
+        }));
+      } catch {
+        // Keep defaults if branding lookup fails.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const schools = useMemo(() => schoolsAndClasses.filter(sc => sc.type === 'school'), [schoolsAndClasses]);
   const classes = useMemo(() => schoolsAndClasses.filter(sc => sc.type === 'class'), [schoolsAndClasses]);
@@ -256,49 +306,149 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
   const generateReportPdf = () => {
     const doc = new jsPDF();
     let y = 16;
+    const primaryHex = reportBranding.primary || '#6366f1';
+    const secondaryHex = reportBranding.secondary || '#35c3ae';
 
-    doc.setFontSize(16);
-    doc.text('KiwiTeach - Student Report Card (Demo)', 14, y);
-    y += 10;
+    const hexToRgb = (hex: string) => {
+      const clean = hex.replace('#', '').trim();
+      const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+      const num = parseInt(full, 16);
+      return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+    };
 
-    doc.setFontSize(11);
-    doc.text(`Student: ${student.name}`, 14, y);
-    y += 6;
-    doc.text(`Class: ${className} | Institute: ${schoolName}`, 14, y);
-    y += 6;
-    doc.text(`Average Accuracy: ${avgAccuracy}%`, 14, y);
-    y += 6;
-    doc.text(`Average Score: ${avgScorePercent}%`, 14, y);
-    y += 10;
+    const primary = hexToRgb(primaryHex);
+    const secondary = hexToRgb(secondaryHex);
+    const loadLogoDataUrl = async (url: string): Promise<string | null> => {
+      try {
+        const res = await fetch(url);
+        const blob = await res.blob();
+        return await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(String(reader.result));
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch {
+        return null;
+      }
+    };
 
-    doc.setFontSize(12);
-    doc.text('AI Performance Impressions', 14, y);
-    y += 7;
-    doc.setFontSize(10);
-    const insights = [
-      `Strength: ${student.name} shows strongest outcomes in ${strongestSubject}.`,
-      `Weakness: Current gap appears in ${improvementArea.toLowerCase()}.`,
-      'Actionable next steps: 3 timed practice blocks/week + chapter error-log reviews.',
-    ];
-    insights.forEach((line) => {
-      const wrapped = doc.splitTextToSize(`- ${line}`, 180);
-      doc.text(wrapped, 14, y);
-      y += wrapped.length * 5 + 1;
-    });
+    const run = async () => {
+      doc.setFillColor(primary.r, primary.g, primary.b);
+      doc.rect(10, 10, 190, 28, 'F');
+      doc.setFillColor(secondary.r, secondary.g, secondary.b);
+      doc.rect(130, 10, 70, 28, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(16);
+      doc.text(`${reportBranding.name} Report Card`, 14, 21);
+      doc.setFontSize(10);
+      doc.text('Demo student performance report', 14, 28);
 
-    y += 3;
-    doc.setFontSize(12);
-    doc.text('Actionable Metrics', 14, y);
-    y += 7;
-    doc.setFontSize(10);
-    demoMetrics.forEach((row, index) => {
-      const entry = `${index + 1}. ${row.metric}: ${row.current} | What you should do: ${row.studentAction}`;
-      const wrapped = doc.splitTextToSize(entry, 180);
-      doc.text(wrapped, 14, y);
-      y += wrapped.length * 5 + 1;
-    });
+      if (reportBranding.logo) {
+        const logoDataUrl = await loadLogoDataUrl(reportBranding.logo);
+        if (logoDataUrl) {
+          doc.setFillColor(255, 255, 255);
+          doc.roundedRect(170, 14, 24, 20, 2, 2, 'F');
+          doc.addImage(logoDataUrl, 'PNG', 172, 16, 20, 16);
+        }
+      }
+      y = 46;
 
-    doc.save(`${student.name.replace(/\s+/g, '_')}_report_card_demo.pdf`);
+      doc.setTextColor(40, 40, 40);
+      doc.setFontSize(11);
+      doc.text(`Student: ${student.name}`, 14, y);
+      y += 6;
+      doc.text(`Class: ${className} | Institute: ${schoolName}`, 14, y);
+      y += 6;
+      doc.text(`Average Accuracy: ${avgAccuracy}% | Average Score: ${avgScorePercent}%`, 14, y);
+      y += 10;
+
+      doc.setFillColor(245, 248, 255);
+      doc.roundedRect(12, y - 2, 186, 26, 2, 2, 'F');
+      doc.setTextColor(primary.r, primary.g, primary.b);
+      doc.setFontSize(12);
+      doc.text('AI Performance Impressions', 16, y + 4);
+      doc.setTextColor(60, 60, 60);
+      doc.setFontSize(10);
+      const insights = [
+        `Strength: ${student.name} shows strongest outcomes in ${strongestSubject}.`,
+        `Weakness: Current gap appears in ${improvementArea.toLowerCase()}.`,
+        'Actionable next steps: 3 timed practice blocks/week + chapter error-log reviews.',
+      ];
+      let insightY = y + 10;
+      insights.forEach((line) => {
+        const wrapped = doc.splitTextToSize(`- ${line}`, 176);
+        doc.text(wrapped, 16, insightY);
+        insightY += wrapped.length * 5 + 1;
+      });
+      y = insightY + 6;
+
+      doc.setTextColor(primary.r, primary.g, primary.b);
+      doc.setFontSize(12);
+      doc.text('Performance Action Matrix', 14, y);
+      y += 5;
+
+      const colX = [14, 68, 98];
+      const colW = [54, 30, 98];
+      const rowH = 8;
+      doc.setFillColor(primary.r, primary.g, primary.b);
+      doc.rect(14, y, 182, rowH, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(9);
+      doc.text('Metric', colX[0] + 2, y + 5.3);
+      doc.text('Current', colX[1] + 2, y + 5.3);
+      doc.text('What You Should Do', colX[2] + 2, y + 5.3);
+      y += rowH;
+
+      doc.setTextColor(55, 55, 55);
+      doc.setFontSize(8.5);
+      demoMetrics.slice(0, 5).forEach((row, idx) => {
+        const bg = idx % 2 === 0 ? [248, 250, 255] : [255, 255, 255];
+        doc.setFillColor(bg[0], bg[1], bg[2]);
+        doc.rect(14, y, 182, rowH + 3, 'F');
+        doc.rect(14, y, 182, rowH + 3, 'S');
+        doc.text(doc.splitTextToSize(row.metric, colW[0] - 3), colX[0] + 2, y + 4.5);
+        doc.text(doc.splitTextToSize(row.current, colW[1] - 3), colX[1] + 2, y + 4.5);
+        doc.text(doc.splitTextToSize(row.studentAction, colW[2] - 3), colX[2] + 2, y + 4.5);
+        y += rowH + 3;
+      });
+
+      y += 4;
+      doc.setTextColor(secondary.r, secondary.g, secondary.b);
+      doc.setFontSize(11);
+      doc.text('Detailed History', 14, y);
+      y += 5;
+      doc.setFillColor(230, 244, 244);
+      doc.rect(14, y, 182, 7, 'F');
+      doc.setTextColor(40, 40, 40);
+      doc.setFontSize(8);
+      doc.text('Test', 16, y + 4.6);
+      doc.text('Subject', 72, y + 4.6);
+      doc.text('Score', 94, y + 4.6);
+      doc.text('Accuracy', 112, y + 4.6);
+      doc.text('Date', 132, y + 4.6);
+      doc.text('Takeaway', 148, y + 4.6);
+      y += 7;
+
+      demoHistoryRows.slice(0, 4).forEach((row, idx) => {
+        const bg = idx % 2 === 0 ? [252, 252, 252] : [255, 255, 255];
+        doc.setFillColor(bg[0], bg[1], bg[2]);
+        doc.rect(14, y, 182, 9, 'F');
+        doc.rect(14, y, 182, 9, 'S');
+        doc.setFontSize(7.5);
+        doc.text(doc.splitTextToSize(row.testName, 52), 16, y + 4.4);
+        doc.text(doc.splitTextToSize(row.subject, 20), 72, y + 4.4);
+        doc.text(row.score, 94, y + 4.4);
+        doc.text(row.accuracy, 112, y + 4.4);
+        doc.text(row.date, 132, y + 4.4);
+        doc.text(doc.splitTextToSize(row.takeaway, 46), 148, y + 4.4);
+        y += 9;
+      });
+
+      doc.save(`${student.name.replace(/\s+/g, '_')}_report_card_demo.pdf`);
+    };
+
+    void run();
   };
 
   return (
@@ -667,6 +817,33 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
                     </div>
                     {showReportPreview && (
                       <div className="border border-slate-200 rounded-2xl bg-slate-50/50 p-5 space-y-5">
+                        <div
+                          className="rounded-2xl border p-5 text-white"
+                          style={{
+                            borderColor: `${reportBranding.primary}66`,
+                            background: `linear-gradient(120deg, ${reportBranding.primary}, ${reportBranding.secondary})`,
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                              {reportBranding.logo ? (
+                                <img src={reportBranding.logo} alt="Brand logo" className="h-10 w-10 rounded-xl bg-white/90 p-1 object-contain" />
+                              ) : (
+                                <div className="h-10 w-10 rounded-xl bg-white/20 flex items-center justify-center text-sm font-black">
+                                  {reportBranding.name.slice(0, 1).toUpperCase()}
+                                </div>
+                              )}
+                              <div>
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/80">Report Card</p>
+                                <p className="text-lg font-black tracking-tight">{reportBranding.name}</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] uppercase tracking-wider text-white/80">Student</p>
+                              <p className="text-sm font-bold">{student.name}</p>
+                            </div>
+                          </div>
+                        </div>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                           <div className="bg-white rounded-xl border border-slate-100 p-4">
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Student</p>
