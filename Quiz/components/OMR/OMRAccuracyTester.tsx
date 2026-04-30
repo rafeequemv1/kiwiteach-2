@@ -1,6 +1,9 @@
 import '../../../types';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { evaluateOMRSheet, EvaluationResult } from '../OCR/OMREvaluator';
+import { generateOMR } from './OMRGenerator';
+import OMRScannerModal from '../OCR/OMRScannerModal';
+import { Question } from '../../types';
 
 // --- Shared Rendering Logic ---
 interface RenderConfig {
@@ -199,6 +202,18 @@ interface SimulationResult {
     isRollMatch: boolean; isBookletMatch: boolean; isScoreMatch: boolean; isPerfect: boolean;
 }
 
+const DEMO_TOTAL_QUESTIONS = 200;
+const DEMO_MARKED_ANSWERS = Array.from({ length: DEMO_TOTAL_QUESTIONS }, (_, i) => i % 4);
+const DEMO_SCAN_QUESTIONS: Question[] = Array.from({ length: DEMO_TOTAL_QUESTIONS }, (_, i) => ({
+  id: `demo-q-${i + 1}`,
+  text: `Demo Q${i + 1}`,
+  type: 'mcq',
+  options: ['A', 'B', 'C', 'D'],
+  correctIndex: DEMO_MARKED_ANSWERS[i],
+  explanation: '',
+  difficulty: 'Medium',
+}));
+
 const OMRAccuracyTester: React.FC = () => {
   const [mode, setMode] = useState<'manual' | 'auto'>('manual');
   const [rollNo, setRollNo] = useState('123456789');
@@ -222,8 +237,30 @@ const OMRAccuracyTester: React.FC = () => {
   const [simResults, setSimResults] = useState<SimulationResult[]>([]);
   const [simProgress, setSimProgress] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
+  const [isLiveScannerOpen, setIsLiveScannerOpen] = useState(false);
+  const [liveScanResult, setLiveScanResult] = useState<EvaluationResult | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const totalQuestions = 50;
+
+  const downloadDemoOmrSheet = () => {
+    void (async () => {
+      try {
+        await generateOMR({
+          topic: 'KIWITEACH_DEMO_OMR',
+          questions: DEMO_SCAN_QUESTIONS,
+          markedAnswers: DEMO_MARKED_ANSWERS,
+          candidateName: 'DEMO CANDIDATE',
+          rollNumber: '123456789',
+          testBookletNumber: '987654321',
+          filename: 'kiwiteach_demo_omr_answer_sheet_template.pdf',
+          bottomNote:
+            'Demo expected on scan: Roll 123456789 | Booklet 987654321 | Score 200/200 | Accuracy 100%',
+        });
+      } catch (err: any) {
+        alert(`OMR template download failed: ${err?.message || String(err)}`);
+      }
+    })();
+  };
 
   const runManualTest = async () => {
     setIsRunning(true); setManualResult(null);
@@ -309,10 +346,52 @@ const OMRAccuracyTester: React.FC = () => {
             <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2"><iconify-icon icon="mdi:flask" className="text-pink-600" /> OMR Accuracy Lab</h1>
             <p className="text-slate-500 text-sm">Diagnostic tool for AI robustness testing.</p>
            </div>
-           <div className="flex bg-slate-100 p-1 rounded-xl">
+           <div className="flex items-center gap-2">
+               <button
+                 type="button"
+                 onClick={downloadDemoOmrSheet}
+                 className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
+                 title="Download a demo OMR answer sheet for camera OCR testing"
+               >
+                 <iconify-icon icon="mdi:download" />
+                 Demo OMR Sheet
+               </button>
+               <button
+                 type="button"
+                 onClick={() => setIsLiveScannerOpen(true)}
+                 className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
+                 title="Open real camera scanner to test efficiency"
+               >
+                 <iconify-icon icon="mdi:camera-outline" />
+                 Open Scan Camera
+               </button>
+               <div className="flex bg-slate-100 p-1 rounded-xl">
                {['manual', 'auto'].map(m => <button key={m} onClick={() => setMode(m as any)} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all capitalize ${mode === m ? 'bg-white shadow-sm text-pink-600' : 'text-slate-400'}`}>{m} Lab</button>)}
+               </div>
            </div>
        </div>
+       {liveScanResult && (
+         <div className="mb-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+             <p className="text-[10px] uppercase font-bold text-emerald-700">Live Scan Score</p>
+             <p className="text-lg font-black text-emerald-800">
+               {liveScanResult.score}/{liveScanResult.totalQuestions}
+             </p>
+           </div>
+           <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+             <p className="text-[10px] uppercase font-bold text-indigo-700">Accuracy</p>
+             <p className="text-lg font-black text-indigo-800">
+               {Math.round((liveScanResult.score / Math.max(1, liveScanResult.totalQuestions)) * 100)}%
+             </p>
+           </div>
+           <div className="rounded-xl border border-slate-200 bg-white p-3">
+             <p className="text-[10px] uppercase font-bold text-slate-500">Detected IDs</p>
+             <p className="text-sm font-bold text-slate-700">
+               Roll {liveScanResult.rollNumber || '—'} | Booklet {liveScanResult.testBookletNumber || '—'}
+             </p>
+           </div>
+         </div>
+       )}
 
        {mode === 'manual' ? (
            <div className="flex-1 flex gap-6 overflow-hidden">
@@ -397,7 +476,14 @@ const OMRAccuracyTester: React.FC = () => {
                  )}
               </div>
            </div>
-       )}
+      )}
+      {isLiveScannerOpen && (
+        <OMRScannerModal
+          questions={DEMO_SCAN_QUESTIONS}
+          onClose={() => setIsLiveScannerOpen(false)}
+          onScanComplete={(res) => setLiveScanResult(res)}
+        />
+      )}
     </div>
   );
 };

@@ -6,12 +6,15 @@ import { fetchMarketingPricingPlans } from '@/lib/marketingPricing';
 interface PricingPageProps {
   /** Omit hero title/padding when embedded in marketing layout (e.g. Landing pricing tab). */
   embedded?: boolean;
+  /** When true, skip remote pricing fetch and use local fallback plans. */
+  forceFallback?: boolean;
 }
 
-const PricingPage: React.FC<PricingPageProps> = ({ embedded = false }) => {
-  const [plans, setPlans] = useState<Plan[] | null>(null);
+const PricingPage: React.FC<PricingPageProps> = ({ embedded = false, forceFallback = false }) => {
+  const [plans, setPlans] = useState<Plan[] | null>(forceFallback ? fallbackPricingPlans : null);
 
   useEffect(() => {
+    if (forceFallback) return;
     let cancelled = false;
     (async () => {
       const remote = await fetchMarketingPricingPlans();
@@ -21,7 +24,7 @@ const PricingPage: React.FC<PricingPageProps> = ({ embedded = false }) => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [forceFallback]);
 
   if (plans === null) {
     return (

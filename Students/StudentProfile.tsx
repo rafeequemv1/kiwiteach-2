@@ -2,6 +2,7 @@ import '../types';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Student, SchoolClass } from './StudentDirectory';
 import { supabase } from '../supabase/client';
+import { jsPDF } from 'jspdf';
 
 interface TestResult {
     id: string;
@@ -21,11 +22,27 @@ interface StudentProfileProps {
   onUpdate: () => void; 
 }
 
+interface DemoMetricRow {
+  metric: string;
+  current: string;
+  studentAction: string;
+}
+
+interface DemoHistoryRow {
+  testName: string;
+  subject: string;
+  score: string;
+  accuracy: string;
+  date: string;
+  takeaway: string;
+}
+
 const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClasses, onBack, onUpdate }) => {
-  const [activeTab, setActiveTab] = useState<'profile' | 'report'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'report' | 'demo'>('profile');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [results, setResults] = useState<TestResult[]>([]);
+  const [showReportPreview, setShowReportPreview] = useState(false);
 
   const [formData, setFormData] = useState({
       name: student.name,
@@ -114,6 +131,176 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
       return Math.round(results.reduce((acc, r) => acc + r.accuracy, 0) / results.length);
   }, [results]);
 
+  const avgScorePercent = useMemo(() => {
+    if (results.length === 0) return 0;
+    const totalScored = results.reduce((acc, r) => acc + r.score, 0);
+    const totalMax = results.reduce((acc, r) => acc + r.max_score, 0);
+    if (totalMax === 0) return 0;
+    return Math.round((totalScored / totalMax) * 100);
+  }, [results]);
+
+  const strongestSubject = useMemo(() => {
+    if (results.length === 0) return 'Biology';
+    const bySubject = new Map<string, { total: number; count: number }>();
+    for (const row of results) {
+      const subject = row.subject || 'General';
+      const prev = bySubject.get(subject) ?? { total: 0, count: 0 };
+      bySubject.set(subject, { total: prev.total + row.accuracy, count: prev.count + 1 });
+    }
+    let best = 'General';
+    let bestAvg = -1;
+    bySubject.forEach((value, subject) => {
+      const avg = value.total / value.count;
+      if (avg > bestAvg) {
+        bestAvg = avg;
+        best = subject;
+      }
+    });
+    return best;
+  }, [results]);
+
+  const improvementArea = useMemo(() => {
+    if (results.length === 0) return 'Time Management';
+    if (avgAccuracy < 50) return 'Concept Revision';
+    if (avgAccuracy < 75) return 'Negative Marking Control';
+    return 'High-Difficulty Question Practice';
+  }, [avgAccuracy, results.length]);
+
+  const demoMetrics: DemoMetricRow[] = useMemo(
+    () => [
+      {
+        metric: 'Average Accuracy',
+        current: `${avgAccuracy}%`,
+        studentAction:
+          avgAccuracy >= 75
+            ? 'You are doing well. Take 2 mixed mock tests each week to stay sharp.'
+            : 'Do one 30-question timed practice daily and review mistakes right after.',
+      },
+      {
+        metric: 'Score Consistency',
+        current: results.length >= 4 ? 'Stable' : 'Developing',
+        studentAction: 'Compare your last 3 test scores and revise your weakest chapter every Sunday.',
+      },
+      {
+        metric: 'Strongest Subject',
+        current: strongestSubject,
+        studentAction: `Start mock tests with ${strongestSubject} questions to build confidence and momentum.`,
+      },
+      {
+        metric: 'Primary Improvement Area',
+        current: improvementArea,
+        studentAction: `Spend 20-30 minutes daily on ${improvementArea.toLowerCase()} with short revision notes.`,
+      },
+      {
+        metric: 'Completion Rate',
+        current: results.length > 0 ? `${Math.min(100, 55 + results.length * 8)}%` : '0%',
+        studentAction: 'Finish all section tests first, then move to full-length mock papers.',
+      },
+    ],
+    [avgAccuracy, improvementArea, results.length, strongestSubject],
+  );
+
+  const demoHistoryRows: DemoHistoryRow[] = useMemo(() => {
+    if (results.length > 0) {
+      return results.slice(0, 6).map((r) => ({
+        testName: r.test_name,
+        subject: r.subject || 'General',
+        score: `${r.score}/${r.max_score}`,
+        accuracy: `${r.accuracy}%`,
+        date: new Date(r.date).toLocaleDateString(),
+        takeaway:
+          r.accuracy >= 75
+            ? 'Great job. Keep this level consistent.'
+            : r.accuracy >= 50
+              ? 'Good attempt. Revise mistakes before next test.'
+              : 'Needs support. Relearn basics and retry similar questions.',
+      }));
+    }
+
+    return [
+      {
+        testName: 'Weekly Mock Test 1',
+        subject: 'Biology',
+        score: '62/90',
+        accuracy: '69%',
+        date: '05/04/2026',
+        takeaway: 'Good progress. Focus on diagram-based questions.',
+      },
+      {
+        testName: 'Chapter Test - Cell',
+        subject: 'Biology',
+        score: '22/30',
+        accuracy: '73%',
+        date: '10/04/2026',
+        takeaway: 'Strong understanding. Practice higher-difficulty MCQs.',
+      },
+      {
+        testName: 'Unit Test - Chemistry',
+        subject: 'Chemistry',
+        score: '18/35',
+        accuracy: '51%',
+        date: '18/04/2026',
+        takeaway: 'Improve formula recall and reaction balancing speed.',
+      },
+      {
+        testName: 'Timed Practice - Physics',
+        subject: 'Physics',
+        score: '14/30',
+        accuracy: '47%',
+        date: '22/04/2026',
+        takeaway: 'Revise core concepts and reduce calculation errors.',
+      },
+    ];
+  }, [results]);
+
+  const generateReportPdf = () => {
+    const doc = new jsPDF();
+    let y = 16;
+
+    doc.setFontSize(16);
+    doc.text('KiwiTeach - Student Report Card (Demo)', 14, y);
+    y += 10;
+
+    doc.setFontSize(11);
+    doc.text(`Student: ${student.name}`, 14, y);
+    y += 6;
+    doc.text(`Class: ${className} | Institute: ${schoolName}`, 14, y);
+    y += 6;
+    doc.text(`Average Accuracy: ${avgAccuracy}%`, 14, y);
+    y += 6;
+    doc.text(`Average Score: ${avgScorePercent}%`, 14, y);
+    y += 10;
+
+    doc.setFontSize(12);
+    doc.text('AI Performance Impressions', 14, y);
+    y += 7;
+    doc.setFontSize(10);
+    const insights = [
+      `Strength: ${student.name} shows strongest outcomes in ${strongestSubject}.`,
+      `Weakness: Current gap appears in ${improvementArea.toLowerCase()}.`,
+      'Actionable next steps: 3 timed practice blocks/week + chapter error-log reviews.',
+    ];
+    insights.forEach((line) => {
+      const wrapped = doc.splitTextToSize(`- ${line}`, 180);
+      doc.text(wrapped, 14, y);
+      y += wrapped.length * 5 + 1;
+    });
+
+    y += 3;
+    doc.setFontSize(12);
+    doc.text('Actionable Metrics', 14, y);
+    y += 7;
+    doc.setFontSize(10);
+    demoMetrics.forEach((row, index) => {
+      const entry = `${index + 1}. ${row.metric}: ${row.current} | What you should do: ${row.studentAction}`;
+      const wrapped = doc.splitTextToSize(entry, 180);
+      doc.text(wrapped, 14, y);
+      y += wrapped.length * 5 + 1;
+    });
+
+    doc.save(`${student.name.replace(/\s+/g, '_')}_report_card_demo.pdf`);
+  };
+
   return (
     <div className="w-full h-full flex flex-col animate-fade-in overflow-hidden bg-slate-50/50">
       <div className="px-6 pt-6 shrink-0 bg-white border-b border-slate-100">
@@ -155,6 +342,13 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
             >
                 Performance Report
                 {activeTab === 'report' && <div className="absolute bottom-0 left-0 w-full h-1 bg-emerald-500 rounded-full animate-fade-in" />}
+            </button>
+            <button
+                onClick={() => {setActiveTab('demo'); setIsEditing(false);}}
+                className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${activeTab === 'demo' ? 'text-indigo-600' : 'text-slate-300 hover:text-slate-500'}`}
+            >
+                Demo Report Card
+                {activeTab === 'demo' && <div className="absolute bottom-0 left-0 w-full h-1 bg-indigo-500 rounded-full animate-fade-in" />}
             </button>
         </div>
       </div>
@@ -237,8 +431,24 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
                         </div>
                     )}
                   </div>
+
+                  <div className="bg-gradient-to-r from-indigo-50 to-emerald-50 rounded-[2rem] border border-indigo-100 shadow-sm p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                    <div>
+                      <h3 className="text-xs font-black text-indigo-700 uppercase tracking-[0.15em]">Demo Student Profile Report</h3>
+                      <p className="text-xs text-slate-600 mt-2">
+                        Open a demo-only report card with AI impressions, actionable metrics, preview, and PDF download.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('demo')}
+                      className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-medium text-xs hover:bg-indigo-700"
+                    >
+                      Open Demo Report Card
+                    </button>
+                  </div>
               </div>
-          ) : (
+          ) : activeTab === 'report' ? (
               <div className="animate-fade-in space-y-8">
                   {/* Report Header Stats */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -334,6 +544,195 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ student, schoolsAndClas
                               </tbody>
                           </table>
                       </div>
+                  </div>
+
+                  <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 md:p-8">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                      <div>
+                        <h3 className="text-xs font-black text-slate-800 uppercase tracking-[0.2em]">Demo Student Report Card</h3>
+                        <p className="text-xs text-slate-500 mt-2">
+                          Preview-only module. This does not save to Supabase.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setShowReportPreview((prev) => !prev)}
+                          className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg font-medium text-xs hover:bg-slate-50"
+                        >
+                          {showReportPreview ? 'Hide Report Preview' : 'Get Report Card Preview'}
+                        </button>
+                        <button
+                          onClick={generateReportPdf}
+                          className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-medium text-xs hover:bg-emerald-700"
+                        >
+                          Download PDF
+                        </button>
+                      </div>
+                    </div>
+
+                    {showReportPreview && (
+                      <div className="border border-slate-200 rounded-2xl bg-slate-50/50 p-5 space-y-5">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="bg-white rounded-xl border border-slate-100 p-4">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Student</p>
+                            <p className="text-sm font-bold text-slate-700 mt-1">{student.name}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-100 p-4">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Class</p>
+                            <p className="text-sm font-bold text-slate-700 mt-1">{className}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-100 p-4">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Average Accuracy</p>
+                            <p className="text-sm font-bold text-slate-700 mt-1">{avgAccuracy}%</p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">
+                            AI Generated Impressions
+                          </h4>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="bg-white rounded-xl border border-emerald-100 p-4">
+                              <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider">Strength</p>
+                              <p className="text-xs text-slate-600 mt-2">
+                                Strong performance trend in <span className="font-bold">{strongestSubject}</span> with consistent concept retention.
+                              </p>
+                            </div>
+                            <div className="bg-white rounded-xl border border-amber-100 p-4">
+                              <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider">Weakness</p>
+                              <p className="text-xs text-slate-600 mt-2">
+                                Improvement needed in <span className="font-bold">{improvementArea}</span>, especially under timed conditions.
+                              </p>
+                            </div>
+                            <div className="bg-white rounded-xl border border-indigo-100 p-4">
+                              <p className="text-[10px] font-black text-indigo-600 uppercase tracking-wider">Actionable Next Step</p>
+                              <p className="text-xs text-slate-600 mt-2">
+                                Assign 3 targeted practice sessions weekly and track error patterns chapter-wise.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">
+                            Performance Action Matrix
+                          </h4>
+                          <table className="w-full text-left bg-white rounded-xl overflow-hidden border border-slate-100">
+                            <thead>
+                              <tr className="bg-slate-100 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                                <th className="px-4 py-3">Metric</th>
+                                <th className="px-4 py-3">Current</th>
+                                <th className="px-4 py-3">What You Should Do</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {demoMetrics.map((row) => (
+                                <tr key={row.metric}>
+                                  <td className="px-4 py-3 text-xs font-semibold text-slate-700">{row.metric}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.current}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.studentAction}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+              </div>
+          ) : (
+              <div className="animate-fade-in space-y-8">
+                  <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 md:p-8">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                      <div>
+                        <h3 className="text-xs font-black text-slate-800 uppercase tracking-[0.2em]">Demo Student Report Card</h3>
+                        <p className="text-xs text-slate-500 mt-2">
+                          Preview-only module in Students section. This does not save to Supabase.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setShowReportPreview((prev) => !prev)}
+                          className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg font-medium text-xs hover:bg-slate-50"
+                        >
+                          {showReportPreview ? 'Hide Report Preview' : 'Get Report Card Preview'}
+                        </button>
+                        <button
+                          onClick={generateReportPdf}
+                          className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-medium text-xs hover:bg-emerald-700"
+                        >
+                          Download PDF
+                        </button>
+                      </div>
+                    </div>
+                    {showReportPreview && (
+                      <div className="border border-slate-200 rounded-2xl bg-slate-50/50 p-5 space-y-5">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="bg-white rounded-xl border border-slate-100 p-4">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Student</p>
+                            <p className="text-sm font-bold text-slate-700 mt-1">{student.name}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-100 p-4">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Class</p>
+                            <p className="text-sm font-bold text-slate-700 mt-1">{className}</p>
+                          </div>
+                          <div className="bg-white rounded-xl border border-slate-100 p-4">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Average Accuracy</p>
+                            <p className="text-sm font-bold text-slate-700 mt-1">{avgAccuracy}%</p>
+                          </div>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left bg-white rounded-xl overflow-hidden border border-slate-100">
+                            <thead>
+                              <tr className="bg-slate-100 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                                <th className="px-4 py-3">Metric</th>
+                                <th className="px-4 py-3">Current</th>
+                                <th className="px-4 py-3">What You Should Do</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {demoMetrics.map((row) => (
+                                <tr key={row.metric}>
+                                  <td className="px-4 py-3 text-xs font-semibold text-slate-700">{row.metric}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.current}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.studentAction}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">
+                            Demo Detailed History
+                          </h4>
+                          <table className="w-full text-left bg-white rounded-xl overflow-hidden border border-slate-100">
+                            <thead>
+                              <tr className="bg-slate-100 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                                <th className="px-4 py-3">Test</th>
+                                <th className="px-4 py-3">Subject</th>
+                                <th className="px-4 py-3">Score</th>
+                                <th className="px-4 py-3">Accuracy</th>
+                                <th className="px-4 py-3">Date</th>
+                                <th className="px-4 py-3">Student Takeaway</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {demoHistoryRows.map((row, idx) => (
+                                <tr key={`${row.testName}-${idx}`}>
+                                  <td className="px-4 py-3 text-xs font-semibold text-slate-700">{row.testName}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.subject}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.score}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.accuracy}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.date}</td>
+                                  <td className="px-4 py-3 text-xs text-slate-600">{row.takeaway}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
               </div>
           )}

@@ -73,60 +73,66 @@ insert into public.marketing_pricing_plans (
 )
 values
   (
-    'starter',
-    'Starter',
-    'For individual teachers getting started with AI test papers and a single class.',
+    'tier-1',
+    'Tier 1',
+    '',
     'INR',
     'fixed',
-    0,
-    0,
+    300000,
+    3600000,
     false,
     null,
-    'Start free',
+    'Choose Tier 1',
     jsonb_build_array(
-      jsonb_build_object('name', 'Core question bank access', 'icon', 'check', 'iconColor', 'text-green-500'),
-      jsonb_build_object('name', 'Limited test generations per month', 'icon', 'check', 'iconColor', 'text-orange-500'),
-      jsonb_build_object('name', 'Community support', 'icon', 'check', 'iconColor', 'text-teal-500'),
-      jsonb_build_object('name', 'Single teacher workspace', 'icon', 'check', 'iconColor', 'text-blue-500')
+      jsonb_build_object('name', 'Class Test QP PDF', 'icon', 'check', 'iconColor', 'text-green-500'),
+      jsonb_build_object('name', 'Cost per student: Rs 10', 'icon', 'check', 'iconColor', 'text-orange-500'),
+      jsonb_build_object('name', 'Rs 3000 per month', 'icon', 'check', 'iconColor', 'text-teal-500'),
+      jsonb_build_object('name', 'Monthly QP limit applies', 'icon', 'check', 'iconColor', 'text-blue-500')
     ),
     1
   ),
   (
-    'pro',
-    'Pro',
-    'For institutes running online exams, student rosters, and scaled test series.',
+    'tier-2',
+    'Tier 2',
+    '',
     'INR',
     'fixed',
-    199900,
-    1999900,
+    12000,
+    144000,
     true,
     'Most popular',
-    'Get Pro',
+    'Choose Tier 2',
     jsonb_build_array(
-      jsonb_build_object('name', 'Unlimited paper tests & scheduling', 'icon', 'check', 'iconColor', 'text-green-500'),
-      jsonb_build_object('name', 'Online exams & proctoring basics', 'icon', 'check', 'iconColor', 'text-orange-500'),
-      jsonb_build_object('name', 'Student profiles & classes', 'icon', 'check', 'iconColor', 'text-teal-500'),
-      jsonb_build_object('name', 'OMR & performance reports', 'icon', 'check', 'iconColor', 'text-blue-500'),
-      jsonb_build_object('name', 'Email support', 'icon', 'check', 'iconColor', 'text-zinc-500')
+      jsonb_build_object('name', 'Class Test QP PDF', 'icon', 'check', 'iconColor', 'text-green-500'),
+      jsonb_build_object('name', 'Online exam', 'icon', 'check', 'iconColor', 'text-orange-500'),
+      jsonb_build_object('name', 'Mock Test', 'icon', 'check', 'iconColor', 'text-teal-500'),
+      jsonb_build_object('name', 'Student profile', 'icon', 'check', 'iconColor', 'text-blue-500'),
+      jsonb_build_object('name', 'Report', 'icon', 'check', 'iconColor', 'text-zinc-500'),
+      jsonb_build_object('name', 'Cost per student: Rs 15', 'icon', 'check', 'iconColor', 'text-zinc-500'),
+      jsonb_build_object('name', 'Rs 120 per month (per student)', 'icon', 'check', 'iconColor', 'text-zinc-500')
     ),
     2
   ),
   (
-    'enterprise',
-    'Enterprise',
-    'Custom rollout, SSO, dedicated support, and compliance for large chains.',
+    'tier-3',
+    'Tier 3',
+    '',
     'INR',
-    'custom',
-    null,
-    null,
+    'fixed',
+    20000,
+    240000,
     false,
     null,
-    'Talk to sales',
+    'Choose Tier 3',
     jsonb_build_array(
-      jsonb_build_object('name', 'Everything in Pro', 'icon', 'check', 'iconColor', 'text-green-500'),
-      jsonb_build_object('name', 'Custom integrations & SLAs', 'icon', 'check', 'iconColor', 'text-orange-500'),
-      jsonb_build_object('name', 'Onboarding & training', 'icon', 'check', 'iconColor', 'text-teal-500'),
-      jsonb_build_object('name', 'Dedicated success manager', 'icon', 'check', 'iconColor', 'text-blue-500')
+      jsonb_build_object('name', 'Question Paper (Class Test)', 'icon', 'check', 'iconColor', 'text-green-500'),
+      jsonb_build_object('name', 'Student Profiles', 'icon', 'check', 'iconColor', 'text-orange-500'),
+      jsonb_build_object('name', 'Online Test', 'icon', 'check', 'iconColor', 'text-teal-500'),
+      jsonb_build_object('name', 'AI student report', 'icon', 'check', 'iconColor', 'text-blue-500'),
+      jsonb_build_object('name', 'Report', 'icon', 'check', 'iconColor', 'text-zinc-500'),
+      jsonb_build_object('name', 'Institute / Class Management', 'icon', 'check', 'iconColor', 'text-zinc-500'),
+      jsonb_build_object('name', 'Cost per student: Rs 25', 'icon', 'check', 'iconColor', 'text-zinc-500'),
+      jsonb_build_object('name', 'Rs 200 per month (per student, negotiable with student count)', 'icon', 'check', 'iconColor', 'text-zinc-500')
     ),
     3
   )

@@ -3,21 +3,27 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Question } from '../../types';
 import { evaluateOMRSheet, EvaluationResult } from './OMREvaluator';
 
+declare var cv: any;
+
 interface OMRScannerModalProps {
   questions: Question[];
   onClose: () => void;
+  onScanComplete?: (result: EvaluationResult) => void;
 }
 
 interface HistoryItem extends EvaluationResult {
     timestamp: string;
 }
 
-const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose }) => {
+const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, onScanComplete }) => {
   const [mode, setMode] = useState<'camera' | 'upload' | 'result'>('camera');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState<EvaluationResult | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [isAutoScanEnabled, setIsAutoScanEnabled] = useState(true);
+  const [isAlignedForAutoScan, setIsAlignedForAutoScan] = useState(false);
+  const [alignmentProgress, setAlignmentProgress] = useState(0);
   
   // Continuous Scanning State
   const [scanHistory, setScanHistory] = useState<HistoryItem[]>([]);
@@ -25,6 +31,9 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const alignedFramesRef = useRef(0);
+  const autoCaptureLockRef = useRef(false);
 
   useEffect(() => {
     if (mode === 'camera') {
@@ -34,6 +43,104 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
     }
     return () => stopCamera();
   }, [mode]);
+
+  useEffect(() => {
+    if (mode !== 'camera' || !isAutoScanEnabled || isProcessing || !stream) return;
+
+    const intervalId = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || autoCaptureLockRef.current) return;
+
+      const aligned = detectCornerAlignment(video);
+      if (aligned) {
+        alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
+      } else {
+        alignedFramesRef.current = Math.max(0, alignedFramesRef.current - 1);
+      }
+
+      setIsAlignedForAutoScan(alignedFramesRef.current >= 4);
+      setAlignmentProgress(Math.round((alignedFramesRef.current / 6) * 100));
+
+      if (alignedFramesRef.current >= 6 && !isProcessing) {
+        autoCaptureLockRef.current = true;
+        captureAndEvaluate();
+      }
+    }, 250);
+
+    return () => window.clearInterval(intervalId);
+  }, [mode, stream, isAutoScanEnabled, isProcessing]);
+
+  const detectCornerAlignment = (video: HTMLVideoElement): boolean => {
+    if (typeof cv === 'undefined' || !cv.Mat) return false;
+    if (!alignCanvasRef.current) {
+      alignCanvasRef.current = document.createElement('canvas');
+    }
+
+    const helperCanvas = alignCanvasRef.current;
+    const targetW = 640;
+    const targetH = 480;
+    helperCanvas.width = targetW;
+    helperCanvas.height = targetH;
+    const ctx = helperCanvas.getContext('2d');
+    if (!ctx) return false;
+
+    ctx.drawImage(video, 0, 0, targetW, targetH);
+
+    let src: any, gray: any, thresh: any, contours: any, hierarchy: any;
+    try {
+      src = cv.imread(helperCanvas);
+      gray = new cv.Mat();
+      thresh = new cv.Mat();
+      contours = new cv.MatVector();
+      hierarchy = new cv.Mat();
+
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+      cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 7);
+      cv.findContours(thresh, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+      const imageArea = targetW * targetH;
+      const markers: Array<{ x: number; y: number }> = [];
+      for (let i = 0; i < contours.size(); i++) {
+        const cnt = contours.get(i);
+        const area = cv.contourArea(cnt);
+        if (area < imageArea * 0.00015 || area > imageArea * 0.04) continue;
+        const rect = cv.boundingRect(cnt);
+        const aspect = rect.width / Math.max(1, rect.height);
+        if (aspect < 0.5 || aspect > 2) continue;
+        markers.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
+      }
+      if (markers.length < 4) return false;
+
+      const sortedBySum = [...markers].sort((a, b) => (a.x + a.y) - (b.x + b.y));
+      const tl = sortedBySum[0];
+      const br = sortedBySum[sortedBySum.length - 1];
+      const sortedByDiff = [...markers].sort((a, b) => (a.x - a.y) - (b.x - b.y));
+      const bl = sortedByDiff[0];
+      const tr = sortedByDiff[sortedByDiff.length - 1];
+
+      const guideLeft = targetW * 0.075;
+      const guideRight = targetW * 0.925;
+      const guideTop = targetH * 0.10;
+      const guideBottom = targetH * 0.90;
+      const tol = 70;
+
+      const near = (p: { x: number; y: number }, ex: number, ey: number) =>
+        Math.abs(p.x - ex) <= tol && Math.abs(p.y - ey) <= tol;
+
+      return (
+        near(tl, guideLeft, guideTop) &&
+        near(tr, guideRight, guideTop) &&
+        near(bl, guideLeft, guideBottom) &&
+        near(br, guideRight, guideBottom)
+      );
+    } catch {
+      return false;
+    } finally {
+      [src, gray, thresh, hierarchy, contours].forEach((m) => {
+        if (m && typeof m.delete === 'function') m.delete();
+      });
+    }
+  };
 
   const startCamera = async () => {
     try {
@@ -59,10 +166,14 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
       stream.getTracks().forEach(t => t.stop());
       setStream(null);
     }
+    alignedFramesRef.current = 0;
+    setAlignmentProgress(0);
+    setIsAlignedForAutoScan(false);
+    autoCaptureLockRef.current = false;
   };
 
   const captureAndEvaluate = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || isProcessing) return;
     
     setIsProcessing(true);
     const video = videoRef.current;
@@ -79,8 +190,13 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
         image.onload = async () => {
              const res = await evaluateOMRSheet(image, questions);
              setResult(res);
+             onScanComplete?.(res);
              setMode('result');
              setIsProcessing(false);
+             alignedFramesRef.current = 0;
+             setAlignmentProgress(0);
+             setIsAlignedForAutoScan(false);
+             autoCaptureLockRef.current = false;
         };
     }
   };
@@ -101,6 +217,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
                   setTimeout(async () => {
                     const res = await evaluateOMRSheet(img, questions);
                     setResult(res);
+                    onScanComplete?.(res);
                     setMode('result');
                     setIsProcessing(false);
                     setPreviewImage(null);
@@ -122,6 +239,10 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
           setResult(null);
           setPreviewImage(null);
           setMode('camera');
+          alignedFramesRef.current = 0;
+          setAlignmentProgress(0);
+          setIsAlignedForAutoScan(false);
+          autoCaptureLockRef.current = false;
       }
   };
 
@@ -223,19 +344,34 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose })
                         
                         {/* Camera Overlay Guide */}
                         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[80%] pointer-events-none">
-                             <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-accent rounded-tl-xl"></div>
-                             <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-accent rounded-tr-xl"></div>
-                             <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-accent rounded-bl-xl"></div>
-                             <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-accent rounded-br-xl"></div>
+                             <div className={`absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 rounded-tl-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 rounded-tr-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 rounded-bl-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 rounded-br-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
                              
                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                                 <div className="bg-black/60 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">
-                                    Align 4 Corners
+                                    {isAutoScanEnabled
+                                      ? (isAlignedForAutoScan ? 'Aligned - Auto Scan Ready' : `Align 4 Corners (${alignmentProgress}%)`)
+                                      : 'Align 4 Corners'}
                                 </div>
                              </div>
                         </div>
                     </div>
-                    <p className="text-center text-xs text-gray-400 mt-4">Ensure good lighting and hold steady</p>
+                    <div className="mt-4 flex items-center justify-center gap-3">
+                      <p className="text-center text-xs text-gray-400">Ensure good lighting and hold steady</p>
+                      <button
+                        type="button"
+                        onClick={() => setIsAutoScanEnabled((v) => !v)}
+                        className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider border ${
+                          isAutoScanEnabled
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-white text-gray-500 border-gray-200'
+                        }`}
+                      >
+                        {isAutoScanEnabled ? 'Auto Scan On' : 'Auto Scan Off'}
+                      </button>
+                    </div>
                 </div>
             )}
 

@@ -1122,7 +1122,7 @@ const LandingPage: React.FC<LandingPageProps> = ({
         </div>
       </section>
       <div className="px-4 pb-16 md:px-6">
-        <PricingPage embedded />
+        <PricingPage embedded forceFallback />
       </div>
     </motion.div>
   );
