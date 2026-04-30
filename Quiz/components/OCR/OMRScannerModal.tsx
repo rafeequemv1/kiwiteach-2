@@ -321,9 +321,9 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       >
         
         {/* Header */}
-        <div className="p-4 md:p-6 border-b border-gray-100 flex justify-between items-center bg-white z-10 shrink-0">
+        <div className={`border-b border-gray-100 flex justify-between items-center bg-white z-10 shrink-0 ${mode === 'camera' ? 'p-3' : 'p-4 md:p-6'}`}>
             <div className="flex items-center gap-3 md:gap-4">
-                <h2 className="text-lg md:text-xl font-bold text-text-primary flex items-center gap-2">
+                <h2 className={`${mode === 'camera' ? 'text-base' : 'text-lg md:text-xl'} font-bold text-text-primary flex items-center gap-2`}>
                     <iconify-icon icon="mdi:camera-metering-spot" className="text-accent w-6 h-6"></iconify-icon>
                     <span className="hidden xs:inline">AI OMR Evaluator</span>
                     <span className="xs:hidden">OMR Scan</span>
@@ -341,19 +341,19 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         </div>
 
         {/* Scrollable Content Area */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-secondary custom-scrollbar">
+        <div className={`flex-1 bg-secondary custom-scrollbar ${mode === 'camera' ? 'overflow-hidden p-0' : 'overflow-y-auto p-4 md:p-6'}`}>
             {mode === 'camera' && (
-                <div className="flex flex-col h-full justify-center">
-                    <div className="relative rounded-2xl overflow-hidden bg-black aspect-[9/16] shadow-lg w-full max-w-[420px] mx-auto border-2 border-white/50">
+                <div className="relative h-full w-full bg-black">
+                    <div className="relative h-full w-full overflow-hidden bg-black shadow-lg border-y border-white/30">
                         <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
                         <div className="absolute inset-0 border-[3px] border-white/20 pointer-events-none"></div>
                         
                         {/* Camera Overlay Guide */}
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[80%] pointer-events-none">
-                             <div className={`absolute top-0 left-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute top-0 right-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 left-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 right-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] h-[88%] pointer-events-none">
+                             <div className={`absolute top-0 left-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 right-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 left-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 right-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
                              
                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                                 <div className="bg-black/60 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">
@@ -364,15 +364,15 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                              </div>
                         </div>
                     </div>
-                    <div className="mt-3 flex items-center justify-center gap-3">
-                      <p className="text-center text-xs text-gray-400">Ensure good lighting and hold steady</p>
+                    <div className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2 flex items-center justify-center gap-3">
+                      <p className="text-center text-[11px] text-white/85 bg-black/45 rounded-full px-3 py-1">Ensure good lighting and hold steady</p>
                       <button
                         type="button"
                         onClick={() => setIsAutoScanEnabled((v) => !v)}
-                        className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider border ${
+                        className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider border backdrop-blur-sm ${
                           isAutoScanEnabled
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            : 'bg-white text-gray-500 border-gray-200'
+                            ? 'bg-emerald-50/95 text-emerald-700 border-emerald-200'
+                            : 'bg-white/90 text-gray-500 border-gray-200'
                         }`}
                       >
                         {isAutoScanEnabled ? 'Auto Scan On' : 'Auto Scan Off'}
@@ -487,27 +487,27 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
 
         {/* Sticky Action Footer */}
         {mode !== 'result' ? (
+            mode === 'camera' ? (
+              <div className="p-2 bg-transparent shrink-0 z-20">
+                <button
+                  onClick={() => { setMode('upload'); setPreviewImage(null); }}
+                  disabled={isProcessing}
+                  className="ml-2 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white/95 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-600 shadow-sm disabled:opacity-50"
+                >
+                  <iconify-icon icon="mdi:image-outline" className="w-4 h-4"></iconify-icon>
+                  Upload
+                </button>
+              </div>
+            ) : (
             <div className="p-3 md:p-4 bg-white border-t border-gray-100 flex gap-2 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] shrink-0 z-20">
                 <button 
-                    onClick={() => { setMode(mode === 'camera' ? 'upload' : 'camera'); setPreviewImage(null); }}
+                    onClick={() => { setMode('camera'); setPreviewImage(null); }}
                     disabled={isProcessing}
                     className="flex-1 py-3 px-3 rounded-xl font-bold text-text-secondary hover:bg-gray-100 transition-colors disabled:opacity-50 border border-gray-200 flex flex-col items-center justify-center gap-1 active:scale-95"
                 >
-                    <iconify-icon icon={mode === 'camera' ? 'mdi:image-outline' : 'mdi:camera-outline'} className="w-5 h-5"></iconify-icon>
-                    <span className="text-[10px] uppercase tracking-wider">{mode === 'camera' ? 'Upload' : 'Camera'}</span>
+                    <iconify-icon icon="mdi:camera-outline" className="w-5 h-5"></iconify-icon>
+                    <span className="text-[10px] uppercase tracking-wider">Camera</span>
                 </button>
-                
-                {mode === 'camera' && (
-                    <button 
-                        onClick={captureAndEvaluate}
-                        disabled={isProcessing}
-                        className="flex-[2] bg-accent hover:bg-indigo-700 active:bg-indigo-800 text-white py-3 px-5 rounded-xl font-bold shadow-lg shadow-accent/20 transition-all flex items-center justify-center gap-2 active:scale-95"
-                    >
-                        {isProcessing ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <iconify-icon icon="mdi:camera-iris" className="w-6 h-6"></iconify-icon>}
-                        <span className="uppercase text-xs tracking-widest">{isProcessing ? 'Scanning...' : 'Capture'}</span>
-                    </button>
-                )}
-                
                 {scanHistory.length > 0 && (
                     <button 
                          onClick={exportBulkCSV}
@@ -518,6 +518,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                     </button>
                 )}
             </div>
+            )
         ) : (
             <div className="p-4 md:p-6 bg-white border-t border-gray-100 flex flex-col gap-3 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] shrink-0 z-20">
                 <div className="flex gap-3">
