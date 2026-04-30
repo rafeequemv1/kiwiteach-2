@@ -355,12 +355,15 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       const bl = sortedByDiff[0];
       const tr = sortedByDiff[sortedByDiff.length - 1];
 
-      // Keep detector guide geometry in sync with the on-screen overlay (90% x 84% window).
-      const guideLeft = targetW * 0.05;
-      const guideRight = targetW * 0.95;
-      const guideTop = targetH * 0.08;
-      const guideBottom = targetH * 0.92;
-      const tol = 96;
+      // Keep detector guide geometry in sync with the on-screen A4 overlay window.
+      const A4_RATIO = 210 / 297;
+      const guideHeight = targetH * 0.9;
+      const guideWidth = Math.min(targetW * 0.94, guideHeight * A4_RATIO);
+      const guideLeft = (targetW - guideWidth) / 2;
+      const guideRight = guideLeft + guideWidth;
+      const guideTop = (targetH - guideHeight) / 2;
+      const guideBottom = guideTop + guideHeight;
+      const tol = 100;
 
       const near = (p: { x: number; y: number }, ex: number, ey: number) =>
         Math.abs(p.x - ex) <= tol && Math.abs(p.y - ey) <= tol;
@@ -760,11 +763,11 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                         <div className="absolute inset-0 border-[3px] border-white/20 pointer-events-none"></div>
                         
                         {/* Camera Overlay Guide */}
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] h-[84%] pointer-events-none">
-                             <div className={`absolute top-0 left-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.TL ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute top-0 right-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.TR ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 left-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.BL ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 right-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.BR ? 'border-emerald-400' : 'border-accent'}`}></div>
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[90%] w-auto max-w-[94%] aspect-[210/297] pointer-events-none">
+                             <div className={`absolute top-0 left-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.TL ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 right-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.TR ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 left-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.BL ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 right-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.BR ? 'border-emerald-400' : 'border-accent'}`}></div>
                              
                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                                 <div className="bg-black/60 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">

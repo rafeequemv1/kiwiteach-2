@@ -88,11 +88,14 @@ const detectCornerAlignment = (imageData, targetW, targetH) => {
     const bl = sortedByDiff[0];
     const tr = sortedByDiff[sortedByDiff.length - 1];
 
-    const guideLeft = targetW * 0.05;
-    const guideRight = targetW * 0.95;
-    const guideTop = targetH * 0.08;
-    const guideBottom = targetH * 0.92;
-    const tol = 96;
+    const A4_RATIO = 210 / 297;
+    const guideHeight = targetH * 0.9;
+    const guideWidth = Math.min(targetW * 0.94, guideHeight * A4_RATIO);
+    const guideLeft = (targetW - guideWidth) / 2;
+    const guideRight = guideLeft + guideWidth;
+    const guideTop = (targetH - guideHeight) / 2;
+    const guideBottom = guideTop + guideHeight;
+    const tol = 100;
 
     const dist = (p, ex, ey) => Math.hypot(p.x - ex, p.y - ey);
     const dTL = dist(tl, guideLeft, guideTop);
