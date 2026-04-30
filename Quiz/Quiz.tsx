@@ -157,6 +157,55 @@ const VIEW_SEO: Record<DashboardView, { title: string; description: string }> = 
   },
 };
 
+const NEET_ORGANIC_CHAPTER_HINT_RE =
+  /(organic|goc|aromatic|ring|benzene|hydrocarbon|haloalkane|haloarene|alcohol|phenol|ether|aldehyde|ketone|carboxylic|amine|diazonium|reaction)/i;
+
+function isNeetOrganicChemChapter(chapter: SelectedChapter): boolean {
+  const subject = (chapter.subjectName || '').trim().toLowerCase();
+  if (subject !== 'chemistry') return false;
+  return NEET_ORGANIC_CHAPTER_HINT_RE.test((chapter.name || '').trim());
+}
+
+function enforceMinimumFigureSlotsForChapters(
+  slots: Map<string, number>,
+  chapterCounts: Map<string, number>,
+  preferredChapterIds: string[],
+  minPerPreferred = 1
+): Map<string, number> {
+  if (preferredChapterIds.length === 0 || minPerPreferred <= 0) return slots;
+  const out = new Map(slots);
+  const preferredSet = new Set(preferredChapterIds);
+
+  const pickDonor = (receiverId: string): string | null => {
+    let bestId: string | null = null;
+    let bestSlots = -1;
+    for (const [id, assigned] of out.entries()) {
+      if (id === receiverId || assigned <= 0) continue;
+      // Prefer taking from non-priority chapters; keep preferred chapters at minimum.
+      if (preferredSet.has(id) && assigned <= minPerPreferred) continue;
+      if (assigned > bestSlots) {
+        bestSlots = assigned;
+        bestId = id;
+      }
+    }
+    return bestId;
+  };
+
+  for (const chapterId of preferredChapterIds) {
+    const cap = Math.max(0, chapterCounts.get(chapterId) ?? 0);
+    if (cap <= 0) continue;
+    const target = Math.min(minPerPreferred, cap);
+    while ((out.get(chapterId) ?? 0) < target) {
+      const donorId = pickDonor(chapterId);
+      if (!donorId) break;
+      out.set(donorId, Math.max(0, (out.get(donorId) ?? 0) - 1));
+      out.set(chapterId, (out.get(chapterId) ?? 0) + 1);
+    }
+  }
+
+  return out;
+}
+
 function viewFromPathname(pathname: string): DashboardView | null {
   const clean = pathname.split('?')[0].split('#')[0].replace(/\/+$/, '');
   const segments = clean.split('/').filter(Boolean);
@@ -978,6 +1027,7 @@ const Quiz: React.FC = () => {
       const { data: authData } = await supabase.auth.getUser();
       const uid = authData.user?.id;
       let excludedTopicLabelsNormalized: string[] = [];
+      let flaggedQuestionIdsForUser: string[] = [];
       if (uid) {
           try {
               excludedTopicLabelsNormalized = await fetchUserExcludedTopicLabels(
@@ -987,6 +1037,22 @@ const Quiz: React.FC = () => {
               );
           } catch (e) {
               console.warn('Topic exclusions fetch failed', e);
+          }
+          try {
+            const { data: flaggedRows, error: flaggedErr } = await supabase
+              .from('out_of_syllabus_question_flags')
+              .select('question_id')
+              .eq('flagged_by', uid)
+              .eq('exam_tag', 'neet');
+            if (flaggedErr) {
+              console.warn('Flag exclusion preload failed', flaggedErr.message);
+            } else {
+              flaggedQuestionIdsForUser = ((flaggedRows || []) as { question_id: string | null }[])
+                .map((r) => r.question_id || '')
+                .filter((id): id is string => isUuid(id));
+            }
+          } catch (e) {
+            console.warn('Flag exclusion preload threw', e);
           }
       }
       
@@ -1006,9 +1072,20 @@ const Quiz: React.FC = () => {
 
       const chaptersForBank = options.chapters.map((c) => ({ ...c, source: 'db' as const }));
       // Spread figure quota across chapters (one per chapter before seconds) when template asks for many figures.
-      const figureSlotsByChapter = allocateFigureSlotsByChapter(
+      const initialFigureSlotsByChapter = allocateFigureSlotsByChapter(
         chaptersForBank.map((c) => ({ id: c.id, count: c.count || 0 })),
         options.globalFigureCount ?? 0
+      );
+      const organicChapterIds =
+        options.isNeet && (options.globalFigureCount ?? 0) > 0
+          ? chaptersForBank.filter(isNeetOrganicChemChapter).map((c) => c.id)
+          : [];
+      const chapterCountMap = new Map(chaptersForBank.map((c) => [c.id, Math.max(0, c.count || 0)]));
+      const figureSlotsByChapter = enforceMinimumFigureSlotsForChapters(
+        initialFigureSlotsByChapter,
+        chapterCountMap,
+        organicChapterIds,
+        1
       );
 
       for (const chap of chaptersForBank) {
@@ -1072,7 +1149,7 @@ const Quiz: React.FC = () => {
               const manualFigN = manualForThisChap.filter(questionHasFigure).length;
               const figCap = Math.max(0, Math.min(neededFromBank, figureSlotRaw - manualFigN));
 
-              const excludeBase = [...sessionUsedExclude, ...currentIds];
+              const excludeBase = [...sessionUsedExclude, ...currentIds, ...flaggedQuestionIdsForUser];
 
               const pickFigureSlice = async (): Promise<Question[]> => {
                 if (figCap <= 0) return [];
@@ -1219,7 +1296,7 @@ const Quiz: React.FC = () => {
             excludedTopicLabelsNormalized,
           } as const;
 
-          const excludeBase = [...sessionUsedExclude, ...currentIds];
+          const excludeBase = [...sessionUsedExclude, ...currentIds, ...flaggedQuestionIdsForUser];
           const pool = await fetchEligibleQuestions({
             ...baseArgs,
             excludeIds: excludeBase,

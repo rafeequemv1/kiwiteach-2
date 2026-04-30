@@ -1139,11 +1139,13 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
         const currentIds = currentQuestions
           .map((item) => item.originalId || item.id)
           .filter((id): id is string => isUuid(id));
+        const flaggedIds = Array.from(flaggedQuestionIds).filter(isUuid);
+        const excludeIds = [...currentIds, ...flaggedIds];
         const eligible = await fetchEligibleQuestions({
           classId: sourceOptions?.targetClassId || null,
           chapterId: q.sourceChapterId,
           difficulty: q.difficulty,
-          excludeIds: currentIds,
+          excludeIds,
           limit: eligibleOversampleLimit(1),
           allowRepeats: allowPastReplacements,
         });
@@ -1225,6 +1227,8 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
       const currentIds = currentQuestions
         .map((item) => item.originalId || item.id)
         .filter((id): id is string => isUuid(id));
+      const flaggedIds = Array.from(flaggedQuestionIds).filter(isUuid);
+      const excludeIds = [...currentIds, ...flaggedIds];
 
       let candidates: Question[] = [];
       if (q.sourceChapterId) {
@@ -1232,7 +1236,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
           classId: sourceOptions?.targetClassId || null,
           chapterId: q.sourceChapterId,
           difficulty: q.difficulty,
-          excludeIds: currentIds,
+          excludeIds,
           limit: eligibleOversampleLimit(5),
           allowRepeats: allowPastReplacements,
         });
@@ -1241,7 +1245,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
         if (q.difficulty) query = query.eq('difficulty', q.difficulty);
         if (q.type) query = query.eq('question_type', q.type);
         if (q.topic_tag) query = query.eq('topic_tag', q.topic_tag);
-        if (currentIds.length > 0) query = query.not('id', 'in', `(${currentIds.join(',')})`);
+        if (excludeIds.length > 0) query = query.not('id', 'in', `(${excludeIds.join(',')})`);
         const { data } = await query.limit(eligibleOversampleLimit(5));
         candidates = ((data || []) as any[]).map((bq) => ({
           id: bq.id,
