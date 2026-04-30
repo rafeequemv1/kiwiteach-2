@@ -320,16 +320,44 @@ export const generateOMR = async ({
   doc.text("INVIGILATOR SIGNATURE", NAME_BOX_X + 50, FOOTER_Y + 14.5, { align: 'center' });
 
 
-  // --- Fiducial Markers (Corners) ---
-  // Black squares for CV detection. 
-  // Moved slightly inward (2mm) to ensure they aren't cut by printer margins.
+  // --- Fiducial Markers (Dense Tracking Grid) ---
+  // Keep the 4 canonical corner anchors + add extra edge markers for better mobile tracking stability.
   setBlack();
   const fiducialSize = 5;
   const fiducialOffset = 2;
-  doc.rect(fiducialOffset, fiducialOffset, fiducialSize, fiducialSize, 'F'); // Top Left
-  doc.rect(PAGE_WIDTH - fiducialSize - fiducialOffset, fiducialOffset, fiducialSize, fiducialSize, 'F'); // Top Right
-  doc.rect(fiducialOffset, PAGE_HEIGHT - fiducialSize - fiducialOffset, fiducialSize, fiducialSize, 'F'); // Bottom Left
-  doc.rect(PAGE_WIDTH - fiducialSize - fiducialOffset, PAGE_HEIGHT - fiducialSize - fiducialOffset, fiducialSize, fiducialSize, 'F'); // Bottom Right
+  const drawFiducial = (x: number, y: number, size = fiducialSize) => {
+    doc.rect(x, y, size, size, 'F');
+  };
+
+  // Canonical corner anchors (used for perspective solve)
+  drawFiducial(fiducialOffset, fiducialOffset); // Top Left
+  drawFiducial(PAGE_WIDTH - fiducialSize - fiducialOffset, fiducialOffset); // Top Right
+  drawFiducial(fiducialOffset, PAGE_HEIGHT - fiducialSize - fiducialOffset); // Bottom Left
+  drawFiducial(PAGE_WIDTH - fiducialSize - fiducialOffset, PAGE_HEIGHT - fiducialSize - fiducialOffset); // Bottom Right
+
+  // Extra tracking anchors (edge/mid points) for better detection confidence on handheld camera scans
+  const midTopX = (PAGE_WIDTH - fiducialSize) / 2;
+  const midBottomX = (PAGE_WIDTH - fiducialSize) / 2;
+  const midLeftY = (PAGE_HEIGHT - fiducialSize) / 2;
+  const midRightY = (PAGE_HEIGHT - fiducialSize) / 2;
+  drawFiducial(midTopX, fiducialOffset); // Top center
+  drawFiducial(midBottomX, PAGE_HEIGHT - fiducialSize - fiducialOffset); // Bottom center
+  drawFiducial(fiducialOffset, midLeftY); // Left center
+  drawFiducial(PAGE_WIDTH - fiducialSize - fiducialOffset, midRightY); // Right center
+
+  // Quarter-edge anchors to improve alignment lock before all corners are perfectly framed
+  const quarterTopLeftX = PAGE_WIDTH * 0.24 - fiducialSize / 2;
+  const quarterTopRightX = PAGE_WIDTH * 0.76 - fiducialSize / 2;
+  const quarterLeftUpperY = PAGE_HEIGHT * 0.24 - fiducialSize / 2;
+  const quarterLeftLowerY = PAGE_HEIGHT * 0.76 - fiducialSize / 2;
+  drawFiducial(quarterTopLeftX, fiducialOffset); // Top 25%
+  drawFiducial(quarterTopRightX, fiducialOffset); // Top 75%
+  drawFiducial(quarterTopLeftX, PAGE_HEIGHT - fiducialSize - fiducialOffset); // Bottom 25%
+  drawFiducial(quarterTopRightX, PAGE_HEIGHT - fiducialSize - fiducialOffset); // Bottom 75%
+  drawFiducial(fiducialOffset, quarterLeftUpperY); // Left 25%
+  drawFiducial(fiducialOffset, quarterLeftLowerY); // Left 75%
+  drawFiducial(PAGE_WIDTH - fiducialSize - fiducialOffset, quarterLeftUpperY); // Right 25%
+  drawFiducial(PAGE_WIDTH - fiducialSize - fiducialOffset, quarterLeftLowerY); // Right 75%
 
   // Brand Watermark
   setPink();

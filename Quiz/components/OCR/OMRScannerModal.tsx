@@ -19,6 +19,15 @@ interface MarkerPoint {
   label: 'TL' | 'TR' | 'BL' | 'BR';
   xPct: number;
   yPct: number;
+  wPct?: number;
+  hPct?: number;
+}
+
+interface AlignmentWorkerResult {
+  aligned: boolean;
+  points: MarkerPoint[];
+  confidence?: number;
+  cornerMatches?: Record<MarkerPoint['label'], boolean>;
 }
 
 const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, onScanComplete }) => {
@@ -31,6 +40,12 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
   const [isAlignedForAutoScan, setIsAlignedForAutoScan] = useState(false);
   const [alignmentProgress, setAlignmentProgress] = useState(0);
   const [markerPoints, setMarkerPoints] = useState<MarkerPoint[]>([]);
+  const [cornerMatches, setCornerMatches] = useState<Record<MarkerPoint['label'], boolean>>({
+    TL: false,
+    TR: false,
+    BL: false,
+    BR: false,
+  });
   
   // Continuous Scanning State
   const [scanHistory, setScanHistory] = useState<HistoryItem[]>([]);
@@ -42,6 +57,13 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const alignedFramesRef = useRef(0);
   const autoCaptureLockRef = useRef(false);
+  const workerRef = useRef<Worker | null>(null);
+  const workerReadyRef = useRef(false);
+  const workerBusyRef = useRef(false);
+  const detectFallbackRef = useRef(false);
+  const smoothedPointsRef = useRef<Record<MarkerPoint['label'], MarkerPoint> | null>(null);
+  const evaluateRequestIdRef = useRef(0);
+  const evaluateResolversRef = useRef<Map<number, (value: EvaluationResult | null) => void>>(new Map());
 
   useEffect(() => {
     if (mode === 'camera') {
@@ -58,30 +80,221 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     const intervalId = window.setInterval(() => {
       const video = videoRef.current;
       if (!video || video.readyState < 2 || autoCaptureLockRef.current) return;
+      const consumeDetection = (detection: AlignmentWorkerResult) => {
+        const alpha = 0.35;
+        const prev = (smoothedPointsRef.current || {}) as Partial<Record<MarkerPoint['label'], MarkerPoint>>;
+        const smoothed = (detection.points || []).map((p) => {
+          const old = prev[p.label];
+          if (!old) return p;
+          return {
+            ...p,
+            xPct: old.xPct * (1 - alpha) + p.xPct * alpha,
+            yPct: old.yPct * (1 - alpha) + p.yPct * alpha,
+          };
+        });
+        smoothedPointsRef.current = Object.fromEntries(smoothed.map((p) => [p.label, p])) as Record<
+          MarkerPoint['label'],
+          MarkerPoint
+        >;
+        setMarkerPoints(smoothed);
+        setCornerMatches({
+          TL: !!detection.cornerMatches?.TL,
+          TR: !!detection.cornerMatches?.TR,
+          BL: !!detection.cornerMatches?.BL,
+          BR: !!detection.cornerMatches?.BR,
+        });
+        const aligned = detection.aligned;
+        if (aligned) {
+          alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
+        } else {
+          alignedFramesRef.current = Math.max(0, alignedFramesRef.current - 1);
+        }
 
-      const detection = detectCornerAlignment(video);
-      setMarkerPoints(detection.points);
-      const aligned = detection.aligned;
-      if (aligned) {
-        alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
-      } else {
-        alignedFramesRef.current = Math.max(0, alignedFramesRef.current - 1);
+        setIsAlignedForAutoScan(alignedFramesRef.current >= 4);
+        setAlignmentProgress(Math.round((alignedFramesRef.current / 6) * 100));
+
+        const detConfidence = detection.confidence ?? 0;
+        if (alignedFramesRef.current >= 6 && detConfidence >= 0.72 && !isProcessing) {
+          autoCaptureLockRef.current = true;
+          captureAndEvaluate();
+        }
+      };
+
+      if (workerReadyRef.current && workerRef.current && !workerBusyRef.current) {
+        if (!alignCanvasRef.current) alignCanvasRef.current = document.createElement('canvas');
+        const helperCanvas = alignCanvasRef.current;
+        const targetW = 640;
+        const targetH = 480;
+        helperCanvas.width = targetW;
+        helperCanvas.height = targetH;
+        const ctx = helperCanvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(video, 0, 0, targetW, targetH);
+        const imageData = ctx.getImageData(0, 0, targetW, targetH);
+        workerBusyRef.current = true;
+        workerRef.current.postMessage(
+          {
+            type: 'detect',
+            width: targetW,
+            height: targetH,
+            buffer: imageData.data.buffer,
+          },
+          [imageData.data.buffer]
+        );
+        return;
       }
 
-      setIsAlignedForAutoScan(alignedFramesRef.current >= 4);
-      setAlignmentProgress(Math.round((alignedFramesRef.current / 6) * 100));
-
-      if (alignedFramesRef.current >= 6 && !isProcessing) {
-        autoCaptureLockRef.current = true;
-        captureAndEvaluate();
+      if (detectFallbackRef.current) {
+        const detection = detectCornerAlignment(video);
+        consumeDetection(detection);
       }
     }, 250);
 
     return () => window.clearInterval(intervalId);
   }, [mode, stream, isAutoScanEnabled, isProcessing]);
 
-  const detectCornerAlignment = (video: HTMLVideoElement): { aligned: boolean; points: MarkerPoint[] } => {
-    if (typeof cv === 'undefined' || !cv.Mat) return { aligned: false, points: [] };
+  useEffect(() => {
+    if (typeof Worker === 'undefined') {
+      detectFallbackRef.current = true;
+      return;
+    }
+    const worker = new Worker('/omr-alignment-worker.js');
+    workerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent<any>) => {
+      const message = event.data || {};
+      if (message.type === 'ready') {
+        workerReadyRef.current = true;
+        detectFallbackRef.current = false;
+        return;
+      }
+      if (message.type === 'error') {
+        workerReadyRef.current = false;
+        workerBusyRef.current = false;
+        detectFallbackRef.current = true;
+        return;
+      }
+      if (message.type === 'detectResult') {
+        workerBusyRef.current = false;
+        const detection = message.payload as AlignmentWorkerResult;
+        const alpha = 0.35;
+        const prev = (smoothedPointsRef.current || {}) as Partial<Record<MarkerPoint['label'], MarkerPoint>>;
+        const smoothed = (detection.points || []).map((p) => {
+          const old = prev[p.label];
+          if (!old) return p;
+          return {
+            ...p,
+            xPct: old.xPct * (1 - alpha) + p.xPct * alpha,
+            yPct: old.yPct * (1 - alpha) + p.yPct * alpha,
+          };
+        });
+        smoothedPointsRef.current = Object.fromEntries(smoothed.map((p) => [p.label, p])) as Record<
+          MarkerPoint['label'],
+          MarkerPoint
+        >;
+        setMarkerPoints(smoothed);
+        setCornerMatches({
+          TL: !!detection.cornerMatches?.TL,
+          TR: !!detection.cornerMatches?.TR,
+          BL: !!detection.cornerMatches?.BL,
+          BR: !!detection.cornerMatches?.BR,
+        });
+        const aligned = !!detection.aligned;
+        if (aligned) alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
+        else alignedFramesRef.current = Math.max(0, alignedFramesRef.current - 1);
+        setIsAlignedForAutoScan(alignedFramesRef.current >= 4);
+        setAlignmentProgress(Math.round((alignedFramesRef.current / 6) * 100));
+        if (alignedFramesRef.current >= 6 && (detection.confidence ?? 0) >= 0.72 && !isProcessing) {
+          autoCaptureLockRef.current = true;
+          captureAndEvaluate();
+        }
+        return;
+      }
+      if (message.type === 'evaluateResult') {
+        const reqId = Number(message.reqId);
+        const resolve = evaluateResolversRef.current.get(reqId);
+        if (resolve) {
+          evaluateResolversRef.current.delete(reqId);
+          resolve((message.payload as EvaluationResult) || null);
+        }
+      }
+    };
+
+    worker.onerror = () => {
+      workerReadyRef.current = false;
+      workerBusyRef.current = false;
+      detectFallbackRef.current = true;
+      evaluateResolversRef.current.forEach((resolve) => resolve(null));
+      evaluateResolversRef.current.clear();
+    };
+
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+      workerReadyRef.current = false;
+      workerBusyRef.current = false;
+      evaluateResolversRef.current.forEach((resolve) => resolve(null));
+      evaluateResolversRef.current.clear();
+    };
+  }, [isProcessing]);
+
+  const evaluateImageDataWithWorker = async (imageData: ImageData): Promise<EvaluationResult | null> => {
+    if (!workerReadyRef.current || !workerRef.current) return null;
+    const reqId = ++evaluateRequestIdRef.current;
+    const p = new Promise<EvaluationResult | null>((resolve) => {
+      evaluateResolversRef.current.set(reqId, resolve);
+    });
+    workerRef.current.postMessage(
+      {
+        type: 'evaluate',
+        reqId,
+        width: imageData.width,
+        height: imageData.height,
+        buffer: imageData.data.buffer,
+        questions: questions.map((q) => ({ correctIndex: q.correctIndex })),
+      },
+      [imageData.data.buffer]
+    );
+    return p;
+  };
+
+  const finalizeEvaluationResult = (res: EvaluationResult | null) => {
+    if (!res) {
+      setIsProcessing(false);
+      autoCaptureLockRef.current = false;
+      alert('Scanner worker unavailable. Please retry.');
+      return;
+    }
+    const gateConfidence = Math.min(res.scanConfidence ?? 0, res.warpConfidence ?? 0, res.readConfidence ?? 0);
+    if (gateConfidence < 0.48) {
+      setResult({ ...res, error: 'Low scan confidence. Please align sheet and rescan.' });
+      setMode('result');
+      setIsProcessing(false);
+      autoCaptureLockRef.current = false;
+      return;
+    }
+    setResult(res);
+    onScanComplete?.(res);
+    setMode('result');
+    setIsProcessing(false);
+    alignedFramesRef.current = 0;
+    setAlignmentProgress(0);
+    setIsAlignedForAutoScan(false);
+    setMarkerPoints([]);
+    setCornerMatches({ TL: false, TR: false, BL: false, BR: false });
+    smoothedPointsRef.current = null;
+    autoCaptureLockRef.current = false;
+  };
+
+  const detectCornerAlignment = (video: HTMLVideoElement): AlignmentWorkerResult => {
+    if (typeof cv === 'undefined' || !cv.Mat) {
+      return {
+        aligned: false,
+        points: [],
+        confidence: 0,
+        cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+      };
+    }
     if (!alignCanvasRef.current) {
       alignCanvasRef.current = document.createElement('canvas');
     }
@@ -92,7 +305,14 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     helperCanvas.width = targetW;
     helperCanvas.height = targetH;
     const ctx = helperCanvas.getContext('2d');
-    if (!ctx) return { aligned: false, points: [] };
+    if (!ctx) {
+      return {
+        aligned: false,
+        points: [],
+        confidence: 0,
+        cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+      };
+    }
 
     ctx.drawImage(video, 0, 0, targetW, targetH);
 
@@ -109,7 +329,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       cv.findContours(thresh, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
 
       const imageArea = targetW * targetH;
-      const markers: Array<{ x: number; y: number }> = [];
+      const markers: Array<{ x: number; y: number; w: number; h: number }> = [];
       for (let i = 0; i < contours.size(); i++) {
         const cnt = contours.get(i);
         const area = cv.contourArea(cnt);
@@ -117,9 +337,16 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         const rect = cv.boundingRect(cnt);
         const aspect = rect.width / Math.max(1, rect.height);
         if (aspect < 0.5 || aspect > 2) continue;
-        markers.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
+        markers.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, w: rect.width, h: rect.height });
       }
-      if (markers.length < 4) return { aligned: false, points: [] };
+      if (markers.length < 4) {
+        return {
+          aligned: false,
+          points: [],
+          confidence: 0,
+          cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+        };
+      }
 
       const sortedBySum = [...markers].sort((a, b) => (a.x + a.y) - (b.x + b.y));
       const tl = sortedBySum[0];
@@ -128,32 +355,52 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       const bl = sortedByDiff[0];
       const tr = sortedByDiff[sortedByDiff.length - 1];
 
-      // Keep detector guide geometry in sync with the on-screen overlay (85% x 80% window).
-      const guideLeft = targetW * 0.075;
-      const guideRight = targetW * 0.925;
-      const guideTop = targetH * 0.10;
-      const guideBottom = targetH * 0.90;
-      const tol = 85;
+      // Keep detector guide geometry in sync with the on-screen overlay (90% x 84% window).
+      const guideLeft = targetW * 0.05;
+      const guideRight = targetW * 0.95;
+      const guideTop = targetH * 0.08;
+      const guideBottom = targetH * 0.92;
+      const tol = 96;
 
       const near = (p: { x: number; y: number }, ex: number, ey: number) =>
         Math.abs(p.x - ex) <= tol && Math.abs(p.y - ey) <= tol;
 
       const points: MarkerPoint[] = [
-        { label: 'TL', xPct: (tl.x / targetW) * 100, yPct: (tl.y / targetH) * 100 },
-        { label: 'TR', xPct: (tr.x / targetW) * 100, yPct: (tr.y / targetH) * 100 },
-        { label: 'BL', xPct: (bl.x / targetW) * 100, yPct: (bl.y / targetH) * 100 },
-        { label: 'BR', xPct: (br.x / targetW) * 100, yPct: (br.y / targetH) * 100 },
+        { label: 'TL', xPct: (tl.x / targetW) * 100, yPct: (tl.y / targetH) * 100, wPct: (tl.w / targetW) * 100, hPct: (tl.h / targetH) * 100 },
+        { label: 'TR', xPct: (tr.x / targetW) * 100, yPct: (tr.y / targetH) * 100, wPct: (tr.w / targetW) * 100, hPct: (tr.h / targetH) * 100 },
+        { label: 'BL', xPct: (bl.x / targetW) * 100, yPct: (bl.y / targetH) * 100, wPct: (bl.w / targetW) * 100, hPct: (bl.h / targetH) * 100 },
+        { label: 'BR', xPct: (br.x / targetW) * 100, yPct: (br.y / targetH) * 100, wPct: (br.w / targetW) * 100, hPct: (br.h / targetH) * 100 },
       ];
 
+      const dTL = Math.hypot(tl.x - guideLeft, tl.y - guideTop);
+      const dTR = Math.hypot(tr.x - guideRight, tr.y - guideTop);
+      const dBL = Math.hypot(bl.x - guideLeft, bl.y - guideBottom);
+      const dBR = Math.hypot(br.x - guideRight, br.y - guideBottom);
+      const confidence = Math.max(0, Math.min(1, 1 - (dTL + dTR + dBL + dBR) / 4 / (tol * 1.4)));
       const aligned =
         near(tl, guideLeft, guideTop) &&
         near(tr, guideRight, guideTop) &&
         near(bl, guideLeft, guideBottom) &&
         near(br, guideRight, guideBottom);
 
-      return { aligned, points };
+      return {
+        aligned,
+        points,
+        confidence,
+        cornerMatches: {
+          TL: dTL <= tol,
+          TR: dTR <= tol,
+          BL: dBL <= tol,
+          BR: dBR <= tol,
+        },
+      };
     } catch {
-      return { aligned: false, points: [] };
+      return {
+        aligned: false,
+        points: [],
+        confidence: 0,
+        cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+      };
     } finally {
       [src, gray, thresh, hierarchy, contours].forEach((m) => {
         if (m && typeof m.delete === 'function') m.delete();
@@ -189,6 +436,8 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     setAlignmentProgress(0);
     setIsAlignedForAutoScan(false);
     setMarkerPoints([]);
+    setCornerMatches({ TL: false, TR: false, BL: false, BR: false });
+    smoothedPointsRef.current = null;
     autoCaptureLockRef.current = false;
   };
 
@@ -202,47 +451,89 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const image = new Image();
-        image.src = canvas.toDataURL('image/png');
-        image.onload = async () => {
-             const res = await evaluateOMRSheet(image, questions);
-             setResult(res);
-             onScanComplete?.(res);
-             setMode('result');
-             setIsProcessing(false);
-             alignedFramesRef.current = 0;
-             setAlignmentProgress(0);
-             setIsAlignedForAutoScan(false);
-             setMarkerPoints([]);
-             autoCaptureLockRef.current = false;
-        };
+    const useOffscreen = typeof OffscreenCanvas !== 'undefined';
+    if (useOffscreen) {
+      const offscreen = new OffscreenCanvas(canvas.width, canvas.height);
+      const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
+      if (offCtx) {
+        offCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const frameData = offCtx.getImageData(0, 0, canvas.width, canvas.height);
+        const workerRes = await evaluateImageDataWithWorker(frameData);
+        if (workerRes) {
+          finalizeEvaluationResult(workerRes);
+          return;
+        }
+      }
     }
+
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const workerData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const workerRes = await evaluateImageDataWithWorker(workerData);
+      if (workerRes) {
+        finalizeEvaluationResult(workerRes);
+        return;
+      }
+
+      const image = new Image();
+      image.src = canvas.toDataURL('image/png');
+      image.onload = async () => {
+        const res = await evaluateOMRSheet(image, questions);
+        finalizeEvaluationResult(res);
+      };
+      return;
+    }
+
+    setIsProcessing(false);
+    autoCaptureLockRef.current = false;
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files && e.target.files[0]) {
           const file = e.target.files[0];
           const reader = new FileReader();
           
           setIsProcessing(true);
           
-          reader.onload = (evt) => {
+          reader.onload = async (evt) => {
               const src = evt.target?.result as string;
               setPreviewImage(src);
 
+              if (workerReadyRef.current && workerRef.current && typeof createImageBitmap !== 'undefined') {
+                try {
+                  const bitmap = await createImageBitmap(file);
+                  const w = bitmap.width;
+                  const h = bitmap.height;
+                  const useOffscreen = typeof OffscreenCanvas !== 'undefined';
+                  if (useOffscreen) {
+                    const offscreen = new OffscreenCanvas(w, h);
+                    const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
+                    if (offCtx) {
+                      offCtx.drawImage(bitmap, 0, 0, w, h);
+                      const imageData = offCtx.getImageData(0, 0, w, h);
+                      const workerRes = await evaluateImageDataWithWorker(imageData);
+                      bitmap.close();
+                      setPreviewImage(null);
+                      if (workerRes) {
+                        finalizeEvaluationResult(workerRes);
+                        return;
+                      }
+                    }
+                  }
+                  bitmap.close();
+                } catch {
+                  // fall back below
+                }
+              }
+
               const img = new Image();
               img.onload = async () => {
-                  setTimeout(async () => {
-                    const res = await evaluateOMRSheet(img, questions);
-                    setResult(res);
-                    onScanComplete?.(res);
-                    setMode('result');
-                    setIsProcessing(false);
-                    setPreviewImage(null);
-                  }, 300);
+                setTimeout(async () => {
+                  const res = await evaluateOMRSheet(img, questions);
+                  setPreviewImage(null);
+                  finalizeEvaluationResult(res);
+                }, 300);
               };
               img.src = src;
           };
@@ -360,6 +651,8 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
           setAlignmentProgress(0);
           setIsAlignedForAutoScan(false);
           setMarkerPoints([]);
+          setCornerMatches({ TL: false, TR: false, BL: false, BR: false });
+          smoothedPointsRef.current = null;
           autoCaptureLockRef.current = false;
       }
   };
@@ -467,11 +760,11 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                         <div className="absolute inset-0 border-[3px] border-white/20 pointer-events-none"></div>
                         
                         {/* Camera Overlay Guide */}
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[80%] pointer-events-none">
-                             <div className={`absolute top-0 left-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute top-0 right-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 left-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 right-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] h-[84%] pointer-events-none">
+                             <div className={`absolute top-0 left-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.TL ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 right-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.TR ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 left-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.BL ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 right-0 h-14 w-14 rounded-md border-2 bg-black/20 ${cornerMatches.BR ? 'border-emerald-400' : 'border-accent'}`}></div>
                              
                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                                 <div className="bg-black/60 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">
@@ -487,6 +780,15 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                             className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                             style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
                           >
+                            <div
+                              className="absolute -translate-x-1/2 -translate-y-1/2 rounded-[3px] border-2 border-emerald-400/95 shadow-[0_0_0_2px_rgba(16,185,129,0.25)]"
+                              style={{
+                                width: `${Math.max(2.4, p.wPct ?? 2.4)}%`,
+                                height: `${Math.max(2.4, p.hPct ?? 2.4)}%`,
+                                left: '50%',
+                                top: '50%',
+                              }}
+                            />
                             <div className="h-3 w-3 rounded-full bg-emerald-400 border border-white shadow-[0_0_0_2px_rgba(16,185,129,0.35)]" />
                             <div className="mt-0.5 -ml-1 rounded bg-black/60 px-1 text-[8px] font-bold text-white">
                               {p.label}

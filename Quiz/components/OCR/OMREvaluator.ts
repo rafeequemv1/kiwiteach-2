@@ -5,10 +5,13 @@ declare var cv: any;
 export interface EvaluationResult {
   score: number;
   totalQuestions: number;
-  detectedAnswers: Array<{ questionIndex: number; selectedIndex: number; isCorrect: boolean }>;
+  detectedAnswers: Array<{ questionIndex: number; selectedIndex: number; isCorrect: boolean; ambiguous?: boolean }>;
   rollNumber?: string;
   testBookletNumber?: string;
   processedImageUrl?: string;
+  scanConfidence?: number;
+  warpConfidence?: number;
+  readConfidence?: number;
   error?: string;
 }
 

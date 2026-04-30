@@ -50,14 +50,41 @@ const renderOMRSheet = (canvas: HTMLCanvasElement, config: RenderConfig): { corr
     fctx.fillStyle = '#ffffff';
     fctx.fillRect(0, 0, SHEET_WIDTH, SHEET_HEIGHT);
 
-    // Fiducials
+    // Fiducials (match generator: corners + edge/quarter anchors)
     fctx.fillStyle = '#000000';
     const fidSize = 5 * MM_TO_PX;
     const fidOff = 2 * MM_TO_PX;
-    fctx.fillRect(fidOff, fidOff, fidSize, fidSize);
-    fctx.fillRect(SHEET_WIDTH - fidSize - fidOff, fidOff, fidSize, fidSize);
-    fctx.fillRect(fidOff, SHEET_HEIGHT - fidSize - fidOff, fidSize, fidSize);
-    fctx.fillRect(SHEET_WIDTH - fidSize - fidOff, SHEET_HEIGHT - fidSize - fidOff, fidSize, fidSize);
+    const drawFid = (x: number, y: number) => fctx.fillRect(x, y, fidSize, fidSize);
+
+    // Corners
+    drawFid(fidOff, fidOff);
+    drawFid(SHEET_WIDTH - fidSize - fidOff, fidOff);
+    drawFid(fidOff, SHEET_HEIGHT - fidSize - fidOff);
+    drawFid(SHEET_WIDTH - fidSize - fidOff, SHEET_HEIGHT - fidSize - fidOff);
+
+    // Edge centers
+    const midTopX = (SHEET_WIDTH - fidSize) / 2;
+    const midBottomX = (SHEET_WIDTH - fidSize) / 2;
+    const midLeftY = (SHEET_HEIGHT - fidSize) / 2;
+    const midRightY = (SHEET_HEIGHT - fidSize) / 2;
+    drawFid(midTopX, fidOff);
+    drawFid(midBottomX, SHEET_HEIGHT - fidSize - fidOff);
+    drawFid(fidOff, midLeftY);
+    drawFid(SHEET_WIDTH - fidSize - fidOff, midRightY);
+
+    // Quarter edges
+    const quarterTopLeftX = SHEET_WIDTH * 0.24 - fidSize / 2;
+    const quarterTopRightX = SHEET_WIDTH * 0.76 - fidSize / 2;
+    const quarterLeftUpperY = SHEET_HEIGHT * 0.24 - fidSize / 2;
+    const quarterLeftLowerY = SHEET_HEIGHT * 0.76 - fidSize / 2;
+    drawFid(quarterTopLeftX, fidOff);
+    drawFid(quarterTopRightX, fidOff);
+    drawFid(quarterTopLeftX, SHEET_HEIGHT - fidSize - fidOff);
+    drawFid(quarterTopRightX, SHEET_HEIGHT - fidSize - fidOff);
+    drawFid(fidOff, quarterLeftUpperY);
+    drawFid(fidOff, quarterLeftLowerY);
+    drawFid(SHEET_WIDTH - fidSize - fidOff, quarterLeftUpperY);
+    drawFid(SHEET_WIDTH - fidSize - fidOff, quarterLeftLowerY);
 
     const drawBubbles = (sx: number, sy: number, rows: number, cols: number, rg: number, cg: number, r: number, marks: number[]) => {
         for (let c = 0; c < cols; c++) {
