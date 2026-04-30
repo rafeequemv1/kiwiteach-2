@@ -163,7 +163,7 @@ const FIGURE_MAX_IMG_HEIGHT_PX: Record<FigureSize, number> = { small: 80, medium
 function effectiveFigureTier(q: Question, sizes: Record<string, FigureSize>): FigureSize {
   const manual = sizes[q.id];
   if (manual) return manual;
-  return q.figureHighDensity ? 'large' : 'medium';
+  return 'large';
 }
 
 /** Max image height for layout: optional boost when high-density + large tier. */
@@ -603,7 +603,7 @@ const QuestionListScreen: React.FC<ResultScreenProps> = ({
   const adjustFigureSize = (questionId: string, direction: 'increase' | 'decrease') => {
     const sizes: FigureSize[] = ['small', 'medium', 'large'];
     setFigureSizes(prev => {
-        const currentSize = prev[questionId] || 'medium';
+        const currentSize = prev[questionId] || 'large';
         const currentIndex = sizes.indexOf(currentSize);
         let nextIndex: number;
         if (direction === 'increase') {
