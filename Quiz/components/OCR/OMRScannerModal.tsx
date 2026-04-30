@@ -310,9 +310,15 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
   const wrongCount = result ? attemptedCount - correctCount : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center md:p-4 bg-slate-900/80 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-sm animate-fade-in">
       {/* Container: Full screen on mobile, Rounded on Desktop */}
-      <div className="bg-white w-full h-full md:h-auto md:max-h-[90vh] md:rounded-3xl md:max-w-4xl overflow-hidden shadow-2xl flex flex-col relative">
+      <div
+        className={`bg-white w-full h-full overflow-hidden shadow-2xl flex flex-col relative ${
+          mode === 'camera'
+            ? 'md:h-[96vh] md:max-h-none md:max-w-[430px] md:rounded-[2rem]'
+            : 'md:h-auto md:max-h-[90vh] md:max-w-4xl md:rounded-3xl'
+        }`}
+      >
         
         {/* Header */}
         <div className="p-4 md:p-6 border-b border-gray-100 flex justify-between items-center bg-white z-10 shrink-0">
@@ -338,16 +344,16 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-secondary custom-scrollbar">
             {mode === 'camera' && (
                 <div className="flex flex-col h-full justify-center">
-                    <div className="relative rounded-2xl overflow-hidden bg-black aspect-[3/4] md:aspect-video shadow-lg w-full max-w-2xl mx-auto border-4 border-white/50">
+                    <div className="relative rounded-2xl overflow-hidden bg-black aspect-[9/16] shadow-lg w-full max-w-[420px] mx-auto border-2 border-white/50">
                         <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
                         <div className="absolute inset-0 border-[3px] border-white/20 pointer-events-none"></div>
                         
                         {/* Camera Overlay Guide */}
                         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[80%] pointer-events-none">
-                             <div className={`absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 rounded-tl-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 rounded-tr-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 rounded-bl-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 rounded-br-xl ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 left-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 right-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 left-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 right-0 h-9 w-9 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
                              
                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                                 <div className="bg-black/60 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">
@@ -358,7 +364,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                              </div>
                         </div>
                     </div>
-                    <div className="mt-4 flex items-center justify-center gap-3">
+                    <div className="mt-3 flex items-center justify-center gap-3">
                       <p className="text-center text-xs text-gray-400">Ensure good lighting and hold steady</p>
                       <button
                         type="button"
@@ -481,13 +487,13 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
 
         {/* Sticky Action Footer */}
         {mode !== 'result' ? (
-            <div className="p-4 md:p-6 bg-white border-t border-gray-100 flex gap-3 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] shrink-0 z-20">
+            <div className="p-3 md:p-4 bg-white border-t border-gray-100 flex gap-2 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] shrink-0 z-20">
                 <button 
                     onClick={() => { setMode(mode === 'camera' ? 'upload' : 'camera'); setPreviewImage(null); }}
                     disabled={isProcessing}
-                    className="flex-1 py-4 px-4 rounded-xl font-bold text-text-secondary hover:bg-gray-100 transition-colors disabled:opacity-50 border border-gray-200 flex flex-col items-center justify-center gap-1 active:scale-95"
+                    className="flex-1 py-3 px-3 rounded-xl font-bold text-text-secondary hover:bg-gray-100 transition-colors disabled:opacity-50 border border-gray-200 flex flex-col items-center justify-center gap-1 active:scale-95"
                 >
-                    <iconify-icon icon={mode === 'camera' ? 'mdi:image-outline' : 'mdi:camera-outline'} className="w-6 h-6"></iconify-icon>
+                    <iconify-icon icon={mode === 'camera' ? 'mdi:image-outline' : 'mdi:camera-outline'} className="w-5 h-5"></iconify-icon>
                     <span className="text-[10px] uppercase tracking-wider">{mode === 'camera' ? 'Upload' : 'Camera'}</span>
                 </button>
                 
@@ -495,19 +501,19 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                     <button 
                         onClick={captureAndEvaluate}
                         disabled={isProcessing}
-                        className="flex-[2] bg-accent hover:bg-indigo-700 active:bg-indigo-800 text-white py-4 px-6 rounded-xl font-bold shadow-lg shadow-accent/20 transition-all flex items-center justify-center gap-2 active:scale-95"
+                        className="flex-[2] bg-accent hover:bg-indigo-700 active:bg-indigo-800 text-white py-3 px-5 rounded-xl font-bold shadow-lg shadow-accent/20 transition-all flex items-center justify-center gap-2 active:scale-95"
                     >
-                        {isProcessing ? <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <iconify-icon icon="mdi:camera-iris" className="w-8 h-8"></iconify-icon>}
-                        <span className="uppercase text-sm tracking-widest">{isProcessing ? 'Scanning...' : 'Capture'}</span>
+                        {isProcessing ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <iconify-icon icon="mdi:camera-iris" className="w-6 h-6"></iconify-icon>}
+                        <span className="uppercase text-xs tracking-widest">{isProcessing ? 'Scanning...' : 'Capture'}</span>
                     </button>
                 )}
                 
                 {scanHistory.length > 0 && (
                     <button 
                          onClick={exportBulkCSV}
-                         className="flex-1 py-4 px-4 rounded-xl font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors border border-indigo-100 flex flex-col items-center justify-center gap-1 active:scale-95"
+                         className="flex-1 py-3 px-3 rounded-xl font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors border border-indigo-100 flex flex-col items-center justify-center gap-1 active:scale-95"
                     >
-                         <iconify-icon icon="mdi:download-outline" className="w-6 h-6"></iconify-icon>
+                         <iconify-icon icon="mdi:download-outline" className="w-5 h-5"></iconify-icon>
                          <span className="text-[10px] uppercase tracking-wider">Export ({scanHistory.length})</span>
                     </button>
                 )}
