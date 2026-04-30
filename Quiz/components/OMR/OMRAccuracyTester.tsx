@@ -262,6 +262,42 @@ const OMRAccuracyTester: React.FC = () => {
     })();
   };
 
+  const downloadDemoOmrMachineCsv = () => {
+    const headers = [
+      'Timestamp',
+      'Roll Number',
+      'Booklet Number',
+      'Total Score',
+      'Max Score',
+      'Accuracy (%)',
+      'Correct',
+      'Wrong',
+      'Unanswered',
+      ...Array.from({ length: DEMO_TOTAL_QUESTIONS }, (_, i) => `Q${i + 1}`),
+    ];
+    const answers = DEMO_MARKED_ANSWERS.map((idx) => String.fromCharCode(65 + idx));
+    const row = [
+      new Date().toISOString(),
+      "'123456789",
+      "'987654321",
+      String(DEMO_TOTAL_QUESTIONS),
+      String(DEMO_TOTAL_QUESTIONS),
+      '100%',
+      String(DEMO_TOTAL_QUESTIONS),
+      '0',
+      '0',
+      ...answers,
+    ];
+    const csv = `${headers.join(',')}\n${row.join(',')}\n`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'kiwiteach_demo_omr_machine_template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const runManualTest = async () => {
     setIsRunning(true); setManualResult(null);
     const canvas = canvasRef.current; if (!canvas) return;
@@ -355,6 +391,15 @@ const OMRAccuracyTester: React.FC = () => {
                >
                  <iconify-icon icon="mdi:download" />
                  Demo OMR Sheet
+               </button>
+               <button
+                 type="button"
+                 onClick={downloadDemoOmrMachineCsv}
+                 className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100"
+                 title="Download CSV template for OMR machine scanner uploads"
+               >
+                 <iconify-icon icon="mdi:file-delimited-outline" />
+                 Demo CSV Template
                </button>
                <button
                  type="button"

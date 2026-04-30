@@ -22,7 +22,7 @@ interface MarkerPoint {
 }
 
 const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, onScanComplete }) => {
-  const [mode, setMode] = useState<'camera' | 'upload' | 'result'>('camera');
+  const [mode, setMode] = useState<'camera' | 'upload' | 'csv' | 'result'>('camera');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState<EvaluationResult | null>(null);
@@ -38,6 +38,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvFileInputRef = useRef<HTMLInputElement>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const alignedFramesRef = useRef(0);
   const autoCaptureLockRef = useRef(false);
@@ -249,6 +250,102 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       }
   };
 
+  const parseCsvLine = (line: string): string[] => {
+    const out: string[] = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        inQuotes = !inQuotes;
+        continue;
+      }
+      if (!inQuotes && c === ',') {
+        out.push(cur.trim());
+        cur = '';
+        continue;
+      }
+      cur += c;
+    }
+    out.push(cur.trim());
+    return out;
+  };
+
+  const normalizeMachineChoice = (raw: string): number => {
+    const v = raw.replace(/^'+/, '').trim().toUpperCase();
+    if (!v || v === 'BLANK' || v === '-' || v === 'NA') return -1;
+    if (['A', 'B', 'C', 'D'].includes(v)) return v.charCodeAt(0) - 65;
+    if (['1', '2', '3', '4'].includes(v)) return Number(v) - 1;
+    return -1;
+  };
+
+  const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0]) return;
+    const file = e.target.files[0];
+    setIsProcessing(true);
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      if (lines.length < 2) throw new Error('CSV needs at least header + 1 data row');
+
+      const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase().replace(/^"|"$/g, '').trim());
+      const row = parseCsvLine(lines[1]);
+      const get = (keyLike: string[]) => {
+        const idx = headers.findIndex((h) => keyLike.some((k) => h.includes(k)));
+        return idx >= 0 ? (row[idx] || '').trim() : '';
+      };
+
+      const roll = get(['roll']);
+      const booklet = get(['booklet']);
+      const scoreRaw = get(['total score', 'score', 'marks', 'correct']);
+      const maxRaw = get(['max score', 'total questions', 'max', 'total']);
+      const parsedScore = Number(scoreRaw.replace(/[^\d.]/g, '')) || 0;
+      const parsedTotal = Number(maxRaw.replace(/[^\d.]/g, '')) || questions.length || 0;
+
+      const qColIndexes = headers
+        .map((h, idx) => ({ h, idx }))
+        .filter((x) => /^q\d+$/i.test(x.h))
+        .sort((a, b) => Number(a.h.slice(1)) - Number(b.h.slice(1)));
+
+      let detectedAnswers: Array<{ questionIndex: number; selectedIndex: number; isCorrect: boolean }> = [];
+      if (qColIndexes.length > 0) {
+        detectedAnswers = questions.map((q, i) => {
+          const col = qColIndexes[i];
+          const selectedIndex = col ? normalizeMachineChoice(row[col.idx] || '') : -1;
+          return { questionIndex: i, selectedIndex, isCorrect: selectedIndex === q.correctIndex };
+        });
+      } else {
+        const effectiveTotal = parsedTotal || questions.length;
+        detectedAnswers = Array.from({ length: effectiveTotal }, (_, i) => {
+          const isCorrect = i < Math.min(parsedScore, effectiveTotal);
+          return {
+            questionIndex: i,
+            selectedIndex: isCorrect ? (questions[i]?.correctIndex ?? 0) : -1,
+            isCorrect,
+          };
+        });
+      }
+
+      const finalTotal = Math.max(parsedTotal || questions.length, detectedAnswers.length);
+      const finalScore = qColIndexes.length > 0 ? detectedAnswers.filter((d) => d.isCorrect).length : parsedScore;
+      const csvResult: EvaluationResult = {
+        score: finalScore,
+        totalQuestions: finalTotal,
+        detectedAnswers,
+        rollNumber: roll || undefined,
+        testBookletNumber: booklet || undefined,
+      };
+      setResult(csvResult);
+      onScanComplete?.(csvResult);
+      setMode('result');
+    } catch (err: any) {
+      alert(`CSV parse failed: ${err?.message || String(err)}`);
+    } finally {
+      setIsProcessing(false);
+      e.target.value = '';
+    }
+  };
+
   const handleSaveAndNext = () => {
       if (result) {
           const newItem: HistoryItem = {
@@ -440,6 +537,22 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                 </div>
             )}
 
+            {mode === 'csv' && (
+                <div className="flex flex-col h-full justify-center max-w-2xl mx-auto">
+                    <div
+                      className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-indigo-300 rounded-3xl bg-white hover:border-indigo-500 transition-all cursor-pointer group"
+                      onClick={() => csvFileInputRef.current?.click()}
+                    >
+                      <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                        <iconify-icon icon="mdi:file-delimited-outline" className="w-10 h-10 text-indigo-600"></iconify-icon>
+                      </div>
+                      <p className="font-black text-text-primary text-lg">Upload OMR Machine CSV</p>
+                      <p className="text-sm text-text-secondary mt-1">Supports headers like Roll, Booklet, Score, Q1..Qn</p>
+                      <input ref={csvFileInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleCsvUpload} />
+                    </div>
+                </div>
+            )}
+
             {mode === 'result' && result && (
                 <div className="animate-slide-up flex flex-col gap-6">
                     {/* ID Card */}
@@ -531,6 +644,14 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                   Upload
                 </button>
                 <button
+                  onClick={() => { setMode('csv'); setPreviewImage(null); }}
+                  disabled={isProcessing}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-violet-700 shadow-sm disabled:opacity-50"
+                >
+                  <iconify-icon icon="mdi:file-delimited" className="w-4 h-4"></iconify-icon>
+                  CSV
+                </button>
+                <button
                   onClick={captureAndEvaluate}
                   disabled={isProcessing}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700 shadow-sm disabled:opacity-50"
@@ -552,6 +673,14 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                 >
                     <iconify-icon icon="mdi:camera-outline" className="w-5 h-5"></iconify-icon>
                     <span className="text-[10px] uppercase tracking-wider">Camera</span>
+                </button>
+                <button
+                    onClick={() => { setMode('csv'); setPreviewImage(null); }}
+                    disabled={isProcessing}
+                    className="flex-1 py-3 px-3 rounded-xl font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 transition-colors border border-violet-100 flex flex-col items-center justify-center gap-1 active:scale-95 disabled:opacity-50"
+                >
+                    <iconify-icon icon="mdi:file-delimited-outline" className="w-5 h-5"></iconify-icon>
+                    <span className="text-[10px] uppercase tracking-wider">CSV</span>
                 </button>
                 {scanHistory.length > 0 && (
                     <button 
