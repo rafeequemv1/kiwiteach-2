@@ -15,6 +15,12 @@ interface HistoryItem extends EvaluationResult {
     timestamp: string;
 }
 
+interface MarkerPoint {
+  label: 'TL' | 'TR' | 'BL' | 'BR';
+  xPct: number;
+  yPct: number;
+}
+
 const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, onScanComplete }) => {
   const [mode, setMode] = useState<'camera' | 'upload' | 'result'>('camera');
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -24,6 +30,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
   const [isAutoScanEnabled, setIsAutoScanEnabled] = useState(true);
   const [isAlignedForAutoScan, setIsAlignedForAutoScan] = useState(false);
   const [alignmentProgress, setAlignmentProgress] = useState(0);
+  const [markerPoints, setMarkerPoints] = useState<MarkerPoint[]>([]);
   
   // Continuous Scanning State
   const [scanHistory, setScanHistory] = useState<HistoryItem[]>([]);
@@ -51,7 +58,9 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       const video = videoRef.current;
       if (!video || video.readyState < 2 || autoCaptureLockRef.current) return;
 
-      const aligned = detectCornerAlignment(video);
+      const detection = detectCornerAlignment(video);
+      setMarkerPoints(detection.points);
+      const aligned = detection.aligned;
       if (aligned) {
         alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
       } else {
@@ -70,8 +79,8 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     return () => window.clearInterval(intervalId);
   }, [mode, stream, isAutoScanEnabled, isProcessing]);
 
-  const detectCornerAlignment = (video: HTMLVideoElement): boolean => {
-    if (typeof cv === 'undefined' || !cv.Mat) return false;
+  const detectCornerAlignment = (video: HTMLVideoElement): { aligned: boolean; points: MarkerPoint[] } => {
+    if (typeof cv === 'undefined' || !cv.Mat) return { aligned: false, points: [] };
     if (!alignCanvasRef.current) {
       alignCanvasRef.current = document.createElement('canvas');
     }
@@ -82,7 +91,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     helperCanvas.width = targetW;
     helperCanvas.height = targetH;
     const ctx = helperCanvas.getContext('2d');
-    if (!ctx) return false;
+    if (!ctx) return { aligned: false, points: [] };
 
     ctx.drawImage(video, 0, 0, targetW, targetH);
 
@@ -109,7 +118,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         if (aspect < 0.5 || aspect > 2) continue;
         markers.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
       }
-      if (markers.length < 4) return false;
+      if (markers.length < 4) return { aligned: false, points: [] };
 
       const sortedBySum = [...markers].sort((a, b) => (a.x + a.y) - (b.x + b.y));
       const tl = sortedBySum[0];
@@ -118,23 +127,32 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       const bl = sortedByDiff[0];
       const tr = sortedByDiff[sortedByDiff.length - 1];
 
+      // Keep detector guide geometry in sync with the on-screen overlay (85% x 80% window).
       const guideLeft = targetW * 0.075;
       const guideRight = targetW * 0.925;
       const guideTop = targetH * 0.10;
       const guideBottom = targetH * 0.90;
-      const tol = 70;
+      const tol = 85;
 
       const near = (p: { x: number; y: number }, ex: number, ey: number) =>
         Math.abs(p.x - ex) <= tol && Math.abs(p.y - ey) <= tol;
 
-      return (
+      const points: MarkerPoint[] = [
+        { label: 'TL', xPct: (tl.x / targetW) * 100, yPct: (tl.y / targetH) * 100 },
+        { label: 'TR', xPct: (tr.x / targetW) * 100, yPct: (tr.y / targetH) * 100 },
+        { label: 'BL', xPct: (bl.x / targetW) * 100, yPct: (bl.y / targetH) * 100 },
+        { label: 'BR', xPct: (br.x / targetW) * 100, yPct: (br.y / targetH) * 100 },
+      ];
+
+      const aligned =
         near(tl, guideLeft, guideTop) &&
         near(tr, guideRight, guideTop) &&
         near(bl, guideLeft, guideBottom) &&
-        near(br, guideRight, guideBottom)
-      );
+        near(br, guideRight, guideBottom);
+
+      return { aligned, points };
     } catch {
-      return false;
+      return { aligned: false, points: [] };
     } finally {
       [src, gray, thresh, hierarchy, contours].forEach((m) => {
         if (m && typeof m.delete === 'function') m.delete();
@@ -169,6 +187,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     alignedFramesRef.current = 0;
     setAlignmentProgress(0);
     setIsAlignedForAutoScan(false);
+    setMarkerPoints([]);
     autoCaptureLockRef.current = false;
   };
 
@@ -196,6 +215,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
              alignedFramesRef.current = 0;
              setAlignmentProgress(0);
              setIsAlignedForAutoScan(false);
+             setMarkerPoints([]);
              autoCaptureLockRef.current = false;
         };
     }
@@ -242,6 +262,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
           alignedFramesRef.current = 0;
           setAlignmentProgress(0);
           setIsAlignedForAutoScan(false);
+          setMarkerPoints([]);
           autoCaptureLockRef.current = false;
       }
   };
@@ -345,11 +366,11 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
             {mode === 'camera' && (
                 <div className="relative h-full w-full bg-black">
                     <div className="relative h-full w-full overflow-hidden bg-black shadow-lg border-y border-white/30">
-                        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-contain" />
                         <div className="absolute inset-0 border-[3px] border-white/20 pointer-events-none"></div>
                         
                         {/* Camera Overlay Guide */}
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] h-[88%] pointer-events-none">
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[80%] pointer-events-none">
                              <div className={`absolute top-0 left-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
                              <div className={`absolute top-0 right-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
                              <div className={`absolute bottom-0 left-0 h-10 w-10 rounded-md border-2 bg-black/20 ${isAlignedForAutoScan ? 'border-emerald-400' : 'border-accent'}`}></div>
@@ -363,6 +384,18 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                                 </div>
                              </div>
                         </div>
+                        {markerPoints.map((p) => (
+                          <div
+                            key={p.label}
+                            className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+                            style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                          >
+                            <div className="h-3 w-3 rounded-full bg-emerald-400 border border-white shadow-[0_0_0_2px_rgba(16,185,129,0.35)]" />
+                            <div className="mt-0.5 -ml-1 rounded bg-black/60 px-1 text-[8px] font-bold text-white">
+                              {p.label}
+                            </div>
+                          </div>
+                        ))}
                     </div>
                     <div className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2 flex items-center justify-center gap-3">
                       <p className="text-center text-[11px] text-white/85 bg-black/45 rounded-full px-3 py-1">Ensure good lighting and hold steady</p>
@@ -488,7 +521,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         {/* Sticky Action Footer */}
         {mode !== 'result' ? (
             mode === 'camera' ? (
-              <div className="p-2 bg-transparent shrink-0 z-20">
+              <div className="p-2 bg-transparent shrink-0 z-20 flex items-center gap-2">
                 <button
                   onClick={() => { setMode('upload'); setPreviewImage(null); }}
                   disabled={isProcessing}
@@ -496,6 +529,18 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                 >
                   <iconify-icon icon="mdi:image-outline" className="w-4 h-4"></iconify-icon>
                   Upload
+                </button>
+                <button
+                  onClick={captureAndEvaluate}
+                  disabled={isProcessing}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700 shadow-sm disabled:opacity-50"
+                >
+                  {isProcessing ? (
+                    <div className="w-3.5 h-3.5 border-2 border-indigo-300 border-t-indigo-700 rounded-full animate-spin"></div>
+                  ) : (
+                    <iconify-icon icon="mdi:camera-iris" className="w-4 h-4"></iconify-icon>
+                  )}
+                  Capture
                 </button>
               </div>
             ) : (
