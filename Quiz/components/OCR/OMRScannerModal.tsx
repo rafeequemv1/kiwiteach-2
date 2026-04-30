@@ -28,6 +28,7 @@ interface AlignmentWorkerResult {
   points: MarkerPoint[];
   confidence?: number;
   cornerMatches?: Record<MarkerPoint['label'], boolean>;
+  markerCount?: number;
 }
 
 const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, onScanComplete }) => {
@@ -105,16 +106,17 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         });
         const aligned = detection.aligned;
         if (aligned) {
-          alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
+          alignedFramesRef.current = Math.min(8, alignedFramesRef.current + 1);
         } else {
           alignedFramesRef.current = Math.max(0, alignedFramesRef.current - 1);
         }
 
-        setIsAlignedForAutoScan(alignedFramesRef.current >= 4);
-        setAlignmentProgress(Math.round((alignedFramesRef.current / 6) * 100));
+        setIsAlignedForAutoScan(alignedFramesRef.current >= 5);
+        setAlignmentProgress(Math.round((alignedFramesRef.current / 8) * 100));
 
         const detConfidence = detection.confidence ?? 0;
-        if (alignedFramesRef.current >= 6 && detConfidence >= 0.72 && !isProcessing) {
+        const markerCount = detection.markerCount ?? 0;
+        if (alignedFramesRef.current >= 8 && detConfidence >= 0.8 && markerCount >= 8 && !isProcessing) {
           autoCaptureLockRef.current = true;
           captureAndEvaluate();
         }
@@ -200,11 +202,16 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
           BR: !!detection.cornerMatches?.BR,
         });
         const aligned = !!detection.aligned;
-        if (aligned) alignedFramesRef.current = Math.min(6, alignedFramesRef.current + 1);
+        if (aligned) alignedFramesRef.current = Math.min(8, alignedFramesRef.current + 1);
         else alignedFramesRef.current = Math.max(0, alignedFramesRef.current - 1);
-        setIsAlignedForAutoScan(alignedFramesRef.current >= 4);
-        setAlignmentProgress(Math.round((alignedFramesRef.current / 6) * 100));
-        if (alignedFramesRef.current >= 6 && (detection.confidence ?? 0) >= 0.72 && !isProcessing) {
+        setIsAlignedForAutoScan(alignedFramesRef.current >= 5);
+        setAlignmentProgress(Math.round((alignedFramesRef.current / 8) * 100));
+        if (
+          alignedFramesRef.current >= 8 &&
+          (detection.confidence ?? 0) >= 0.8 &&
+          (detection.markerCount ?? 0) >= 8 &&
+          !isProcessing
+        ) {
           autoCaptureLockRef.current = true;
           captureAndEvaluate();
         }
@@ -258,7 +265,35 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     return p;
   };
 
-  const finalizeEvaluationResult = (res: EvaluationResult | null) => {
+  const buildMarkerPreviewUrl = (canvas: HTMLCanvasElement): string | null => {
+    try {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      const cw = canvas.width;
+      const ch = canvas.height;
+      if (!cw || !ch) return null;
+      const markerSizePx = 26;
+      markerPoints.forEach((p) => {
+        const cx = (p.xPct / 100) * cw;
+        const cy = (p.yPct / 100) * ch;
+        const w = Math.max(markerSizePx, ((p.wPct ?? 0) / 100) * cw);
+        const h = Math.max(markerSizePx, ((p.hPct ?? 0) / 100) * ch);
+        const x = cx - w / 2;
+        const y = cy - h / 2;
+        ctx.strokeStyle = '#22c55e';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillStyle = 'rgba(34,197,94,0.95)';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillText(p.label, x + 2, y - 4);
+      });
+      return canvas.toDataURL('image/jpeg', 0.86);
+    } catch {
+      return null;
+    }
+  };
+
+  const finalizeEvaluationResult = (res: EvaluationResult | null, markerPreviewUrl?: string | null) => {
     if (!res) {
       setIsProcessing(false);
       autoCaptureLockRef.current = false;
@@ -273,8 +308,12 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       autoCaptureLockRef.current = false;
       return;
     }
-    setResult(res);
-    onScanComplete?.(res);
+    const merged: EvaluationResult = {
+      ...res,
+      processedImageUrl: res.processedImageUrl || markerPreviewUrl || undefined,
+    };
+    setResult(merged);
+    onScanComplete?.(merged);
     setMode('result');
     setIsProcessing(false);
     alignedFramesRef.current = 0;
@@ -293,6 +332,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         points: [],
         confidence: 0,
         cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+        markerCount: 0,
       };
     }
     if (!alignCanvasRef.current) {
@@ -311,6 +351,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         points: [],
         confidence: 0,
         cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+        markerCount: 0,
       };
     }
 
@@ -345,6 +386,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
           points: [],
           confidence: 0,
           cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+          markerCount: 0,
         };
       }
 
@@ -357,13 +399,13 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
 
       // Keep detector guide geometry in sync with the on-screen A4 overlay window.
       const A4_RATIO = 210 / 297;
-      const guideHeight = targetH * 0.9;
-      const guideWidth = Math.min(targetW * 0.94, guideHeight * A4_RATIO);
+      const guideHeight = targetH * 0.94;
+      const guideWidth = Math.min(targetW * 0.975, guideHeight * A4_RATIO);
       const guideLeft = (targetW - guideWidth) / 2;
       const guideRight = guideLeft + guideWidth;
       const guideTop = (targetH - guideHeight) / 2;
       const guideBottom = guideTop + guideHeight;
-      const tol = 100;
+      const tol = 108;
 
       const near = (p: { x: number; y: number }, ex: number, ey: number) =>
         Math.abs(p.x - ex) <= tol && Math.abs(p.y - ey) <= tol;
@@ -396,6 +438,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
           BL: dBL <= tol,
           BR: dBR <= tol,
         },
+        markerCount: markers.length,
       };
     } catch {
       return {
@@ -403,6 +446,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         points: [],
         confidence: 0,
         cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+        markerCount: 0,
       };
     } finally {
       [src, gray, thresh, hierarchy, contours].forEach((m) => {
@@ -453,6 +497,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    let markerPreviewUrl: string | null = null;
     
     const useOffscreen = typeof OffscreenCanvas !== 'undefined';
     if (useOffscreen) {
@@ -460,10 +505,15 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
       if (offCtx) {
         offCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const displayCtx = canvas.getContext('2d');
+        if (displayCtx) {
+          displayCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          markerPreviewUrl = buildMarkerPreviewUrl(canvas);
+        }
         const frameData = offCtx.getImageData(0, 0, canvas.width, canvas.height);
         const workerRes = await evaluateImageDataWithWorker(frameData);
         if (workerRes) {
-          finalizeEvaluationResult(workerRes);
+          finalizeEvaluationResult(workerRes, markerPreviewUrl);
           return;
         }
       }
@@ -472,10 +522,11 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (ctx) {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      markerPreviewUrl = buildMarkerPreviewUrl(canvas);
       const workerData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const workerRes = await evaluateImageDataWithWorker(workerData);
       if (workerRes) {
-        finalizeEvaluationResult(workerRes);
+        finalizeEvaluationResult(workerRes, markerPreviewUrl);
         return;
       }
 
@@ -483,7 +534,7 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
       image.src = canvas.toDataURL('image/png');
       image.onload = async () => {
         const res = await evaluateOMRSheet(image, questions);
-        finalizeEvaluationResult(res);
+        finalizeEvaluationResult(res, markerPreviewUrl);
       };
       return;
     }
@@ -758,16 +809,16 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
         <div className={`flex-1 bg-secondary custom-scrollbar ${mode === 'camera' ? 'overflow-hidden p-0' : 'overflow-y-auto p-4 md:p-6'}`}>
             {mode === 'camera' && (
                 <div className="relative h-full w-full bg-black">
-                    <div className="relative h-full w-full overflow-hidden bg-black shadow-lg border-y border-white/30">
+                    <div className="absolute inset-x-0 top-1/2 h-[88%] -translate-y-1/2 overflow-hidden bg-black shadow-lg border-y border-white/30 rounded-xl">
                         <video ref={videoRef} autoPlay playsInline className="w-full h-full object-contain" />
                         <div className="absolute inset-0 border-[3px] border-white/20 pointer-events-none"></div>
                         
                         {/* Camera Overlay Guide */}
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[90%] w-auto max-w-[94%] aspect-[210/297] pointer-events-none">
-                             <div className={`absolute top-0 left-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.TL ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute top-0 right-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.TR ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 left-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.BL ? 'border-emerald-400' : 'border-accent'}`}></div>
-                             <div className={`absolute bottom-0 right-0 h-16 w-16 rounded-md border-2 bg-black/20 ${cornerMatches.BR ? 'border-emerald-400' : 'border-accent'}`}></div>
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[94%] w-auto max-w-[97.5%] aspect-[210/297] pointer-events-none">
+                             <div className={`absolute top-0 left-0 h-20 w-20 rounded-md border-2 bg-black/20 ${cornerMatches.TL ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute top-0 right-0 h-20 w-20 rounded-md border-2 bg-black/20 ${cornerMatches.TR ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 left-0 h-20 w-20 rounded-md border-2 bg-black/20 ${cornerMatches.BL ? 'border-emerald-400' : 'border-accent'}`}></div>
+                             <div className={`absolute bottom-0 right-0 h-20 w-20 rounded-md border-2 bg-black/20 ${cornerMatches.BR ? 'border-emerald-400' : 'border-accent'}`}></div>
                              
                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                                 <div className="bg-black/60 backdrop-blur-sm text-white text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">
@@ -928,6 +979,14 @@ const OMRScannerModal: React.FC<OMRScannerModalProps> = ({ questions, onClose, o
                              <div className="rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
                                  <img src={result.processedImageUrl} alt="Processed OMR" className="w-full h-auto" />
                              </div>
+                             {(typeof result.markerCount === 'number' || typeof result.markerGeometryScore === 'number') && (
+                               <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] font-semibold text-emerald-800">
+                                 Markers tracked: {result.markerCount ?? 0}
+                                 {typeof result.markerGeometryScore === 'number'
+                                   ? ` · Geometry quality ${Math.round(result.markerGeometryScore * 100)}%`
+                                   : ''}
+                               </div>
+                             )}
                         </div>
                     )}
                 </div>

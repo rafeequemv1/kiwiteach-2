@@ -12,6 +12,8 @@ export interface EvaluationResult {
   scanConfidence?: number;
   warpConfidence?: number;
   readConfidence?: number;
+  markerCount?: number;
+  markerGeometryScore?: number;
   error?: string;
 }
 

@@ -36,6 +36,7 @@ const detectCornerAlignment = (imageData, targetW, targetH) => {
       points: [],
       confidence: 0,
       cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+      markerCount: 0,
     };
   }
   const cv = cvRef;
@@ -78,6 +79,7 @@ const detectCornerAlignment = (imageData, targetW, targetH) => {
         points: [],
         confidence: 0,
         cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+        markerCount: markers.length,
       };
     }
 
@@ -89,13 +91,13 @@ const detectCornerAlignment = (imageData, targetW, targetH) => {
     const tr = sortedByDiff[sortedByDiff.length - 1];
 
     const A4_RATIO = 210 / 297;
-    const guideHeight = targetH * 0.9;
-    const guideWidth = Math.min(targetW * 0.94, guideHeight * A4_RATIO);
+    const guideHeight = targetH * 0.94;
+    const guideWidth = Math.min(targetW * 0.975, guideHeight * A4_RATIO);
     const guideLeft = (targetW - guideWidth) / 2;
     const guideRight = guideLeft + guideWidth;
     const guideTop = (targetH - guideHeight) / 2;
     const guideBottom = guideTop + guideHeight;
-    const tol = 100;
+    const tol = 108;
 
     const dist = (p, ex, ey) => Math.hypot(p.x - ex, p.y - ey);
     const dTL = dist(tl, guideLeft, guideTop);
@@ -123,6 +125,7 @@ const detectCornerAlignment = (imageData, targetW, targetH) => {
         BL: dBL <= tol,
         BR: dBR <= tol,
       },
+      markerCount: markers.length,
     };
   } catch (_err) {
     return {
@@ -130,6 +133,7 @@ const detectCornerAlignment = (imageData, targetW, targetH) => {
       points: [],
       confidence: 0,
       cornerMatches: { TL: false, TR: false, BL: false, BR: false },
+      markerCount: 0,
     };
   } finally {
     [src, gray, thresh, hierarchy, contours].forEach((m) => {
@@ -197,9 +201,38 @@ const evaluateSheet = (imageData, questions) => {
       const rect = cv.boundingRect(cnt);
       const aspect = rect.width / Math.max(1, rect.height);
       if (aspect < 0.5 || aspect > 2.0) continue;
-      candidateMarkers.push({ center: { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } });
+      candidateMarkers.push({
+        center: { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 },
+        rect,
+      });
     }
     if (candidateMarkers.length < 4) throw new Error('Need 4 corner markers');
+
+    const markerCount = candidateMarkers.length;
+    const minX = Math.min(...candidateMarkers.map((m) => m.center.x));
+    const maxX = Math.max(...candidateMarkers.map((m) => m.center.x));
+    const minY = Math.min(...candidateMarkers.map((m) => m.center.y));
+    const maxY = Math.max(...candidateMarkers.map((m) => m.center.y));
+    const spanScore = clamp01(((maxX - minX) / Math.max(1, src.cols) + (maxY - minY) / Math.max(1, src.rows)) / 2);
+    const nnDistances = candidateMarkers.map((m, i) => {
+      let best = Infinity;
+      for (let j = 0; j < candidateMarkers.length; j++) {
+        if (i === j) continue;
+        const d = Math.hypot(
+          m.center.x - candidateMarkers[j].center.x,
+          m.center.y - candidateMarkers[j].center.y
+        );
+        if (d < best) best = d;
+      }
+      return Number.isFinite(best) ? best : 0;
+    });
+    const nnMean = nnDistances.reduce((a, b) => a + b, 0) / Math.max(1, nnDistances.length);
+    const nnVar =
+      nnDistances.reduce((a, d) => a + (d - nnMean) * (d - nnMean), 0) / Math.max(1, nnDistances.length);
+    const nnStd = Math.sqrt(nnVar);
+    const gapConsistency = clamp01(1 - nnStd / Math.max(1, nnMean));
+    const countScore = clamp01((markerCount - 4) / 8);
+    const markerGeometryScore = clamp01(0.45 * spanScore + 0.35 * gapConsistency + 0.2 * countScore);
 
     const sortedBySum = [...candidateMarkers].sort(
       (a, b) => a.center.x + a.center.y - (b.center.x + b.center.y)
@@ -218,7 +251,7 @@ const evaluateSheet = (imageData, questions) => {
     const rightH = Math.hypot(br.center.x - tr.center.x, br.center.y - tr.center.y);
     const horizRatio = Math.min(topW, botW) / Math.max(topW, botW, 1);
     const vertRatio = Math.min(leftH, rightH) / Math.max(leftH, rightH, 1);
-    const warpConfidence = clamp01((horizRatio + vertRatio) / 2);
+    const warpConfidence = clamp01(0.7 * ((horizRatio + vertRatio) / 2) + 0.3 * markerGeometryScore);
     if (warpConfidence < 0.55) throw new Error('Low warp quality');
 
     pts1 = cv.matFromArray(4, 1, cv.CV_32FC2, [
@@ -304,7 +337,7 @@ const evaluateSheet = (imageData, questions) => {
     }
 
     const readConfidence = clamp01(1 - ambiguousCount / Math.max(questions.length, 1));
-    const scanConfidence = clamp01(0.45 * warpConfidence + 0.55 * readConfidence);
+    const scanConfidence = clamp01(0.35 * warpConfidence + 0.45 * readConfidence + 0.2 * markerGeometryScore);
     return {
       score,
       totalQuestions: questions.length,
@@ -312,6 +345,8 @@ const evaluateSheet = (imageData, questions) => {
       warpConfidence,
       readConfidence,
       scanConfidence,
+      markerCount,
+      markerGeometryScore,
     };
   } catch (e) {
     return {
@@ -321,6 +356,8 @@ const evaluateSheet = (imageData, questions) => {
       scanConfidence: 0,
       warpConfidence: 0,
       readConfidence: 0,
+      markerCount: 0,
+      markerGeometryScore: 0,
       error: e && e.message ? e.message : 'Evaluation failed',
     };
   } finally {
